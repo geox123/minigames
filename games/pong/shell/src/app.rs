@@ -27,10 +27,26 @@ pub enum Mode {
 /// The modes PULSE itself offers.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PulseMode {
-    /// Head to head.
+    /// Head to head, single game.
     Versus,
+    /// Best-of-five match.
+    Duel,
     /// Solo survival.
     Gauntlet,
+}
+
+impl PulseMode {
+    fn next(self) -> Self {
+        match self {
+            PulseMode::Versus => PulseMode::Duel,
+            PulseMode::Duel => PulseMode::Gauntlet,
+            PulseMode::Gauntlet => PulseMode::Versus,
+        }
+    }
+
+    fn prev(self) -> Self {
+        self.next().next()
+    }
 }
 
 /// Which screen the player is looking at.
@@ -41,8 +57,8 @@ enum Screen {
     PlayerSelect { highlight: Players },
     /// Choosing which PULSE mode to play.
     PulseModeSelect { highlight: PulseMode },
-    /// Choosing one or two players before a PULSE Versus match.
-    PulsePlayerSelect { highlight: Players },
+    /// Choosing one or two players before a PULSE Versus or Duel match.
+    PulsePlayerSelect { highlight: Players, duel: bool },
     /// A Faithful match in progress.
     FaithfulMatch {
         game: Game,
@@ -127,6 +143,13 @@ impl App {
                         PulseMode::Versus => {
                             self.screen = Screen::PulsePlayerSelect {
                                 highlight: Players::One,
+                                duel: false,
+                            };
+                        }
+                        PulseMode::Duel => {
+                            self.screen = Screen::PulsePlayerSelect {
+                                highlight: Players::One,
+                                duel: true,
                             };
                         }
                         PulseMode::Gauntlet => self.start_gauntlet(),
@@ -135,15 +158,16 @@ impl App {
                     render::pulse_mode_select(*highlight);
                 }
             }
-            Screen::PulsePlayerSelect { highlight } => {
+            Screen::PulsePlayerSelect { highlight, duel } => {
+                let duel = *duel;
                 if is_key_pressed(KeyCode::Escape) {
                     self.screen = Screen::PulseModeSelect {
                         highlight: PulseMode::Versus,
                     };
                 } else if let Some(chosen) = player_select_input(highlight) {
-                    self.start_pulse(chosen);
+                    self.start_pulse(chosen, duel);
                 } else {
-                    render::pulse_player_select(*highlight);
+                    render::pulse_player_select(*highlight, duel);
                 }
             }
             Screen::FaithfulMatch {
@@ -251,11 +275,13 @@ impl App {
         };
     }
 
-    fn start_pulse(&mut self, players: Players) {
+    fn start_pulse(&mut self, players: Players, duel: bool) {
         let seed = self.take_seed();
-        let game = match players {
-            Players::One => PulseGame::new_versus_cpu(seed),
-            Players::Two => PulseGame::new(seed),
+        let game = match (duel, players) {
+            (false, Players::One) => PulseGame::new_versus_cpu(seed),
+            (false, Players::Two) => PulseGame::new(seed),
+            (true, Players::One) => PulseGame::new_duel_cpu(seed),
+            (true, Players::Two) => PulseGame::new_duel(seed),
         };
         self.screen = Screen::PulseMatch {
             game,
@@ -276,13 +302,14 @@ impl App {
     }
 }
 
-/// Reads the PULSE mode-select, moving the highlight and reporting a commit.
+/// Reads the PULSE mode-select, moving the highlight through the three modes
+/// and reporting a commit.
 fn pulse_mode_input(highlight: &mut PulseMode) -> bool {
-    if pressed_menu_move() {
-        *highlight = match *highlight {
-            PulseMode::Versus => PulseMode::Gauntlet,
-            PulseMode::Gauntlet => PulseMode::Versus,
-        };
+    if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
+        *highlight = highlight.prev();
+    }
+    if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
+        *highlight = highlight.next();
     }
     is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
 }

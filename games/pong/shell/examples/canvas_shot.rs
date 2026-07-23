@@ -24,8 +24,9 @@ async fn main() {
     let camera = logical_camera(&canvas);
     let mut game = Game::new(Players::Two, 7);
 
-    // A parallel PULSE game, played the same way, for the neon scenes.
-    let mut pulse = pong_remix_core::Game::new(7);
+    // A parallel PULSE game, played the same way, for the neon scenes. A Duel,
+    // so the games-won tally shows.
+    let mut pulse = pong_remix_core::Game::new_duel(7);
     // A Gauntlet run, defended for a while so the barrage has grown.
     let mut gauntlet = pong_remix_core::Game::new_gauntlet(7);
     if scene == "gauntlet" {
@@ -97,7 +98,7 @@ async fn main() {
         match scene.as_str() {
             "mode" => render::mode_select(pong::app::Mode::Remix),
             "select" => render::player_select(Players::One),
-            "pselect" => render::pulse_player_select(Players::One),
+            "pselect" => render::pulse_player_select(Players::One, false),
             "pmode" => render::pulse_mode_select(pong::app::PulseMode::Gauntlet),
             "gauntlet" => render::draw_gauntlet(&gauntlet, 240),
             "pulse" => render::draw_pulse(&pulse),

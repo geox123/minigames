@@ -101,11 +101,18 @@ const GAUNTLET_MAX_SPEED_MULT: f32 = 2.4;
 /// Score is ten a return plus one a second survived.
 const GAUNTLET_RETURN_POINTS: u32 = 10;
 
+/// Duel — a best-of-five match: win [`DUEL_GAMES_TO_WIN`] games to take it, with
+/// a short beat between games.
+const DUEL_GAMES_TO_WIN: u32 = 3;
+const BETWEEN_GAMES_PAUSE: f32 = 2.0;
+
 /// Which way a PULSE game is played.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
-    /// Head to head, first to [`WIN_SCORE`].
+    /// A single game, head to head, first to [`WIN_SCORE`].
     Versus,
+    /// A best-of-five match of Versus games.
+    Duel,
     /// Solo survival against an escalating barrage.
     Gauntlet,
 }
@@ -266,6 +273,13 @@ pub enum Phase {
     },
     /// A Gauntlet run has ended — a ball got past the player.
     RunOver,
+    /// A Duel game just finished; the next is about to start.
+    BetweenGames,
+    /// A Duel match has been won.
+    MatchOver {
+        /// The player who took the match.
+        winner: Side,
+    },
 }
 
 /// A ball in flight, together with the spin curving it and who last hit it.
@@ -339,6 +353,10 @@ pub struct Game {
     speed_mult: f32,
     /// Seconds until the Gauntlet adds another ball.
     add_ball_timer: f32,
+    /// Games each player has won this Duel match.
+    games_won: [u32; 2],
+    /// Seconds left of the between-games beat in a Duel.
+    between_timer: f32,
     rng: Rng,
 }
 
@@ -353,6 +371,16 @@ impl Game {
         Self::with_mode(seed, Mode::Versus, true)
     }
 
+    /// Starts a two-player Duel: a best-of-five match.
+    pub fn new_duel(seed: u64) -> Self {
+        Self::with_mode(seed, Mode::Duel, false)
+    }
+
+    /// Starts a one-player Duel against the computer.
+    pub fn new_duel_cpu(seed: u64) -> Self {
+        Self::with_mode(seed, Mode::Duel, true)
+    }
+
     /// Starts a Gauntlet run: solo survival against an escalating barrage.
     pub fn new_gauntlet(seed: u64) -> Self {
         Self::with_mode(seed, Mode::Gauntlet, false)
@@ -364,11 +392,11 @@ impl Game {
 
     fn with_mode(seed: u64, mode: Mode, opponent: bool) -> Self {
         let mut rng = Rng::new(seed);
-        // Gauntlet always serves at the player on the left.
+        // Gauntlet always serves at the player on the left; the others toss up.
         let serve_towards = match mode {
             Mode::Gauntlet => Side::Left,
-            Mode::Versus if rng.flip() => Side::Left,
-            Mode::Versus => Side::Right,
+            _ if rng.flip() => Side::Left,
+            _ => Side::Right,
         };
         let mut game = Self {
             balls: vec![PARKED_BALL],
@@ -395,6 +423,8 @@ impl Game {
             gauntlet_returns: 0,
             speed_mult: 1.0,
             add_ball_timer: GAUNTLET_ADD_BALL_EVERY,
+            games_won: [0; 2],
+            between_timer: 0.0,
             rng,
         };
         game.begin_serve();
@@ -414,12 +444,19 @@ impl Game {
         self.gauntlet_returns = 0;
         self.speed_mult = 1.0;
         self.add_ball_timer = GAUNTLET_ADD_BALL_EVERY;
+        self.games_won = [0; 2];
+        self.between_timer = 0.0;
         self.begin_serve();
     }
 
     /// The current Gauntlet score: ten a return plus one a second survived.
     pub fn gauntlet_score(&self) -> u32 {
         self.gauntlet_returns * GAUNTLET_RETURN_POINTS + self.gauntlet_elapsed as u32
+    }
+
+    /// Games a player has won this Duel match.
+    pub fn games_won(&self, side: Side) -> u32 {
+        self.games_won[side.index()]
     }
 
     /// The primary ball. Between points it rests in the middle; with multiball
@@ -553,7 +590,16 @@ impl Game {
                 }
                 self.advance_balls()
             }
-            Phase::GameOver { .. } | Phase::RunOver => Events::default(),
+            Phase::BetweenGames => {
+                self.between_timer -= TIMESTEP;
+                if self.between_timer <= 0.0 {
+                    // Fresh scores, same games-won tally; serve the next game.
+                    self.scores = [0; 2];
+                    self.begin_serve();
+                }
+                Events::default()
+            }
+            Phase::GameOver { .. } | Phase::RunOver | Phase::MatchOver { .. } => Events::default(),
         }
     }
 
@@ -756,9 +802,21 @@ impl Game {
                 self.begin_serve();
             }
         } else if let Some(winner) = self.winner() {
-            self.phase = Phase::GameOver { winner };
             self.balls = vec![PARKED_BALL];
             self.pickup = None;
+            match self.mode {
+                Mode::Duel => {
+                    self.games_won[winner.index()] += 1;
+                    if self.games_won[winner.index()] >= DUEL_GAMES_TO_WIN {
+                        self.phase = Phase::MatchOver { winner };
+                    } else {
+                        self.phase = Phase::BetweenGames;
+                        self.between_timer = BETWEEN_GAMES_PAUSE;
+                    }
+                }
+                // Gauntlet never reaches here (it has no scores to win).
+                Mode::Versus | Mode::Gauntlet => self.phase = Phase::GameOver { winner },
+            }
         } else if self.balls.is_empty() {
             self.begin_serve();
         }

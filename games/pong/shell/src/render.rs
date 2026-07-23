@@ -142,19 +142,59 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
         NEON_RIGHT,
     );
 
-    if let PPhase::GameOver { winner } = game.phase() {
-        let (who, colour) = match winner {
-            PSide::Left => ("LEFT PLAYER WINS", NEON_LEFT),
-            PSide::Right => ("RIGHT PLAYER WINS", NEON_RIGHT),
-        };
-        font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, colour);
+    // In a Duel, the games-won tally sits under the scores.
+    let (won_l, won_r) = (game.games_won(PSide::Left), game.games_won(PSide::Right));
+    if won_l + won_r > 0
+        || matches!(
+            game.phase(),
+            PPhase::BetweenGames | PPhase::MatchOver { .. }
+        )
+    {
         font::draw_centred(
-            "PRESS R TO PLAY AGAIN",
-            LOGICAL_HEIGHT / 2.0 + 6.0,
+            &format!("GAMES {won_l} - {won_r}"),
+            58.0,
             HINT_SCALE,
-            NEON_BALL,
+            NEON_DIM,
         );
     }
+
+    match game.phase() {
+        PPhase::GameOver { winner } => {
+            let (who, colour) = winner_text(winner);
+            font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, colour);
+            banner_hint("PRESS R TO PLAY AGAIN");
+        }
+        PPhase::BetweenGames => {
+            font::draw_centred(
+                "GAME OVER",
+                LOGICAL_HEIGHT / 2.0 - 20.0,
+                OPTION_SCALE,
+                NEON_BALL,
+            );
+            banner_hint("NEXT GAME COMING UP");
+        }
+        PPhase::MatchOver { winner } => {
+            let (_, colour) = winner_text(winner);
+            let who = match winner {
+                PSide::Left => "LEFT WINS THE MATCH",
+                PSide::Right => "RIGHT WINS THE MATCH",
+            };
+            font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, colour);
+            banner_hint("PRESS R FOR A REMATCH");
+        }
+        _ => {}
+    }
+}
+
+fn winner_text(winner: pong_remix_core::Side) -> (&'static str, Color) {
+    match winner {
+        pong_remix_core::Side::Left => ("LEFT PLAYER WINS", NEON_LEFT),
+        pong_remix_core::Side::Right => ("RIGHT PLAYER WINS", NEON_RIGHT),
+    }
+}
+
+fn banner_hint(text: &str) {
+    font::draw_centred(text, LOGICAL_HEIGHT / 2.0 + 6.0, HINT_SCALE, NEON_BALL);
 }
 
 /// Draws one frame of a Gauntlet run: the player's paddle, the barrage, the
@@ -361,29 +401,35 @@ pub fn player_select(highlight: Players) {
     font::draw_centred("ARROWS TO CHOOSE   ENTER TO START", 208.0, HINT_SCALE, GRAY);
 }
 
-/// Draws the PULSE mode-select: Versus or Gauntlet.
+/// Draws the PULSE mode-select: Versus, Duel or Gauntlet.
 pub fn pulse_mode_select(highlight: crate::app::PulseMode) {
     use crate::app::PulseMode;
     clear_background(NEON_BG);
 
-    font::draw_centred("PULSE", 44.0, TITLE_SCALE, NEON_LEFT);
-    font::draw_centred("CHOOSE A MODE", 90.0, OPTION_SCALE, NEON_RIGHT);
-    pulse_option("VERSUS", 128.0, highlight == PulseMode::Versus);
-    pulse_option("GAUNTLET", 160.0, highlight == PulseMode::Gauntlet);
+    font::draw_centred("PULSE", 36.0, TITLE_SCALE, NEON_LEFT);
+    font::draw_centred("CHOOSE A MODE", 80.0, OPTION_SCALE, NEON_RIGHT);
+    pulse_option("VERSUS", 116.0, highlight == PulseMode::Versus);
+    pulse_option("DUEL", 144.0, highlight == PulseMode::Duel);
+    pulse_option("GAUNTLET", 172.0, highlight == PulseMode::Gauntlet);
     font::draw_centred(
         "ARROWS TO CHOOSE   ENTER TO SELECT",
-        208.0,
+        210.0,
         HINT_SCALE,
         NEON_DIM,
     );
 }
 
 /// Draws the PULSE player-select, in its neon look.
-pub fn pulse_player_select(highlight: Players) {
+pub fn pulse_player_select(highlight: Players, duel: bool) {
     clear_background(NEON_BG);
 
     font::draw_centred("PULSE", 44.0, TITLE_SCALE, NEON_LEFT);
-    font::draw_centred("THE REMIX", 90.0, OPTION_SCALE, NEON_RIGHT);
+    font::draw_centred(
+        if duel { "DUEL" } else { "VERSUS" },
+        90.0,
+        OPTION_SCALE,
+        NEON_RIGHT,
+    );
     pulse_option("1 PLAYER", 128.0, highlight == Players::One);
     pulse_option("2 PLAYERS", 160.0, highlight == Players::Two);
     font::draw_centred(
