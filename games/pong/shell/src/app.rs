@@ -204,11 +204,14 @@ impl App {
     }
 }
 
-/// Reads both players off one keyboard for a PULSE match.
+/// Reads both players off one keyboard for a PULSE match: W/S and Left-Shift to
+/// charge on the left, the arrows and Right-Shift (or Enter) on the right.
 fn read_pulse_input() -> pulse::Input {
     pulse::Input {
         left: pulse_axis(KeyCode::W, KeyCode::S),
         right: pulse_axis(KeyCode::Up, KeyCode::Down),
+        charge_left: is_key_down(KeyCode::LeftShift),
+        charge_right: is_key_down(KeyCode::RightShift) || is_key_down(KeyCode::Enter),
     }
 }
 

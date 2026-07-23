@@ -36,6 +36,7 @@ pub fn tracking(game: &Game, left_offset: f32, right_offset: f32) -> Input {
     Input {
         left: axis_towards(game.paddle(Side::Left).y, ball.y + left_offset),
         right: axis_towards(game.paddle(Side::Right).y, ball.y + right_offset),
+        ..Default::default()
     }
 }
 
@@ -104,10 +105,12 @@ pub fn strike_moving(game: &mut Game, side: Side, dir: Axis) -> Ball {
             Side::Left => Input {
                 left: axis,
                 right: Axis::Hold,
+                ..Default::default()
             },
             Side::Right => Input {
                 left: Axis::Hold,
                 right: axis,
+                ..Default::default()
             },
         };
 

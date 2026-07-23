@@ -19,6 +19,7 @@ fn replay(seed: u64) -> Vec<Snapshot> {
                 1 => Axis::Hold,
                 _ => Axis::Up,
             },
+            ..Default::default()
         };
         game.step(input);
         if step % 250 == 0 {

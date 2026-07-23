@@ -25,6 +25,7 @@ fn each_paddle_answers_to_its_own_player() {
         Input {
             left: Axis::Up,
             right: Axis::Down,
+            ..Default::default()
         },
         30,
     );
@@ -44,6 +45,7 @@ fn a_paddle_stays_within_the_field() {
         Input {
             left: Axis::Down,
             right: Axis::Down,
+            ..Default::default()
         },
         LONG_HOLD,
     );

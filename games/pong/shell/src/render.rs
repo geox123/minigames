@@ -119,6 +119,14 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
         NEON_BALL,
     );
 
+    // Each player's power-shot charge, as a bar climbing beside their paddle.
+    draw_charge(game.charge(PSide::Left), 6.0, NEON_LEFT);
+    draw_charge(
+        game.charge(PSide::Right),
+        LOGICAL_WIDTH - 6.0 - CHARGE_BAR_W,
+        NEON_RIGHT,
+    );
+
     if let PPhase::GameOver { winner } = game.phase() {
         let (who, colour) = match winner {
             PSide::Left => ("LEFT PLAYER WINS", NEON_LEFT),
@@ -132,6 +140,26 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
             NEON_BALL,
         );
     }
+}
+
+/// A power-shot charge meter, filling from the bottom.
+const CHARGE_BAR_W: f32 = 4.0;
+const CHARGE_BAR_H: f32 = 48.0;
+
+fn draw_charge(charge: f32, x: f32, colour: Color) {
+    let y = LOGICAL_HEIGHT / 2.0 - CHARGE_BAR_H / 2.0;
+    // The empty track, dim.
+    draw_rectangle(x, y, CHARGE_BAR_W, CHARGE_BAR_H, NEON_DIM);
+    // The filled portion climbs from the bottom, brightening when full.
+    let filled = CHARGE_BAR_H * charge.clamp(0.0, 1.0);
+    let fill_colour = if charge >= 1.0 { NEON_BALL } else { colour };
+    draw_rectangle(
+        x,
+        y + CHARGE_BAR_H - filled,
+        CHARGE_BAR_W,
+        filled,
+        fill_colour,
+    );
 }
 
 fn draw_net(colour: Color) {

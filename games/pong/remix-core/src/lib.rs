@@ -53,6 +53,16 @@ const SPIN_DECAY: f32 = 0.98;
 /// The steepest the ball's flight may tilt from horizontal, as a sine.
 const MAX_FLIGHT_SIN: f32 = 0.883; // sin(62°)
 
+/// Power shots — hold to charge, then commit. Charging and the cooldown after a
+/// power shot both slow the paddle (the risk); a charged return flies faster
+/// (the reward).
+const CHARGE_TIME: f32 = 0.6;
+const CHARGE_PADDLE_FACTOR: f32 = 0.5;
+const COOLDOWN_TIME: f32 = 0.5;
+const COOLDOWN_PADDLE_FACTOR: f32 = 0.55;
+/// Speed of a charged return, in logical units per second.
+const POWER_SPEED: f32 = 250.0;
+
 /// Which player, and which end of the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -102,10 +112,23 @@ pub enum Axis {
 /// What both players are doing this step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Input {
-    /// The left player's paddle.
+    /// The left player's paddle direction.
     pub left: Axis,
-    /// The right player's paddle.
+    /// The right player's paddle direction.
     pub right: Axis,
+    /// Whether the left player is charging a power shot.
+    pub charge_left: bool,
+    /// Whether the right player is charging a power shot.
+    pub charge_right: bool,
+}
+
+impl Input {
+    fn charging(&self, side: Side) -> bool {
+        match side {
+            Side::Left => self.charge_left,
+            Side::Right => self.charge_right,
+        }
+    }
 }
 
 /// A paddle, as the shell draws it: the top-left corner of a `PADDLE_WIDTH` by
@@ -136,6 +159,8 @@ pub struct Ball {
 pub struct Events {
     /// A paddle returned the ball.
     pub paddle_hit: bool,
+    /// The return was a charged power shot.
+    pub power_hit: bool,
     /// The ball rebounded off the top or bottom wall.
     pub wall_bounce: bool,
     /// A player won the point.
@@ -173,6 +198,12 @@ pub struct Game {
     paddles: [f32; 2],
     /// Each paddle's vertical velocity this step, for spin at contact.
     paddle_vel: [f32; 2],
+    /// Each player's power-shot charge, 0 to 1.
+    charge: [f32; 2],
+    /// Whether each player is charging this step.
+    charging: [bool; 2],
+    /// Seconds of post-power-shot cooldown left for each player.
+    cooldown: [f32; 2],
     /// Each player's score.
     scores: [u32; 2],
     phase: Phase,
@@ -193,6 +224,9 @@ impl Game {
             ball_spin: 0.0,
             paddles: [(LOGICAL_HEIGHT - PADDLE_HEIGHT) / 2.0; 2],
             paddle_vel: [0.0; 2],
+            charge: [0.0; 2],
+            charging: [false; 2],
+            cooldown: [0.0; 2],
             scores: [0; 2],
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
@@ -237,11 +271,36 @@ impl Game {
         self.phase
     }
 
+    /// A player's power-shot charge, from 0 (none) to 1 (ready).
+    pub fn charge(&self, side: Side) -> f32 {
+        self.charge[side.index()]
+    }
+
+    /// Whether a player's paddle is in its post-power-shot cooldown.
+    pub fn cooling(&self, side: Side) -> bool {
+        self.cooldown[side.index()] > 0.0
+    }
+
     /// Advances the game by exactly one [`TIMESTEP`].
     pub fn step(&mut self, input: Input) -> Events {
+        self.update_charge(Side::Left, input.charging(Side::Left));
+        self.update_charge(Side::Right, input.charging(Side::Right));
+
         let before = self.paddles;
-        move_paddle(&mut self.paddles[Side::Left.index()], input.left);
-        move_paddle(&mut self.paddles[Side::Right.index()], input.right);
+        let (left_speed, right_speed) = (
+            self.paddle_speed(Side::Left),
+            self.paddle_speed(Side::Right),
+        );
+        move_paddle(
+            &mut self.paddles[Side::Left.index()],
+            input.left,
+            left_speed,
+        );
+        move_paddle(
+            &mut self.paddles[Side::Right.index()],
+            input.right,
+            right_speed,
+        );
         for (vel, (now, was)) in self
             .paddle_vel
             .iter_mut()
@@ -263,6 +322,32 @@ impl Game {
         }
     }
 
+    /// Builds or drops a player's charge and runs down their cooldown.
+    fn update_charge(&mut self, side: Side, charging: bool) {
+        let i = side.index();
+        self.charging[i] = charging;
+        if charging {
+            self.charge[i] = (self.charge[i] + TIMESTEP / CHARGE_TIME).min(1.0);
+        } else {
+            // Letting go before the return spends the charge.
+            self.charge[i] = 0.0;
+        }
+        self.cooldown[i] = (self.cooldown[i] - TIMESTEP).max(0.0);
+    }
+
+    /// A paddle's speed this step: reduced while charging or cooling down.
+    fn paddle_speed(&self, side: Side) -> f32 {
+        let i = side.index();
+        let factor = if self.charging[i] {
+            CHARGE_PADDLE_FACTOR
+        } else if self.cooldown[i] > 0.0 {
+            COOLDOWN_PADDLE_FACTOR
+        } else {
+            1.0
+        };
+        PADDLE_SPEED * factor
+    }
+
     fn advance_ball(&mut self) -> Events {
         self.apply_spin();
 
@@ -270,8 +355,9 @@ impl Game {
         self.ball.x += self.ball.vx * TIMESTEP;
         self.ball.y += self.ball.vy * TIMESTEP;
 
-        let paddle_hit =
-            self.strike_paddle(Side::Left, previous) || self.strike_paddle(Side::Right, previous);
+        let hit = self
+            .strike_paddle(Side::Left, previous)
+            .or_else(|| self.strike_paddle(Side::Right, previous));
 
         let half = BALL_SIZE / 2.0;
         let wall_bounce = bounce_within(&mut self.ball.y, &mut self.ball.vy, half, LOGICAL_HEIGHT);
@@ -282,15 +368,17 @@ impl Game {
         }
 
         Events {
-            paddle_hit,
+            paddle_hit: hit.is_some(),
+            power_hit: hit == Some(true),
             wall_bounce,
             scored,
         }
     }
 
-    /// Returns the ball if it reached `side`'s paddle during this step. Tests
-    /// the path travelled, not just where it ended, so a fast ball can't tunnel.
-    fn strike_paddle(&mut self, side: Side, previous: Ball) -> bool {
+    /// If `side`'s paddle reached the ball this step, returns the ball off it and
+    /// whether it was a charged power shot; otherwise `None`. Tests the path
+    /// travelled, not just where the ball ended, so a fast ball can't tunnel.
+    fn strike_paddle(&mut self, side: Side, previous: Ball) -> Option<bool> {
         let half = BALL_SIZE / 2.0;
         let paddle = self.paddle(side);
 
@@ -307,7 +395,7 @@ impl Game {
             Side::Right => previous.vx > 0.0 && before <= face && after >= face,
         };
         if !reached {
-            return false;
+            return None;
         }
 
         let travelled = (before - after).abs();
@@ -318,8 +406,20 @@ impl Game {
         };
         let missed = contact + half <= paddle.y || contact - half >= paddle.y + PADDLE_HEIGHT;
         if missed {
-            return false;
+            return None;
         }
+
+        // A fully-charged return is a power shot: faster, and it spends the
+        // charge and starts the paddle's cooldown.
+        let i = side.index();
+        let power = self.charge[i] >= 1.0;
+        let speed = if power {
+            self.charge[i] = 0.0;
+            self.cooldown[i] = COOLDOWN_TIME;
+            POWER_SPEED
+        } else {
+            BALL_SPEED
+        };
 
         let segment = ((contact - paddle.y) / (PADDLE_HEIGHT / SEGMENTS as f32)) as isize;
         let angle = segment_angle(segment.clamp(0, SEGMENTS as isize - 1) as usize);
@@ -330,12 +430,11 @@ impl Game {
             Side::Right => face - half,
         };
         self.ball.y = contact;
-        self.ball.vx = BALL_SPEED * angle.cos() * away;
-        self.ball.vy = BALL_SPEED * angle.sin();
+        self.ball.vx = speed * angle.cos() * away;
+        self.ball.vy = speed * angle.sin();
         // The paddle's motion at contact bends the shot from here on.
-        self.ball_spin =
-            (self.paddle_vel[side.index()] * SPIN_PER_PADDLE_VELOCITY).clamp(-SPIN_MAX, SPIN_MAX);
-        true
+        self.ball_spin = (self.paddle_vel[i] * SPIN_PER_PADDLE_VELOCITY).clamp(-SPIN_MAX, SPIN_MAX);
+        Some(power)
     }
 
     /// Rotates the ball's velocity by its spin for this step and lets the spin
@@ -415,9 +514,9 @@ fn clamp_flight_angle(vx: &mut f32, vy: &mut f32) {
     }
 }
 
-/// Moves one paddle for a step and keeps it within the field's reach.
-fn move_paddle(y: &mut f32, axis: Axis) {
-    let travel = PADDLE_SPEED * TIMESTEP;
+/// Moves one paddle for a step at `speed` and keeps it within the field's reach.
+fn move_paddle(y: &mut f32, axis: Axis, speed: f32) {
+    let travel = speed * TIMESTEP;
     match axis {
         Axis::Up => *y -= travel,
         Axis::Down => *y += travel,

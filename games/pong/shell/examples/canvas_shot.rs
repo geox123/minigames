@@ -43,6 +43,9 @@ async fn main() {
         let pulse_input = pong_remix_core::Input {
             left: pulse_follow(pulse.paddle(pong_remix_core::Side::Left).y, pulse.ball().y),
             right: pulse_follow(pulse.paddle(pong_remix_core::Side::Right).y, pulse.ball().y),
+            // Charge the left player so the charge meter is visible in the scene.
+            charge_left: true,
+            ..Default::default()
         };
         pulse.step(pulse_input);
     }
