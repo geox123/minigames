@@ -32,6 +32,19 @@ pub const PADDLE_SPEED: f32 = 210.0;
 /// Turns (balls) a game starts with.
 pub const TURNS: u32 = 3;
 
+/// The brick wall: rows, columns, where it sits, and how tall each brick is.
+pub const BRICK_COLS: usize = 14;
+pub const BRICK_ROWS: usize = 8;
+/// The top of the wall, leaving room above for the score.
+pub const BRICK_TOP: f32 = 46.0;
+/// Height of one brick, in logical units.
+pub const BRICK_HEIGHT: f32 = 9.0;
+/// The wall thickness the bricks sit inside.
+const WALL: f32 = 2.0;
+
+/// Points for each band, from the low band (index 0, bottom rows) up.
+const BAND_POINTS: [u32; 4] = [1, 3, 5, 7];
+
 /// How long the ball rests on the paddle before each serve.
 pub const SERVE_PAUSE: f32 = 0.6;
 
@@ -76,6 +89,21 @@ pub struct Paddle {
     pub width: f32,
 }
 
+/// A brick, as the shell should draw it: a rectangle in a colour band.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Brick {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub width: f32,
+    /// Height.
+    pub height: f32,
+    /// Colour band, 0 (low, bottom) to 3 (high, top).
+    pub band: u8,
+}
+
 /// The ball's position and velocity, in logical units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ball {
@@ -96,6 +124,8 @@ pub struct Events {
     pub wall_bounce: bool,
     /// The paddle returned the ball.
     pub paddle_hit: bool,
+    /// A brick was broken this step, and its band (0 low to 3 high).
+    pub brick_broken: Option<u8>,
     /// The ball fell past the paddle and a turn was lost.
     pub lost_turn: bool,
 }
@@ -117,6 +147,11 @@ pub struct Game {
     /// Centre of the paddle, in logical units.
     paddle_x: f32,
     paddle_width: f32,
+    /// Whether each brick is still standing, indexed `row * BRICK_COLS + col`.
+    bricks: Vec<bool>,
+    /// Standing bricks remaining.
+    bricks_left: u32,
+    score: u32,
     turns: u32,
     phase: Phase,
     /// Seconds left of the pause before the serve.
@@ -131,6 +166,9 @@ impl Game {
             ball: PARKED_BALL,
             paddle_x: LOGICAL_WIDTH / 2.0,
             paddle_width: PADDLE_WIDTH,
+            bricks: vec![true; BRICK_ROWS * BRICK_COLS],
+            bricks_left: (BRICK_ROWS * BRICK_COLS) as u32,
+            score: 0,
             turns: TURNS,
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
@@ -138,6 +176,40 @@ impl Game {
         };
         game.begin_turn();
         game
+    }
+
+    /// The points a brick in `band` (0 low to 3 high) is worth.
+    pub fn band_points(&self, band: u8) -> u32 {
+        BAND_POINTS[band as usize]
+    }
+
+    /// The current score.
+    pub fn score(&self) -> u32 {
+        self.score
+    }
+
+    /// The bricks still standing, as the shell should draw them.
+    pub fn bricks(&self) -> impl Iterator<Item = Brick> + '_ {
+        self.bricks
+            .iter()
+            .enumerate()
+            .filter(|(_, present)| **present)
+            .map(|(i, _)| {
+                let (row, col) = (i / BRICK_COLS, i % BRICK_COLS);
+                let (x, y, width, height) = brick_rect(row, col);
+                Brick {
+                    x,
+                    y,
+                    width,
+                    height,
+                    band: band_of(row),
+                }
+            })
+    }
+
+    /// Standing bricks remaining.
+    pub fn bricks_left(&self) -> u32 {
+        self.bricks_left
     }
 
     /// The ball, as the shell should draw it. Between turns it rests on the
@@ -210,6 +282,7 @@ impl Game {
             wall_bounce = true;
         }
 
+        let brick_broken = self.collide_bricks(previous);
         let paddle_hit = self.strike_paddle(previous);
 
         let mut lost_turn = false;
@@ -221,8 +294,60 @@ impl Game {
         Events {
             wall_bounce,
             paddle_hit,
+            brick_broken,
             lost_turn,
         }
+    }
+
+    /// Breaks the first standing brick the ball is now overlapping, reflecting
+    /// the ball off the face it came in through and scoring the brick's band.
+    /// At most one brick per step. The ball's step is far smaller than a brick,
+    /// so it can never pass through the wall.
+    fn collide_bricks(&mut self, previous: Ball) -> Option<u8> {
+        let half = BALL_SIZE / 2.0;
+        // Only the rows the ball could be touching are worth checking.
+        for row in 0..BRICK_ROWS {
+            for col in 0..BRICK_COLS {
+                let i = row * BRICK_COLS + col;
+                if !self.bricks[i] {
+                    continue;
+                }
+                let (rx, ry, rw, rh) = brick_rect(row, col);
+                let overlaps = self.ball.x + half > rx
+                    && self.ball.x - half < rx + rw
+                    && self.ball.y + half > ry
+                    && self.ball.y - half < ry + rh;
+                if !overlaps {
+                    continue;
+                }
+
+                // Which face did it come in through? Use where it was before.
+                let from_above = previous.y + half <= ry;
+                let from_below = previous.y - half >= ry + rh;
+                if from_above || from_below {
+                    self.ball.vy = -self.ball.vy;
+                    self.ball.y = if from_above {
+                        ry - half
+                    } else {
+                        ry + rh + half
+                    };
+                } else {
+                    self.ball.vx = -self.ball.vx;
+                    self.ball.x = if previous.x < self.ball.x {
+                        rx - half
+                    } else {
+                        rx + rw + half
+                    };
+                }
+
+                self.bricks[i] = false;
+                self.bricks_left -= 1;
+                let band = band_of(row);
+                self.score += BAND_POINTS[band as usize];
+                return Some(band);
+            }
+        }
+        None
     }
 
     /// Rebounds the ball off the paddle if its path crossed the paddle's top
@@ -291,6 +416,21 @@ impl Game {
         self.ball.vy = -BALL_SPEED * lean.cos();
         self.phase = Phase::Playing;
     }
+}
+
+/// The rectangle of the brick at `(row, col)`: `(x, y, width, height)`.
+fn brick_rect(row: usize, col: usize) -> (f32, f32, f32, f32) {
+    let brick_w = (LOGICAL_WIDTH - 2.0 * WALL) / BRICK_COLS as f32;
+    let x = WALL + col as f32 * brick_w;
+    let y = BRICK_TOP + row as f32 * BRICK_HEIGHT;
+    (x, y, brick_w, BRICK_HEIGHT)
+}
+
+/// The colour band of `row`: two rows per band, high bands (worth more) at the
+/// top of the wall.
+fn band_of(row: usize) -> u8 {
+    // Row 0 is the top; it belongs to the highest band (index 3).
+    (BRICK_ROWS / 2 - 1 - row / 2) as u8
 }
 
 /// The ball at rest (its resting place is set when a turn begins).
