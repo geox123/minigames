@@ -5,7 +5,7 @@
 
 use macroquad::prelude::*;
 use pong::{blit_canvas, logical_camera, logical_canvas, render};
-use pong_core::{Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, TIMESTEP};
+use pong_core::{Axis, Game, Input, LOGICAL_HEIGHT, LOGICAL_WIDTH, TIMESTEP};
 
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make
@@ -31,9 +31,14 @@ async fn main() {
     let mut accumulator = 0.0;
 
     loop {
+        if is_key_pressed(KeyCode::R) {
+            game.restart();
+        }
+
+        let input = read_input();
         accumulator = (accumulator + get_frame_time()).min(MAX_FRAME_TIME);
         while accumulator >= TIMESTEP {
-            game.step();
+            game.step(input);
             accumulator -= TIMESTEP;
         }
 
@@ -45,6 +50,23 @@ async fn main() {
         blit_canvas(&canvas.texture);
 
         next_frame().await;
+    }
+}
+
+/// Reads both players off one keyboard, as the original's two knobs.
+fn read_input() -> Input {
+    Input {
+        left: axis(KeyCode::W, KeyCode::S),
+        right: axis(KeyCode::Up, KeyCode::Down),
+    }
+}
+
+fn axis(up: KeyCode, down: KeyCode) -> Axis {
+    match (is_key_down(up), is_key_down(down)) {
+        (true, false) => Axis::Up,
+        (false, true) => Axis::Down,
+        // Both or neither: stay put.
+        _ => Axis::Hold,
     }
 }
 

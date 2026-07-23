@@ -1,59 +1,61 @@
-//! Ball behaviour, driven through the core's public seam only.
+//! How the ball behaves against the top and bottom of the play field.
 
-use pong_core::{BALL_SIZE, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH};
+mod common;
 
-/// Long enough for the ball to reach every wall several times over.
-const LONG_RUN: usize = 6_000;
+use common::tracking;
+use pong_core::{BALL_SIZE, Game, LOGICAL_HEIGHT};
+
+/// A hundred seconds of play — many points, many rallies.
+const LONG_RUN: usize = 12_000;
 
 #[test]
-fn ball_never_leaves_the_play_field() {
+fn the_ball_never_leaves_the_field_through_the_top_or_bottom() {
     let mut game = Game::new(7);
 
     for step in 0..LONG_RUN {
-        game.step();
+        let input = tracking(&game, 0.0, 0.0);
+        game.step(input);
+
         let ball = game.ball();
         let half = BALL_SIZE / 2.0;
         assert!(
             ball.y - half >= -0.001 && ball.y + half <= LOGICAL_HEIGHT + 0.001,
-            "step {step}: ball escaped vertically at y = {}",
+            "step {step}: the ball escaped the field at y = {}",
             ball.y
         );
-        assert!(
-            ball.x - half >= -0.001 && ball.x + half <= LOGICAL_WIDTH + 0.001,
-            "step {step}: ball escaped horizontally at x = {}",
-            ball.x
-        );
     }
 }
 
 #[test]
-fn ball_reverses_direction_when_it_meets_a_wall() {
+fn the_ball_rebounds_off_the_top_and_bottom_without_losing_its_way() {
     let mut game = Game::new(7);
-    let start = game.ball();
-    let (mut flipped_vertically, mut flipped_horizontally) = (false, false);
+    let mut rebounds = 0;
 
     for _ in 0..LONG_RUN {
-        game.step();
-        let ball = game.ball();
-        flipped_vertically |= ball.vy.signum() != start.vy.signum();
-        flipped_horizontally |= ball.vx.signum() != start.vx.signum();
+        let before = game.ball();
+        // Each player aims for the far edge of their paddle, which drives the
+        // ball into the walls rather than flat down the middle.
+        let input = tracking(&game, 12.0, -12.0);
+        let events = game.step(input);
+
+        if events.wall_bounce && !events.paddle_hit {
+            let after = game.ball();
+            assert_eq!(
+                before.vy.signum(),
+                -after.vy.signum(),
+                "a wall should send the ball back the other way"
+            );
+            assert_eq!(
+                before.vx.signum(),
+                after.vx.signum(),
+                "a wall should not turn the ball back down the field"
+            );
+            rebounds += 1;
+        }
     }
 
     assert!(
-        flipped_vertically,
-        "ball never bounced off a horizontal wall"
+        rebounds > 0,
+        "the ball never reached the top or bottom of the field"
     );
-    assert!(
-        flipped_horizontally,
-        "ball never bounced off a vertical wall"
-    );
-}
-
-#[test]
-fn a_wall_bounce_is_reported_to_the_shell() {
-    let mut game = Game::new(7);
-
-    let bounces = (0..LONG_RUN).filter(|_| game.step().wall_bounce).count();
-
-    assert!(bounces > 0, "no wall bounce was ever reported");
 }

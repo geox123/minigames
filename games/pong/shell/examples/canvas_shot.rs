@@ -1,41 +1,48 @@
-//! Dev tool: renders a frame of the game and writes it to a PNG, so layout,
-//! orientation and scaling can be checked without a human at the keyboard.
-//!
-//! It reads back macroquad's own framebuffer — it never captures the desktop.
+//! Dev tool: plays a scripted match and writes a frame of it to a PNG, so
+//! layout, orientation and scaling can be checked without a human at the
+//! keyboard. It reads back macroquad's own framebuffer — it never captures the
+//! desktop.
 //!
 //! ```text
-//! cargo run -p pong --example canvas_shot -- <out-dir> [steps]
+//! cargo run -p pong --example canvas_shot -- <out-dir> [rally|gameover]
 //! ```
 //!
 //! Writes `screen.png` (what the window shows, letterboxing and all) and
-//! `canvas.png` (the raw logical canvas, which is stored bottom-up).
+//! `canvas.png` (the logical canvas on its own).
 
 use macroquad::prelude::*;
 use pong::{blit_canvas, logical_camera, logical_canvas, render};
-use pong_core::Game;
+use pong_core::{Axis, Game, Input, PADDLE_HEIGHT, PADDLE_SPEED, Phase, Side, TIMESTEP};
 
 #[macroquad::main("canvas shot")]
 async fn main() {
     let mut args = std::env::args().skip(1);
     let out_dir = args.next().unwrap_or_else(|| ".".to_owned());
-    let steps: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let scene = args.next().unwrap_or_else(|| "rally".to_owned());
 
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
+    let mut game = Game::new(7);
 
-    let mut game = Game::new(1);
+    // The left player follows the ball; the right player sits at the bottom of
+    // the field and concedes, so the scene has a score on the board.
+    let steps = if scene == "gameover" { 200_000 } else { 2_400 };
     for _ in 0..steps {
-        game.step();
+        if scene == "gameover" && matches!(game.phase(), Phase::GameOver { .. }) {
+            break;
+        }
+        let input = Input {
+            left: follow(game.paddle(Side::Left).y, game.ball().y),
+            right: Axis::Down,
+        };
+        game.step(input);
     }
 
-    // Two frames: the first one gets the window up, the second is the one that
-    // gets captured — the screen must be read back before it is swapped away.
+    // Two frames: the first gets the window up, the second is the one captured
+    // — the screen has to be read back before it is swapped away.
     for frame in 0..2 {
-        // A marker in the top-left corner of the logical field: the exported
-        // images are only trustworthy if it lands top-left in `screen.png`.
         set_camera(&camera);
         render::draw(&game);
-        draw_rectangle(0.0, 0.0, 16.0, 8.0, GRAY);
         set_default_camera();
 
         clear_background(DARKGRAY);
@@ -52,5 +59,18 @@ async fn main() {
         next_frame().await;
     }
 
-    println!("wrote {out_dir}/screen.png and {out_dir}/canvas.png");
+    println!("wrote {out_dir}/screen.png and {out_dir}/canvas.png ({scene})");
+}
+
+/// The key a player would hold to bring their paddle's centre onto `target`.
+fn follow(paddle_top: f32, target: f32) -> Axis {
+    let centre = paddle_top + PADDLE_HEIGHT / 2.0;
+    let slack = PADDLE_SPEED * TIMESTEP;
+    if centre < target - slack {
+        Axis::Down
+    } else if centre > target + slack {
+        Axis::Up
+    } else {
+        Axis::Hold
+    }
 }
