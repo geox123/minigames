@@ -9,6 +9,8 @@ use pong_core::{
     Side,
 };
 
+use crate::app::Mode;
+
 /// The dashed line down the middle of the field.
 const NET_WIDTH: f32 = 4.0;
 const NET_DASH: f32 = 8.0;
@@ -118,24 +120,42 @@ fn draw_digit(digit: u32, x: f32, y: f32) {
     }
 }
 
+/// Draws the Collection's mode-select: the two takes every Game ships. Pong's
+/// Faithful is playable; its Remix is shown but locked until it is built.
+pub fn mode_select(highlight: Mode) {
+    clear_background(BLACK);
+
+    centred_text("PONG", 64.0, 40);
+    option("FAITHFUL", 120.0, highlight == Mode::Faithful, false);
+    option(
+        "REMIX  (COMING SOON)",
+        150.0,
+        highlight == Mode::Remix,
+        true,
+    );
+    centred_text("ARROWS TO CHOOSE   ENTER TO SELECT", 210.0, 9);
+}
+
 /// Draws the screen that picks one or two players before a match.
 pub fn player_select(highlight: Players) {
     clear_background(BLACK);
 
-    centred_text("PONG", 64.0, 40);
-    option("1 PLAYER", 120.0, highlight == Players::One);
-    option("2 PLAYERS", 150.0, highlight == Players::Two);
+    centred_text("PONG  FAITHFUL", 64.0, 24);
+    option("1 PLAYER", 120.0, highlight == Players::One, false);
+    option("2 PLAYERS", 150.0, highlight == Players::Two, false);
     centred_text("ARROWS TO CHOOSE   ENTER TO START", 210.0, 9);
 }
 
-/// One menu row: its label, marked with a caret when it is the highlighted one.
-fn option(label: &str, y: f32, highlighted: bool) {
+/// One menu row: its label, marked with a caret when highlighted and dimmed
+/// when it is locked.
+fn option(label: &str, y: f32, highlighted: bool, locked: bool) {
     let size = 16;
+    let colour = if locked { GRAY } else { WHITE };
     let width = measure_text(label, None, size, 1.0).width;
     let x = (LOGICAL_WIDTH - width) / 2.0;
-    draw_text(label, x, y, size as f32, WHITE);
+    draw_text(label, x, y, size as f32, colour);
     if highlighted {
-        draw_text(">", x - 16.0, y, size as f32, WHITE);
+        draw_text(">", x - 16.0, y, size as f32, colour);
     }
 }
 

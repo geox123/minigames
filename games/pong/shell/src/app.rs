@@ -12,9 +12,21 @@ use crate::render;
 /// the game try to catch up by simulating minutes at once.
 const MAX_FRAME_TIME: f32 = 0.25;
 
+/// The two takes every Game in the Collection ships. Pong's Remix has not been
+/// built yet, so it is shown but locked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// The faithful recreation — playable.
+    Faithful,
+    /// The reimagining — not built yet.
+    Remix,
+}
+
 /// Which screen the player is looking at.
 enum Screen {
-    /// Choosing one or two players before a match.
+    /// The Collection's two-takes screen: Faithful (playable) or Remix (locked).
+    ModeSelect { highlight: Mode },
+    /// Choosing one or two players before a Faithful match.
     PlayerSelect { highlight: Players },
     /// A match in progress.
     Playing {
@@ -31,11 +43,11 @@ pub struct App {
 }
 
 impl App {
-    /// Opens the shell on the player-select screen.
+    /// Opens the shell on the mode-select screen.
     pub fn new() -> Self {
         Self {
-            screen: Screen::PlayerSelect {
-                highlight: Players::Two,
+            screen: Screen::ModeSelect {
+                highlight: Mode::Faithful,
             },
             next_seed: seed_from_clock(),
         }
@@ -45,18 +57,31 @@ impl App {
     /// current screen does, and draws it to the logical canvas.
     pub fn frame(&mut self) {
         match &mut self.screen {
+            Screen::ModeSelect { highlight } => {
+                if mode_select_input(highlight) {
+                    // Remix is locked, so choosing it does nothing yet.
+                    if *highlight == Mode::Faithful {
+                        self.screen = Screen::PlayerSelect {
+                            highlight: Players::Two,
+                        };
+                    }
+                } else {
+                    render::mode_select(*highlight);
+                }
+            }
             Screen::PlayerSelect { highlight } => {
-                if let Some(chosen) = player_select_input(highlight) {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                } else if let Some(chosen) = player_select_input(highlight) {
                     self.start_match(chosen);
                 } else {
                     render::player_select(*highlight);
                 }
             }
             Screen::Playing { game, accumulator } => {
+                // Backing out of a match returns to the Collection's mode-select.
                 if is_key_pressed(KeyCode::Escape) {
-                    self.screen = Screen::PlayerSelect {
-                        highlight: Players::Two,
-                    };
+                    self.return_to_mode_select();
                     return;
                 }
                 if is_key_pressed(KeyCode::R) {
@@ -72,6 +97,12 @@ impl App {
                 render::draw(game);
             }
         }
+    }
+
+    fn return_to_mode_select(&mut self) {
+        self.screen = Screen::ModeSelect {
+            highlight: Mode::Faithful,
+        };
     }
 
     fn start_match(&mut self, players: Players) {
@@ -91,14 +122,22 @@ impl Default for App {
     }
 }
 
+/// Reads the mode-select screen, moving the highlight between the two takes.
+/// Returns whether the player committed to the highlighted one.
+fn mode_select_input(highlight: &mut Mode) -> bool {
+    if pressed_vertical() {
+        *highlight = match *highlight {
+            Mode::Faithful => Mode::Remix,
+            Mode::Remix => Mode::Faithful,
+        };
+    }
+    is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
+}
+
 /// Reads the player-select screen. Returns the chosen player count once the
 /// player commits, or `None` while they are still choosing.
 fn player_select_input(highlight: &mut Players) -> Option<Players> {
-    if is_key_pressed(KeyCode::Up)
-        || is_key_pressed(KeyCode::Down)
-        || is_key_pressed(KeyCode::Left)
-        || is_key_pressed(KeyCode::Right)
-    {
+    if pressed_vertical() {
         *highlight = match *highlight {
             Players::One => Players::Two,
             Players::Two => Players::One,
@@ -114,6 +153,16 @@ fn player_select_input(highlight: &mut Players) -> Option<Players> {
         return Some(*highlight);
     }
     None
+}
+
+/// Whether the player nudged a menu highlight this frame.
+fn pressed_vertical() -> bool {
+    is_key_pressed(KeyCode::Up)
+        || is_key_pressed(KeyCode::Down)
+        || is_key_pressed(KeyCode::Left)
+        || is_key_pressed(KeyCode::Right)
+        || is_key_pressed(KeyCode::W)
+        || is_key_pressed(KeyCode::S)
 }
 
 /// A seed for a match. The core is deterministic by design, so the only

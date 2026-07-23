@@ -43,6 +43,7 @@ async fn main() {
     for frame in 0..2 {
         set_camera(&camera);
         match scene.as_str() {
+            "mode" => render::mode_select(pong::app::Mode::Remix),
             "select" => render::player_select(Players::One),
             _ => render::draw(&game),
         }
