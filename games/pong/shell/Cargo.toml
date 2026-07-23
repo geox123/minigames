@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 macroquad.workspace = true
+shell-kit = { path = "../../../shell-kit" }
 pong-core = { path = "../core" }
 pong-remix-core = { path = "../remix-core" }
 pong-storage = { path = "../storage" }

@@ -1,0 +1,13 @@
+[package]
+name = "shell-kit"
+version = "0.1.0"
+description = "Shared macroquad shell primitives for the Collection's Games: pixel font, crisp scaling, audio synthesis, fixed timestep."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+macroquad.workspace = true
+
+[lints]
+workspace = true

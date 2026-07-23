@@ -10,7 +10,7 @@ use pong_core::{
 };
 
 use crate::app::Mode;
-use crate::font;
+use shell_kit::font;
 
 /// Text sizes, as the pixel scale each is drawn at.
 const TITLE_SCALE: f32 = 5.0;
@@ -71,8 +71,15 @@ pub fn draw(game: &Game) {
             Side::Left => "LEFT PLAYER WINS",
             Side::Right => "RIGHT PLAYER WINS",
         };
-        font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, WHITE);
         font::draw_centred(
+            LOGICAL_WIDTH,
+            who,
+            LOGICAL_HEIGHT / 2.0 - 20.0,
+            OPTION_SCALE,
+            WHITE,
+        );
+        font::draw_centred(
+            LOGICAL_WIDTH,
             "PRESS R TO PLAY AGAIN",
             LOGICAL_HEIGHT / 2.0 + 6.0,
             HINT_SCALE,
@@ -151,6 +158,7 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
         )
     {
         font::draw_centred(
+            LOGICAL_WIDTH,
             &format!("GAMES {won_l} - {won_r}"),
             58.0,
             HINT_SCALE,
@@ -161,11 +169,18 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
     match game.phase() {
         PPhase::GameOver { winner } => {
             let (who, colour) = winner_text(winner);
-            font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, colour);
+            font::draw_centred(
+                LOGICAL_WIDTH,
+                who,
+                LOGICAL_HEIGHT / 2.0 - 20.0,
+                OPTION_SCALE,
+                colour,
+            );
             banner_hint("PRESS R TO PLAY AGAIN");
         }
         PPhase::BetweenGames => {
             font::draw_centred(
+                LOGICAL_WIDTH,
                 "GAME OVER",
                 LOGICAL_HEIGHT / 2.0 - 20.0,
                 OPTION_SCALE,
@@ -179,7 +194,13 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
                 PSide::Left => "LEFT WINS THE MATCH",
                 PSide::Right => "RIGHT WINS THE MATCH",
             };
-            font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, colour);
+            font::draw_centred(
+                LOGICAL_WIDTH,
+                who,
+                LOGICAL_HEIGHT / 2.0 - 20.0,
+                OPTION_SCALE,
+                colour,
+            );
             banner_hint("PRESS R FOR A REMATCH");
         }
         _ => {}
@@ -194,7 +215,13 @@ fn winner_text(winner: pong_remix_core::Side) -> (&'static str, Color) {
 }
 
 fn banner_hint(text: &str) {
-    font::draw_centred(text, LOGICAL_HEIGHT / 2.0 + 6.0, HINT_SCALE, NEON_BALL);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        text,
+        LOGICAL_HEIGHT / 2.0 + 6.0,
+        HINT_SCALE,
+        NEON_BALL,
+    );
 }
 
 /// Draws one frame of a Gauntlet run: the player's paddle, the barrage, the
@@ -238,23 +265,38 @@ pub fn draw_gauntlet(game: &pong_remix_core::Game, best: u32) {
 
     // Score and best, along the top.
     let score = game.gauntlet_score();
-    font::draw_centred(&score.to_string(), 8.0, OPTION_SCALE, NEON_BALL);
-    font::draw_centred(&format!("BEST {best}"), 30.0, HINT_SCALE, NEON_DIM);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &score.to_string(),
+        8.0,
+        OPTION_SCALE,
+        NEON_BALL,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("BEST {best}"),
+        30.0,
+        HINT_SCALE,
+        NEON_DIM,
+    );
 
     if game.phase() == PPhase::RunOver {
         font::draw_centred(
+            LOGICAL_WIDTH,
             "RUN OVER",
             LOGICAL_HEIGHT / 2.0 - 28.0,
             HEADING_SCALE,
             NEON_RIGHT,
         );
         font::draw_centred(
+            LOGICAL_WIDTH,
             &format!("SCORE {score}"),
             LOGICAL_HEIGHT / 2.0 + 2.0,
             OPTION_SCALE,
             NEON_BALL,
         );
         font::draw_centred(
+            LOGICAL_WIDTH,
             "PRESS R TO RUN AGAIN",
             LOGICAL_HEIGHT / 2.0 + 26.0,
             HINT_SCALE,
@@ -378,11 +420,18 @@ fn draw_digit(digit: u32, x: f32, y: f32, colour: Color) {
 pub fn mode_select(highlight: Mode) {
     clear_background(BLACK);
 
-    font::draw_centred("PONG", 40.0, TITLE_SCALE, WHITE);
-    font::draw_centred("THE FAITHFUL AND THE REMIX", 82.0, HINT_SCALE, GRAY);
+    font::draw_centred(LOGICAL_WIDTH, "PONG", 40.0, TITLE_SCALE, WHITE);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "THE FAITHFUL AND THE REMIX",
+        82.0,
+        HINT_SCALE,
+        GRAY,
+    );
     option("FAITHFUL", 118.0, highlight == Mode::Faithful, false);
     option("PULSE", 150.0, highlight == Mode::Remix, false);
     font::draw_centred(
+        LOGICAL_WIDTH,
         "ARROWS TO CHOOSE   ENTER TO SELECT",
         208.0,
         HINT_SCALE,
@@ -394,11 +443,17 @@ pub fn mode_select(highlight: Mode) {
 pub fn player_select(highlight: Players) {
     clear_background(BLACK);
 
-    font::draw_centred("PONG", 44.0, TITLE_SCALE, WHITE);
-    font::draw_centred("FAITHFUL", 90.0, OPTION_SCALE, GRAY);
+    font::draw_centred(LOGICAL_WIDTH, "PONG", 44.0, TITLE_SCALE, WHITE);
+    font::draw_centred(LOGICAL_WIDTH, "FAITHFUL", 90.0, OPTION_SCALE, GRAY);
     option("1 PLAYER", 128.0, highlight == Players::One, false);
     option("2 PLAYERS", 160.0, highlight == Players::Two, false);
-    font::draw_centred("ARROWS TO CHOOSE   ENTER TO START", 208.0, HINT_SCALE, GRAY);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "ARROWS TO CHOOSE   ENTER TO START",
+        208.0,
+        HINT_SCALE,
+        GRAY,
+    );
 }
 
 /// Draws the PULSE mode-select: Versus, Duel or Gauntlet.
@@ -406,12 +461,19 @@ pub fn pulse_mode_select(highlight: crate::app::PulseMode) {
     use crate::app::PulseMode;
     clear_background(NEON_BG);
 
-    font::draw_centred("PULSE", 36.0, TITLE_SCALE, NEON_LEFT);
-    font::draw_centred("CHOOSE A MODE", 80.0, OPTION_SCALE, NEON_RIGHT);
+    font::draw_centred(LOGICAL_WIDTH, "PULSE", 36.0, TITLE_SCALE, NEON_LEFT);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "CHOOSE A MODE",
+        80.0,
+        OPTION_SCALE,
+        NEON_RIGHT,
+    );
     pulse_option("VERSUS", 116.0, highlight == PulseMode::Versus);
     pulse_option("DUEL", 144.0, highlight == PulseMode::Duel);
     pulse_option("GAUNTLET", 172.0, highlight == PulseMode::Gauntlet);
     font::draw_centred(
+        LOGICAL_WIDTH,
         "ARROWS TO CHOOSE   ENTER TO SELECT",
         210.0,
         HINT_SCALE,
@@ -423,8 +485,9 @@ pub fn pulse_mode_select(highlight: crate::app::PulseMode) {
 pub fn pulse_player_select(highlight: Players, duel: bool) {
     clear_background(NEON_BG);
 
-    font::draw_centred("PULSE", 44.0, TITLE_SCALE, NEON_LEFT);
+    font::draw_centred(LOGICAL_WIDTH, "PULSE", 44.0, TITLE_SCALE, NEON_LEFT);
     font::draw_centred(
+        LOGICAL_WIDTH,
         if duel { "DUEL" } else { "VERSUS" },
         90.0,
         OPTION_SCALE,
@@ -433,6 +496,7 @@ pub fn pulse_player_select(highlight: Players, duel: bool) {
     pulse_option("1 PLAYER", 128.0, highlight == Players::One);
     pulse_option("2 PLAYERS", 160.0, highlight == Players::Two);
     font::draw_centred(
+        LOGICAL_WIDTH,
         "ARROWS TO CHOOSE   ENTER TO START",
         208.0,
         HINT_SCALE,
@@ -477,8 +541,15 @@ fn option(label: &str, y: f32, highlighted: bool, locked: bool) {
 
 /// Draws the paused banner over a frozen match.
 pub fn paused_overlay() {
-    font::draw_centred("PAUSED", LOGICAL_HEIGHT / 2.0 - 16.0, HEADING_SCALE, WHITE);
     font::draw_centred(
+        LOGICAL_WIDTH,
+        "PAUSED",
+        LOGICAL_HEIGHT / 2.0 - 16.0,
+        HEADING_SCALE,
+        WHITE,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
         "P RESUME   F FULLSCREEN   ESC QUIT",
         LOGICAL_HEIGHT / 2.0 + 16.0,
         HINT_SCALE,

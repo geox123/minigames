@@ -1,15 +1,12 @@
-//! The match's sound, synthesized from scratch so the repo ships no ripped or
-//! third-party audio (ADR 0002).
-//!
-//! Each sound is a short square-wave blip — the voice the original's simple
-//! circuitry had — built as an in-memory WAV and handed to macroquad. The same
-//! bytes drive the native and browser builds.
+//! The match's sound, composed from the shared synthesizer so the repo ships no
+//! ripped or third-party audio (ADR 0002). Each voice is a short square wave,
+//! built as an in-memory WAV; the same bytes drive the native and browser
+//! builds.
 
-use macroquad::audio::{Sound, load_sound_from_bytes, play_sound_once};
+use macroquad::audio::{Sound, play_sound_once};
 use pong_core::Events;
 use pong_remix_core::Events as PulseEvents;
-
-const SAMPLE_RATE: u32 = 44_100;
+use shell_kit::synth::{blip, chirp};
 
 /// How many pitches the PULSE paddle sound is synthesized at; a faster rally
 /// picks a higher one, so the sound rises as the ball speeds up.
@@ -80,69 +77,4 @@ impl Audio {
             play_sound_once(&self.pulse_wall);
         }
     }
-}
-
-/// A square-wave tone at `freq` Hz lasting `seconds`, with a linear decay so it
-/// ends without a click, loaded as a macroquad sound.
-async fn blip(freq: f32, seconds: f32) -> Sound {
-    let count = (SAMPLE_RATE as f32 * seconds) as usize;
-    let mut samples = Vec::with_capacity(count);
-    for i in 0..count {
-        let t = i as f32 / SAMPLE_RATE as f32;
-        let square = if (freq * t).fract() < 0.5 { 1.0 } else { -1.0 };
-        let decay = 1.0 - i as f32 / count as f32;
-        samples.push(square * decay * 0.25);
-    }
-
-    load_sound_from_bytes(&wav_mono_16(&samples))
-        .await
-        .expect("synthesized WAV should always load")
-}
-
-/// A square-wave tone that sweeps from `from` to `to` Hz over `seconds` — a
-/// rising chirp for pickups, a falling one for scores.
-async fn chirp(from: f32, to: f32, seconds: f32) -> Sound {
-    let count = (SAMPLE_RATE as f32 * seconds) as usize;
-    let mut samples = Vec::with_capacity(count);
-    let mut phase = 0.0f32;
-    for i in 0..count {
-        let progress = i as f32 / count as f32;
-        let freq = from + (to - from) * progress;
-        phase += freq / SAMPLE_RATE as f32;
-        let square = if phase.fract() < 0.5 { 1.0 } else { -1.0 };
-        let decay = 1.0 - progress;
-        samples.push(square * decay * 0.25);
-    }
-
-    load_sound_from_bytes(&wav_mono_16(&samples))
-        .await
-        .expect("synthesized WAV should always load")
-}
-
-/// Packs f32 samples in `-1.0..1.0` into a 16-bit PCM mono WAV file.
-fn wav_mono_16(samples: &[f32]) -> Vec<u8> {
-    let data_len = (samples.len() * 2) as u32;
-    let mut wav = Vec::with_capacity(44 + data_len as usize);
-
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-    wav.extend_from_slice(b"WAVE");
-
-    wav.extend_from_slice(b"fmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes()); // sub-chunk size
-    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
-    wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-    wav.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes()); // byte rate
-    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
-    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
-
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&data_len.to_le_bytes());
-    for &sample in samples {
-        let clamped = (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-        wav.extend_from_slice(&clamped.to_le_bytes());
-    }
-
-    wav
 }

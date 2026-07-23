@@ -6,6 +6,8 @@ use macroquad::prelude::*;
 use pong_core::{Game, Players, TIMESTEP};
 use pong_remix_core::{self as pulse, Ball as PulseBall, Game as PulseGame};
 
+use shell_kit::timestep::Accumulator;
+
 use crate::audio::Audio;
 use crate::fx::Fx;
 use crate::render;
@@ -64,14 +66,14 @@ enum Screen {
     FaithfulMatch {
         game: Game,
         /// Left-over real time not yet folded into a fixed step.
-        accumulator: f32,
+        accumulator: Accumulator,
         /// Whether the match is paused.
         paused: bool,
     },
     /// A PULSE match in progress (Versus or Gauntlet).
     PulseMatch {
         game: PulseGame,
-        accumulator: f32,
+        accumulator: Accumulator,
         paused: bool,
         /// Whether this is a Gauntlet run rather than a Versus match.
         gauntlet: bool,
@@ -203,14 +205,12 @@ impl App {
 
                 if !*paused {
                     let input = crate::read_input();
-                    *accumulator = (*accumulator + get_frame_time()).min(MAX_FRAME_TIME);
-                    while *accumulator >= TIMESTEP {
+                    for _ in 0..accumulator.steps(get_frame_time()) {
                         self.audio.play(game.step(input));
-                        *accumulator -= TIMESTEP;
                     }
                 } else {
                     // Don't let paused wall-time pile up and fast-forward on resume.
-                    *accumulator = 0.0;
+                    accumulator.reset();
                 }
 
                 render::draw(game);
@@ -242,11 +242,10 @@ impl App {
                     fx.update(dt);
                     // Hit-stop freezes the simulation, not the effects.
                     if fx.frozen() {
-                        *accumulator = 0.0;
+                        accumulator.reset();
                     } else {
                         let input = read_pulse_input();
-                        *accumulator = (*accumulator + dt).min(MAX_FRAME_TIME);
-                        while *accumulator >= TIMESTEP {
+                        for _ in 0..accumulator.steps(dt) {
                             let events = game.step(input);
                             let balls: Vec<PulseBall> = game.balls().collect();
                             fx.on_step(events, &balls);
@@ -255,11 +254,10 @@ impl App {
                                 .map(|b| b.vx.hypot(b.vy))
                                 .fold(0.0_f32, f32::max);
                             self.audio.play_pulse(events, fastest / pulse::POWER_SPEED);
-                            *accumulator -= TIMESTEP;
                         }
                     }
                 } else {
-                    *accumulator = 0.0;
+                    accumulator.reset();
                 }
                 self.blit_shake = Vec2::from(fx.shake_offset());
 
@@ -300,7 +298,7 @@ impl App {
         let game = Game::new(players, self.take_seed());
         self.screen = Screen::FaithfulMatch {
             game,
-            accumulator: 0.0,
+            accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
             paused: false,
         };
     }
@@ -315,7 +313,7 @@ impl App {
         };
         self.screen = Screen::PulseMatch {
             game,
-            accumulator: 0.0,
+            accumulator: Accumulator::new(pulse::TIMESTEP, MAX_FRAME_TIME),
             paused: false,
             gauntlet: false,
             fx: Fx::default(),
@@ -326,7 +324,7 @@ impl App {
         let game = PulseGame::new_gauntlet(self.take_seed());
         self.screen = Screen::PulseMatch {
             game,
-            accumulator: 0.0,
+            accumulator: Accumulator::new(pulse::TIMESTEP, MAX_FRAME_TIME),
             paused: false,
             gauntlet: true,
             fx: Fx::default(),

@@ -2,12 +2,11 @@
 //!
 //! macroquad's own TrueType text is rasterized at the logical resolution and
 //! then magnified when the canvas is scaled to the window, so its antialiased
-//! edges go soft. Drawing letters as hard-edged pixel blocks — the same way the
-//! scoreboard digits are drawn — keeps text as crisp as the rest of the field
-//! under nearest-neighbour scaling, and matches the era's look.
+//! edges go soft. Drawing letters as hard-edged pixel blocks keeps text as crisp
+//! as the rest of the field under nearest-neighbour scaling, and matches the
+//! era's look.
 
 use macroquad::prelude::*;
-use pong_core::LOGICAL_WIDTH;
 
 const GLYPH_W: usize = 5;
 const GLYPH_H: usize = 7;
@@ -49,9 +48,10 @@ pub fn draw(text: &str, x: f32, y: f32, scale: f32, colour: Color) {
     }
 }
 
-/// Draws `text` centred across the field, with `y` as its top edge.
-pub fn draw_centred(text: &str, y: f32, scale: f32, colour: Color) {
-    let x = (LOGICAL_WIDTH - text_width(text, scale)) / 2.0;
+/// Draws `text` centred across a field `logical_width` wide, with `y` as its top
+/// edge.
+pub fn draw_centred(logical_width: f32, text: &str, y: f32, scale: f32, colour: Color) {
+    let x = (logical_width - text_width(text, scale)) / 2.0;
     draw(text, x, y, scale, colour);
 }
 

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "shell-kit",
     "games/pong/core",
     "games/pong/remix-core",
     "games/pong/storage",
