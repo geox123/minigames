@@ -42,6 +42,17 @@ const SEGMENTS: usize = 8;
 /// The widest angle, in degrees, the paddle's ends send the ball out at.
 const WIDEST_ANGLE: f32 = 45.0;
 
+/// Spin — the Remix's signature. A paddle's vertical velocity at contact bends
+/// the ball's flight: the ball's velocity is rotated a little each step, curving
+/// its path, and the spin decays over the shot. Speed is preserved (rotation,
+/// not acceleration), and the flight angle is clamped so a spun ball never
+/// stalls against a wall — it always keeps crossing the field.
+const SPIN_MAX: f32 = 2.6;
+const SPIN_PER_PADDLE_VELOCITY: f32 = SPIN_MAX / PADDLE_SPEED;
+const SPIN_DECAY: f32 = 0.98;
+/// The steepest the ball's flight may tilt from horizontal, as a sine.
+const MAX_FLIGHT_SIN: f32 = 0.883; // sin(62°)
+
 /// Which player, and which end of the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -156,8 +167,12 @@ const PARKED_BALL: Ball = Ball {
 /// A game of PULSE Versus.
 pub struct Game {
     ball: Ball,
+    /// Angular velocity curving the ball's flight, in radians per second.
+    ball_spin: f32,
     /// Top edge of each paddle, indexed by [`Side::index`].
     paddles: [f32; 2],
+    /// Each paddle's vertical velocity this step, for spin at contact.
+    paddle_vel: [f32; 2],
     /// Each player's score.
     scores: [u32; 2],
     phase: Phase,
@@ -175,7 +190,9 @@ impl Game {
         let serve_towards = if rng.flip() { Side::Left } else { Side::Right };
         let mut game = Self {
             ball: PARKED_BALL,
+            ball_spin: 0.0,
             paddles: [(LOGICAL_HEIGHT - PADDLE_HEIGHT) / 2.0; 2],
+            paddle_vel: [0.0; 2],
             scores: [0; 2],
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
@@ -222,8 +239,16 @@ impl Game {
 
     /// Advances the game by exactly one [`TIMESTEP`].
     pub fn step(&mut self, input: Input) -> Events {
+        let before = self.paddles;
         move_paddle(&mut self.paddles[Side::Left.index()], input.left);
         move_paddle(&mut self.paddles[Side::Right.index()], input.right);
+        for (vel, (now, was)) in self
+            .paddle_vel
+            .iter_mut()
+            .zip(self.paddles.iter().zip(before.iter()))
+        {
+            *vel = (now - was) / TIMESTEP;
+        }
 
         match self.phase {
             Phase::Serving => {
@@ -239,6 +264,8 @@ impl Game {
     }
 
     fn advance_ball(&mut self) -> Events {
+        self.apply_spin();
+
         let previous = self.ball;
         self.ball.x += self.ball.vx * TIMESTEP;
         self.ball.y += self.ball.vy * TIMESTEP;
@@ -305,7 +332,24 @@ impl Game {
         self.ball.y = contact;
         self.ball.vx = BALL_SPEED * angle.cos() * away;
         self.ball.vy = BALL_SPEED * angle.sin();
+        // The paddle's motion at contact bends the shot from here on.
+        self.ball_spin =
+            (self.paddle_vel[side.index()] * SPIN_PER_PADDLE_VELOCITY).clamp(-SPIN_MAX, SPIN_MAX);
         true
+    }
+
+    /// Rotates the ball's velocity by its spin for this step and lets the spin
+    /// decay, keeping the flight angle within a returnable bound.
+    fn apply_spin(&mut self) {
+        if self.ball_spin == 0.0 {
+            return;
+        }
+        let (sin, cos) = (self.ball_spin * TIMESTEP).sin_cos();
+        let (vx, vy) = (self.ball.vx, self.ball.vy);
+        self.ball.vx = vx * cos - vy * sin;
+        self.ball.vy = vx * sin + vy * cos;
+        clamp_flight_angle(&mut self.ball.vx, &mut self.ball.vy);
+        self.ball_spin *= SPIN_DECAY;
     }
 
     fn past_the_field(&self) -> Option<Side> {
@@ -334,6 +378,7 @@ impl Game {
 
     fn begin_serve(&mut self) {
         self.ball = PARKED_BALL;
+        self.ball_spin = 0.0;
         self.serve_countdown = SERVE_PAUSE;
     }
 
@@ -351,6 +396,23 @@ impl Game {
 fn segment_angle(segment: usize) -> f32 {
     let across = segment as f32 / (SEGMENTS - 1) as f32;
     (-WIDEST_ANGLE + 2.0 * WIDEST_ANGLE * across).to_radians()
+}
+
+/// Keeps the ball's flight within [`MAX_FLIGHT_SIN`] of horizontal, so however
+/// much spin bends it, it always keeps enough horizontal speed to cross.
+fn clamp_flight_angle(vx: &mut f32, vy: &mut f32) {
+    let speed = vx.hypot(*vy);
+    if speed <= f32::EPSILON {
+        return;
+    }
+    let max_vy = speed * MAX_FLIGHT_SIN;
+    if vy.abs() > max_vy {
+        *vy = vy.signum() * max_vy;
+        let horizontal = (speed * speed - *vy * *vy).max(0.0).sqrt();
+        // Preserve the direction of travel; the ball never reverses on spin.
+        let dir = if *vx >= 0.0 { 1.0 } else { -1.0 };
+        *vx = dir * horizontal;
+    }
 }
 
 /// Moves one paddle for a step and keeps it within the field's reach.

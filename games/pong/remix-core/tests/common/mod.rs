@@ -65,6 +65,67 @@ pub fn strike(game: &mut Game, side: Side, offset: f32) -> Ball {
     panic!("the {side:?} paddle never cleanly struck the ball");
 }
 
+/// Plays until `side`'s paddle strikes the ball while genuinely moving in `dir`,
+/// returning the ball as it comes off. While the ball approaches from afar the
+/// paddle is staged on the far side of it (below, for an upward strike) so that,
+/// once the ball is close, committing to move in `dir` carries the paddle
+/// straight through the ball — moving the right way at the moment of contact.
+/// The strike is only accepted once the paddle has actually moved that way this
+/// step, so the returned ball always carries the spin the test asked for.
+pub fn strike_moving(game: &mut Game, side: Side, dir: Axis) -> Ball {
+    for _ in 0..MAX_STEPS {
+        let ball = game.ball();
+        let approaching = match side {
+            Side::Left => ball.vx < 0.0,
+            Side::Right => ball.vx > 0.0,
+        };
+        let centre = game.paddle(side).y + PADDLE_HEIGHT / 2.0;
+
+        // While the ball comes in, approach it from one side and move only
+        // toward it — for an upward strike, wait below the ball and rise to meet
+        // it — so the paddle is still moving that way at the moment of contact.
+        // Between points, stage on that side ready for the next approach.
+        let axis = if approaching {
+            match dir {
+                Axis::Up if centre > ball.y + 2.0 => Axis::Up,
+                Axis::Down if centre < ball.y - 2.0 => Axis::Down,
+                Axis::Hold => axis_towards(game.paddle(side).y, ball.y),
+                _ => Axis::Hold,
+            }
+        } else {
+            match dir {
+                Axis::Up => Axis::Down, // sink below, ready to rise
+                Axis::Down => Axis::Up, // rise above, ready to sink
+                Axis::Hold => axis_towards(game.paddle(side).y, LOGICAL_HEIGHT / 2.0),
+            }
+        };
+
+        let input = match side {
+            Side::Left => Input {
+                left: axis,
+                right: Axis::Hold,
+            },
+            Side::Right => Input {
+                left: Axis::Hold,
+                right: axis,
+            },
+        };
+
+        let paddle_before = game.paddle(side).y;
+        let hit = game.step(input).paddle_hit;
+        let delta = game.paddle(side).y - paddle_before;
+        let moved_right_way = match dir {
+            Axis::Up => delta < -0.5,
+            Axis::Down => delta > 0.5,
+            Axis::Hold => delta.abs() < 0.5,
+        };
+        if hit && approaching && moved_right_way {
+            return game.ball();
+        }
+    }
+    panic!("the {side:?} paddle never struck the ball while moving {dir:?}");
+}
+
 /// Input where one player follows the ball while `loser` parks at the bottom.
 pub fn conceding(game: &Game, loser: Side) -> Input {
     let mut input = tracking(game, 0.0, 0.0);
