@@ -1,9 +1,14 @@
-//! The reusable pieces of the Breakout shell: the logical canvas and the
-//! drawing code. The binary in `main.rs` is the game; splitting these out lets
-//! the dev tool in `examples/` render real frames without a human at the
-//! keyboard.
+//! The reusable pieces of the Breakout shell: the front-end state machine, the
+//! logical canvas the game is drawn to, the sounds, and the drawing code. The
+//! binary in `main.rs` is the game; splitting these out lets the dev tool in
+//! `examples/` render real frames without a human at the keyboard.
 
+pub mod app;
+pub mod audio;
 pub mod render;
+
+pub use app::App;
+pub use audio::Audio;
 
 use breakout_core::{Input, LOGICAL_HEIGHT, LOGICAL_WIDTH, Move};
 use macroquad::prelude::*;
