@@ -53,6 +53,12 @@ const SEGMENTS: usize = 8;
 /// The widest angle, in degrees from vertical, the paddle's ends send the ball.
 const WIDEST_ANGLE: f32 = 60.0;
 
+/// How much the ball's speed rises at each difficulty step. Four steps take it
+/// to roughly double its starting speed.
+const SPEED_UP: f32 = 1.2;
+/// The lowest band whose first strike speeds the ball up (orange, then red).
+const FAST_BAND: u8 = 2;
+
 /// The top edge of the paddle, in logical units.
 fn paddle_top() -> f32 {
     LOGICAL_HEIGHT - PADDLE_MARGIN - PADDLE_HEIGHT
@@ -152,6 +158,15 @@ pub struct Game {
     /// Standing bricks remaining.
     bricks_left: u32,
     score: u32,
+    /// The ball's current speed, in logical units per second. It ratchets up as
+    /// the game gets harder and never falls.
+    speed: f32,
+    /// Paddle returns so far, counted for the speed-ups at 4 and 12.
+    returns: u32,
+    /// Whether the paddle has already halved (it does so once, at the top wall).
+    paddle_shrunk: bool,
+    /// Which bands have already granted their one-time speed-up.
+    band_sped_up: [bool; 4],
     turns: u32,
     phase: Phase,
     /// Seconds left of the pause before the serve.
@@ -169,6 +184,10 @@ impl Game {
             bricks: vec![true; BRICK_ROWS * BRICK_COLS],
             bricks_left: (BRICK_ROWS * BRICK_COLS) as u32,
             score: 0,
+            speed: BALL_SPEED,
+            returns: 0,
+            paddle_shrunk: false,
+            band_sped_up: [false; 4],
             turns: TURNS,
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
@@ -280,6 +299,12 @@ impl Game {
             self.ball.y = half;
             self.ball.vy = self.ball.vy.abs();
             wall_bounce = true;
+            // The first time the ball breaks through to the top, the paddle
+            // halves — and stays halved for the rest of the game.
+            if !self.paddle_shrunk {
+                self.paddle_shrunk = true;
+                self.paddle_width /= 2.0;
+            }
         }
 
         let brick_broken = self.collide_bricks(previous);
@@ -344,6 +369,11 @@ impl Game {
                 self.bricks_left -= 1;
                 let band = band_of(row);
                 self.score += BAND_POINTS[band as usize];
+                // Reaching a high band for the first time speeds the ball up.
+                if band >= FAST_BAND && !self.band_sped_up[band as usize] {
+                    self.band_sped_up[band as usize] = true;
+                    self.speed_up();
+                }
                 return Some(band);
             }
         }
@@ -382,9 +412,26 @@ impl Game {
 
         self.ball.x = contact_x;
         self.ball.y = top - half;
-        self.ball.vx = BALL_SPEED * angle.sin();
-        self.ball.vy = -BALL_SPEED * angle.cos();
+        self.ball.vx = self.speed * angle.sin();
+        self.ball.vy = -self.speed * angle.cos();
+
+        // The ball speeds up after its 4th and 12th return.
+        self.returns += 1;
+        if self.returns == 4 || self.returns == 12 {
+            self.speed_up();
+        }
         true
+    }
+
+    /// Ratchets the ball faster while keeping its heading. Speed only ever rises.
+    fn speed_up(&mut self) {
+        self.speed *= SPEED_UP;
+        let magnitude = self.ball.vx.hypot(self.ball.vy);
+        if magnitude > 0.0 {
+            let scale = self.speed / magnitude;
+            self.ball.vx *= scale;
+            self.ball.vy *= scale;
+        }
     }
 
     fn lose_turn(&mut self) {
@@ -412,8 +459,8 @@ impl Game {
     fn serve(&mut self) {
         // Launch up the field with a slight, seeded lean.
         let lean = self.rng.range(-0.35, 0.35);
-        self.ball.vx = BALL_SPEED * lean.sin();
-        self.ball.vy = -BALL_SPEED * lean.cos();
+        self.ball.vx = self.speed * lean.sin();
+        self.ball.vy = -self.speed * lean.cos();
         self.phase = Phase::Playing;
     }
 }
