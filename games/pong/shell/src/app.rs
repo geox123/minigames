@@ -30,6 +30,8 @@ enum Screen {
     ModeSelect { highlight: Mode },
     /// Choosing one or two players before a Faithful match.
     PlayerSelect { highlight: Players },
+    /// Choosing one or two players before a PULSE match.
+    PulsePlayerSelect { highlight: Players },
     /// A Faithful match in progress.
     FaithfulMatch {
         game: Game,
@@ -80,14 +82,15 @@ impl App {
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
                 if mode_select_input(highlight) {
-                    match *highlight {
-                        Mode::Faithful => {
-                            self.screen = Screen::PlayerSelect {
-                                highlight: Players::Two,
-                            };
-                        }
-                        Mode::Remix => self.start_pulse(),
-                    }
+                    let highlight = match *highlight {
+                        Mode::Faithful => Screen::PlayerSelect {
+                            highlight: Players::Two,
+                        },
+                        Mode::Remix => Screen::PulsePlayerSelect {
+                            highlight: Players::One,
+                        },
+                    };
+                    self.screen = highlight;
                 } else {
                     render::mode_select(*highlight);
                 }
@@ -99,6 +102,15 @@ impl App {
                     self.start_match(chosen);
                 } else {
                     render::player_select(*highlight);
+                }
+            }
+            Screen::PulsePlayerSelect { highlight } => {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                } else if let Some(chosen) = player_select_input(highlight) {
+                    self.start_pulse(chosen);
+                } else {
+                    render::pulse_player_select(*highlight);
                 }
             }
             Screen::FaithfulMatch {
@@ -194,8 +206,12 @@ impl App {
         };
     }
 
-    fn start_pulse(&mut self) {
-        let game = PulseGame::new(self.take_seed());
+    fn start_pulse(&mut self, players: Players) {
+        let seed = self.take_seed();
+        let game = match players {
+            Players::One => PulseGame::new_versus_cpu(seed),
+            Players::Two => PulseGame::new(seed),
+        };
         self.screen = Screen::PulseMatch {
             game,
             accumulator: 0.0,

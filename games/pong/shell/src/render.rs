@@ -295,6 +295,38 @@ pub fn player_select(highlight: Players) {
     font::draw_centred("ARROWS TO CHOOSE   ENTER TO START", 208.0, HINT_SCALE, GRAY);
 }
 
+/// Draws the PULSE player-select, in its neon look.
+pub fn pulse_player_select(highlight: Players) {
+    clear_background(NEON_BG);
+
+    font::draw_centred("PULSE", 44.0, TITLE_SCALE, NEON_LEFT);
+    font::draw_centred("THE REMIX", 90.0, OPTION_SCALE, NEON_RIGHT);
+    pulse_option("1 PLAYER", 128.0, highlight == Players::One);
+    pulse_option("2 PLAYERS", 160.0, highlight == Players::Two);
+    font::draw_centred(
+        "ARROWS TO CHOOSE   ENTER TO START",
+        208.0,
+        HINT_SCALE,
+        NEON_DIM,
+    );
+}
+
+/// One neon menu row, with a caret when highlighted.
+fn pulse_option(label: &str, y: f32, highlighted: bool) {
+    let width = font::text_width(label, OPTION_SCALE);
+    let x = (LOGICAL_WIDTH - width) / 2.0;
+    font::draw(label, x, y, OPTION_SCALE, NEON_BALL);
+    if highlighted {
+        font::draw(
+            ">",
+            x - font::text_width("> ", OPTION_SCALE),
+            y,
+            OPTION_SCALE,
+            NEON_BALL,
+        );
+    }
+}
+
 /// One menu row: its label, marked with a caret when highlighted and dimmed
 /// when it is locked.
 fn option(label: &str, y: f32, highlighted: bool, locked: bool) {

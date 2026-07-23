@@ -80,6 +80,17 @@ const WIDEN_EXTRA: f32 = 0.6;
 pub const SLOWMO_TIME: f32 = 3.0;
 const SLOWMO_FACTOR: f32 = 0.5;
 
+/// The computer opponent. It plays the right paddle with a person's limits: a
+/// touch slower than a player, it re-reads the balls only a few times a second
+/// and keeps moving on what it last saw, it tracks whichever ball will reach it
+/// soonest, and it plays that ball where it is rather than solving its curve.
+/// Those add up to a beatable opponent — a fast ball struck off a paddle's edge
+/// turns faster than it notices.
+const OPPONENT_SPEED_FACTOR: f32 = 0.88;
+const OPPONENT_REACTION: f32 = 0.18;
+const OPPONENT_DEADZONE: f32 = 6.0;
+const OPPONENT_AIM_DRIFT: f32 = 12.0;
+
 /// Which player, and which end of the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -289,12 +300,29 @@ pub struct Game {
     serve_countdown: f32,
     /// Which player the next serve goes to.
     serve_towards: Side,
+    /// Whether the computer plays the right paddle.
+    opponent: bool,
+    /// Where the opponent last decided to move its paddle.
+    opp_target: f32,
+    /// Seconds until the opponent next re-reads the balls.
+    opp_look_due: f32,
+    /// How far off the ball the opponent aims this point.
+    opp_aim: f32,
     rng: Rng,
 }
 
 impl Game {
     /// Starts a new two-player Versus game. The same seed always replays.
     pub fn new(seed: u64) -> Self {
+        Self::with_opponent(seed, false)
+    }
+
+    /// Starts a one-player Versus game: the computer plays the right paddle.
+    pub fn new_versus_cpu(seed: u64) -> Self {
+        Self::with_opponent(seed, true)
+    }
+
+    fn with_opponent(seed: u64, opponent: bool) -> Self {
         let mut rng = Rng::new(seed);
         let serve_towards = if rng.flip() { Side::Left } else { Side::Right };
         let mut game = Self {
@@ -313,6 +341,10 @@ impl Game {
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
             serve_towards,
+            opponent,
+            opp_target: LOGICAL_HEIGHT / 2.0,
+            opp_look_due: 0.0,
+            opp_aim: 0.0,
             rng,
         };
         game.begin_serve();
@@ -400,7 +432,15 @@ impl Game {
     }
 
     /// Advances the game by exactly one [`TIMESTEP`].
-    pub fn step(&mut self, input: Input) -> Events {
+    pub fn step(&mut self, mut input: Input) -> Events {
+        // In one-player games the computer drives the right paddle; the right
+        // player's keys are ignored.
+        if self.opponent {
+            self.opponent_look();
+            input.right = self.opponent_axis();
+            input.charge_right = false;
+        }
+
         self.update_charge(Side::Left, input.charging(Side::Left));
         self.update_charge(Side::Right, input.charging(Side::Right));
         for timer in &mut self.widen_timer {
@@ -409,10 +449,13 @@ impl Game {
         self.slowmo_timer = (self.slowmo_timer - TIMESTEP).max(0.0);
 
         let before = self.paddles;
-        let (left_speed, right_speed) = (
+        let (left_speed, mut right_speed) = (
             self.paddle_speed(Side::Left),
             self.paddle_speed(Side::Right),
         );
+        if self.opponent {
+            right_speed *= OPPONENT_SPEED_FACTOR;
+        }
         let (left_height, right_height) = (
             self.paddle_height(Side::Left),
             self.paddle_height(Side::Right),
@@ -447,6 +490,40 @@ impl Game {
             }
             Phase::Rally => self.advance_balls(),
             Phase::GameOver { .. } => Events::default(),
+        }
+    }
+
+    /// Lets the opponent re-read the balls, if it is due a look. Between looks
+    /// it keeps moving on what it last saw.
+    fn opponent_look(&mut self) {
+        self.opp_look_due -= TIMESTEP;
+        if self.opp_look_due > 0.0 {
+            return;
+        }
+        self.opp_look_due = OPPONENT_REACTION;
+
+        // Track whichever ball heading its way will arrive soonest; if none is
+        // coming, drift back to the middle where a player would wait too.
+        let soonest = self.balls.iter().filter(|b| b.pos.vx > 0.0).min_by(|a, b| {
+            arrival_time(&a.pos)
+                .partial_cmp(&arrival_time(&b.pos))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        self.opp_target = match soonest {
+            Some(ball) => ball.pos.y + self.opp_aim,
+            None => LOGICAL_HEIGHT / 2.0,
+        };
+    }
+
+    /// Which way the opponent pushes its paddle this step.
+    fn opponent_axis(&self) -> Axis {
+        let centre = self.paddles[Side::Right.index()] + self.paddle_height(Side::Right) / 2.0;
+        if centre < self.opp_target - OPPONENT_DEADZONE {
+            Axis::Down
+        } else if centre > self.opp_target + OPPONENT_DEADZONE {
+            Axis::Up
+        } else {
+            Axis::Hold
         }
     }
 
@@ -682,6 +759,13 @@ impl Game {
     }
 
     fn serve(&mut self) {
+        // The opponent takes a fresh view of where on the paddle it wants the
+        // ball each point, so it does not play every rally identically.
+        if self.opponent {
+            self.opp_aim = self.rng.range(-OPPONENT_AIM_DRIFT, OPPONENT_AIM_DRIFT);
+            self.opp_look_due = 0.0;
+        }
+
         // One of the middle four segments, so a serve is always playable.
         let angle = segment_angle(SEGMENTS / 2 - 2 + self.rng.below(4) as usize);
         let towards = self.serve_towards.sign();
@@ -696,6 +780,17 @@ impl Game {
 fn segment_angle(segment: usize) -> f32 {
     let across = segment as f32 / (SEGMENTS - 1) as f32;
     (-WIDEST_ANGLE + 2.0 * WIDEST_ANGLE * across).to_radians()
+}
+
+/// Roughly how long until `ball` reaches the right paddle's face, for the
+/// opponent to pick the most urgent ball. Assumes it keeps its heading.
+fn arrival_time(ball: &Ball) -> f32 {
+    let face = LOGICAL_WIDTH - PADDLE_INSET - PADDLE_WIDTH;
+    if ball.vx > 0.0 {
+        (face - ball.x) / ball.vx
+    } else {
+        f32::INFINITY
+    }
 }
 
 /// The player who wins the point if `ball` has left the opposite goal.

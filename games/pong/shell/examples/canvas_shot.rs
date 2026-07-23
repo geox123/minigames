@@ -77,6 +77,7 @@ async fn main() {
         match scene.as_str() {
             "mode" => render::mode_select(pong::app::Mode::Remix),
             "select" => render::player_select(Players::One),
+            "pselect" => render::pulse_player_select(Players::One),
             "pulse" => render::draw_pulse(&pulse),
             "paused" => {
                 render::draw(&game);
