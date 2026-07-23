@@ -73,6 +73,13 @@ const SPAWN_INTERVAL: f32 = 3.5;
 const PICKUP_MARGIN: f32 = 36.0;
 const SPLIT_ANGLE: f32 = 0.5;
 
+/// How long a Widen enlarges a paddle, and by how much of its length.
+pub const WIDEN_TIME: f32 = 6.0;
+const WIDEN_EXTRA: f32 = 0.6;
+/// How long a Slow-mo slows the balls, and to what fraction of their speed.
+pub const SLOWMO_TIME: f32 = 3.0;
+const SLOWMO_FACTOR: f32 = 0.5;
+
 /// Which player, and which end of the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -169,6 +176,22 @@ pub struct Ball {
 pub enum PickupKind {
     /// Splits an extra ball into play.
     Multiball,
+    /// A one-time barrier that saves the collector's goal once.
+    Shield,
+    /// Enlarges the collector's paddle for a while.
+    Widen,
+    /// Slows every ball for a while.
+    SlowMo,
+}
+
+impl PickupKind {
+    /// The four kinds, for a seeded spawn.
+    const ALL: [PickupKind; 4] = [
+        PickupKind::Multiball,
+        PickupKind::Shield,
+        PickupKind::Widen,
+        PickupKind::SlowMo,
+    ];
 }
 
 /// A pickup waiting to be collected, centred at `(x, y)`.
@@ -193,6 +216,8 @@ pub struct Events {
     pub wall_bounce: bool,
     /// A ball was collected into a pickup.
     pub pickup: bool,
+    /// A shield saved a goal this step.
+    pub shield_saved: bool,
     /// A player won the point (a ball left the opposite goal).
     pub scored: Option<Side>,
 }
@@ -211,11 +236,14 @@ pub enum Phase {
     },
 }
 
-/// A ball in flight, together with the spin curving it.
+/// A ball in flight, together with the spin curving it and who last hit it.
 #[derive(Clone, Copy)]
 struct LiveBall {
     pos: Ball,
     spin: f32,
+    /// The player who last returned this ball; a pickup it collects benefits
+    /// them. `None` on a fresh serve.
+    last_hit: Option<Side>,
 }
 
 /// The ball at rest in the middle, waiting to be served.
@@ -227,6 +255,7 @@ const PARKED_BALL: LiveBall = LiveBall {
         vy: 0.0,
     },
     spin: 0.0,
+    last_hit: None,
 };
 
 /// A game of PULSE Versus.
@@ -243,6 +272,12 @@ pub struct Game {
     charging: [bool; 2],
     /// Seconds of post-power-shot cooldown left for each player.
     cooldown: [f32; 2],
+    /// Whether each player holds a one-time goal shield.
+    shield: [bool; 2],
+    /// Seconds each player's paddle stays widened.
+    widen_timer: [f32; 2],
+    /// Seconds every ball stays slowed.
+    slowmo_timer: f32,
     /// The pickup on the field, if any.
     pickup: Option<Pickup>,
     /// Seconds until the next pickup may spawn.
@@ -269,6 +304,9 @@ impl Game {
             charge: [0.0; 2],
             charging: [false; 2],
             cooldown: [0.0; 2],
+            shield: [false; 2],
+            widen_timer: [0.0; 2],
+            slowmo_timer: 0.0,
             pickup: None,
             spawn_timer: SPAWN_INTERVAL,
             scores: [0; 2],
@@ -287,6 +325,9 @@ impl Game {
         self.paddles = [(LOGICAL_HEIGHT - PADDLE_HEIGHT) / 2.0; 2];
         self.charge = [0.0; 2];
         self.cooldown = [0.0; 2];
+        self.shield = [false; 2];
+        self.widen_timer = [0.0; 2];
+        self.slowmo_timer = 0.0;
         self.begin_serve();
     }
 
@@ -338,25 +379,55 @@ impl Game {
         self.cooldown[side.index()] > 0.0
     }
 
+    /// A player's paddle length now — longer while a Widen is active.
+    pub fn paddle_height(&self, side: Side) -> f32 {
+        let extra = if self.widen_timer[side.index()] > 0.0 {
+            WIDEN_EXTRA
+        } else {
+            0.0
+        };
+        PADDLE_HEIGHT * (1.0 + extra)
+    }
+
+    /// Whether a player is holding an unused goal shield.
+    pub fn has_shield(&self, side: Side) -> bool {
+        self.shield[side.index()]
+    }
+
+    /// Whether the balls are currently slowed by a Slow-mo.
+    pub fn slow_motion(&self) -> bool {
+        self.slowmo_timer > 0.0
+    }
+
     /// Advances the game by exactly one [`TIMESTEP`].
     pub fn step(&mut self, input: Input) -> Events {
         self.update_charge(Side::Left, input.charging(Side::Left));
         self.update_charge(Side::Right, input.charging(Side::Right));
+        for timer in &mut self.widen_timer {
+            *timer = (*timer - TIMESTEP).max(0.0);
+        }
+        self.slowmo_timer = (self.slowmo_timer - TIMESTEP).max(0.0);
 
         let before = self.paddles;
         let (left_speed, right_speed) = (
             self.paddle_speed(Side::Left),
             self.paddle_speed(Side::Right),
         );
+        let (left_height, right_height) = (
+            self.paddle_height(Side::Left),
+            self.paddle_height(Side::Right),
+        );
         move_paddle(
             &mut self.paddles[Side::Left.index()],
             input.left,
             left_speed,
+            left_height,
         );
         move_paddle(
             &mut self.paddles[Side::Right.index()],
             input.right,
             right_speed,
+            right_height,
         );
         for (vel, (now, was)) in self
             .paddle_vel
@@ -413,14 +484,21 @@ impl Game {
         self.maybe_spawn_pickup();
 
         let half = BALL_SIZE / 2.0;
+        // Slow-mo scales how far the balls travel and turn, not the paddles —
+        // the point is to give the players time to react.
+        let time_scale = if self.slowmo_timer > 0.0 {
+            SLOWMO_FACTOR
+        } else {
+            1.0
+        };
         let mut kept: Vec<LiveBall> = Vec::with_capacity(self.balls.len() + 1);
         let mut spawned: Vec<LiveBall> = Vec::new();
 
         for mut lb in std::mem::take(&mut self.balls) {
-            apply_spin(&mut lb);
+            apply_spin(&mut lb, time_scale);
             let previous = lb.pos;
-            lb.pos.x += lb.pos.vx * TIMESTEP;
-            lb.pos.y += lb.pos.vy * TIMESTEP;
+            lb.pos.x += lb.pos.vx * TIMESTEP * time_scale;
+            lb.pos.y += lb.pos.vy * TIMESTEP * time_scale;
 
             if let Some(power) = self
                 .strike_ball(&mut lb, Side::Left, previous)
@@ -436,16 +514,25 @@ impl Game {
 
             if let Some(kind) = self.collect_pickup(&lb.pos) {
                 events.pickup = true;
-                match kind {
-                    PickupKind::Multiball => spawned.push(split_ball(&lb)),
+                if let Some(extra) = self.apply_pickup(kind, &lb) {
+                    spawned.push(extra);
                 }
             }
 
             match past_the_field(&lb.pos) {
                 Some(scorer) => {
-                    self.scores[scorer.index()] += 1;
-                    self.serve_towards = self.serve_towards.opposite();
-                    events.scored = Some(scorer);
+                    let defender = scorer.opposite();
+                    if self.shield[defender.index()] {
+                        // The shield saves the goal once, then is spent.
+                        self.shield[defender.index()] = false;
+                        events.shield_saved = true;
+                        bounce_off_goal(&mut lb.pos, defender);
+                        kept.push(lb);
+                    } else {
+                        self.scores[scorer.index()] += 1;
+                        self.serve_towards = self.serve_towards.opposite();
+                        events.scored = Some(scorer);
+                    }
                 }
                 None => kept.push(lb),
             }
@@ -481,6 +568,7 @@ impl Game {
     fn strike_ball(&mut self, lb: &mut LiveBall, side: Side, previous: Ball) -> Option<bool> {
         let half = BALL_SIZE / 2.0;
         let paddle = self.paddle(side);
+        let height = self.paddle_height(side);
 
         let (face, before, after) = match side {
             Side::Left => (paddle.x + PADDLE_WIDTH, previous.x - half, lb.pos.x - half),
@@ -500,7 +588,7 @@ impl Game {
         } else {
             lb.pos.y
         };
-        let missed = contact + half <= paddle.y || contact - half >= paddle.y + PADDLE_HEIGHT;
+        let missed = contact + half <= paddle.y || contact - half >= paddle.y + height;
         if missed {
             return None;
         }
@@ -517,7 +605,7 @@ impl Game {
             BALL_SPEED
         };
 
-        let segment = ((contact - paddle.y) / (PADDLE_HEIGHT / SEGMENTS as f32)) as isize;
+        let segment = ((contact - paddle.y) / (height / SEGMENTS as f32)) as isize;
         let angle = segment_angle(segment.clamp(0, SEGMENTS as isize - 1) as usize);
         let away = -side.sign();
 
@@ -528,9 +616,29 @@ impl Game {
         lb.pos.y = contact;
         lb.pos.vx = speed * angle.cos() * away;
         lb.pos.vy = speed * angle.sin();
-        // The paddle's motion at contact bends the shot from here on.
+        // The paddle's motion at contact bends the shot from here on, and the
+        // ball now belongs to this player for pickup purposes.
         lb.spin = (self.paddle_vel[i] * SPIN_PER_PADDLE_VELOCITY).clamp(-SPIN_MAX, SPIN_MAX);
+        lb.last_hit = Some(side);
         Some(power)
+    }
+
+    /// Applies a collected pickup, returning an extra ball if it spawned one.
+    /// Effects benefit the player who last hit the collecting ball (or, off a
+    /// serve, the side it is heading towards).
+    fn apply_pickup(&mut self, kind: PickupKind, lb: &LiveBall) -> Option<LiveBall> {
+        let beneficiary = lb.last_hit.unwrap_or(if lb.pos.vx >= 0.0 {
+            Side::Right
+        } else {
+            Side::Left
+        });
+        match kind {
+            PickupKind::Multiball => return Some(split_ball(lb)),
+            PickupKind::Shield => self.shield[beneficiary.index()] = true,
+            PickupKind::Widen => self.widen_timer[beneficiary.index()] = WIDEN_TIME,
+            PickupKind::SlowMo => self.slowmo_timer = SLOWMO_TIME,
+        }
+        None
     }
 
     /// Spawns a pickup on the net if the field is clear and its timer is up.
@@ -544,10 +652,11 @@ impl Game {
             let y = self
                 .rng
                 .range(PICKUP_MARGIN, LOGICAL_HEIGHT - PICKUP_MARGIN);
+            let kind = PickupKind::ALL[self.rng.below(PickupKind::ALL.len() as u32) as usize];
             self.pickup = Some(Pickup {
                 x: LOGICAL_WIDTH / 2.0,
                 y,
-                kind: PickupKind::Multiball,
+                kind,
             });
         }
     }
@@ -612,16 +721,33 @@ fn split_ball(lb: &LiveBall) -> LiveBall {
             ..lb.pos
         },
         spin: 0.0,
+        last_hit: lb.last_hit,
     }
 }
 
-/// Rotates a ball's velocity by its spin for this step and lets the spin decay,
-/// keeping the flight angle within a returnable bound.
-fn apply_spin(lb: &mut LiveBall) {
+/// Bounces a ball back into play off `defender`'s goal, after a shield save.
+fn bounce_off_goal(ball: &mut Ball, defender: Side) {
+    let half = BALL_SIZE / 2.0;
+    match defender {
+        Side::Left => {
+            ball.x = half;
+            ball.vx = ball.vx.abs();
+        }
+        Side::Right => {
+            ball.x = LOGICAL_WIDTH - half;
+            ball.vx = -ball.vx.abs();
+        }
+    }
+}
+
+/// Rotates a ball's velocity by its spin for this step (scaled by `time_scale`
+/// for slow-mo) and lets the spin decay, keeping the angle within a returnable
+/// bound.
+fn apply_spin(lb: &mut LiveBall, time_scale: f32) {
     if lb.spin == 0.0 {
         return;
     }
-    let (sin, cos) = (lb.spin * TIMESTEP).sin_cos();
+    let (sin, cos) = (lb.spin * TIMESTEP * time_scale).sin_cos();
     let (vx, vy) = (lb.pos.vx, lb.pos.vy);
     lb.pos.vx = vx * cos - vy * sin;
     lb.pos.vy = vx * sin + vy * cos;
@@ -646,15 +772,16 @@ fn clamp_flight_angle(vx: &mut f32, vy: &mut f32) {
     }
 }
 
-/// Moves one paddle for a step at `speed` and keeps it within the field's reach.
-fn move_paddle(y: &mut f32, axis: Axis, speed: f32) {
+/// Moves one paddle of length `height` for a step at `speed` and keeps it within
+/// the field's reach.
+fn move_paddle(y: &mut f32, axis: Axis, speed: f32, height: f32) {
     let travel = speed * TIMESTEP;
     match axis {
         Axis::Up => *y -= travel,
         Axis::Down => *y += travel,
         Axis::Hold => {}
     }
-    *y = y.clamp(PADDLE_TOP_GAP, LOGICAL_HEIGHT - PADDLE_HEIGHT);
+    *y = y.clamp(PADDLE_TOP_GAP, LOGICAL_HEIGHT - height);
 }
 
 /// Keeps a moving square of half-extent `half` inside `0..limit`, reversing its

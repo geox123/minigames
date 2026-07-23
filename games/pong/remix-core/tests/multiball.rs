@@ -4,7 +4,7 @@
 mod common;
 
 use common::tracking;
-use pong_remix_core::{Game, Input, Phase, PickupKind, Side};
+use pong_remix_core::{Game, Input, Phase, Side};
 
 /// Plays a centred rally until more than one ball is live, returning the game at
 /// that moment. Deterministic: a fixed seed always collects a multiball here.
@@ -27,8 +27,7 @@ fn a_pickup_spawns_during_a_rally() {
     for _ in 0..common::MAX_STEPS {
         let input = tracking(&game, 0.0, 0.0);
         game.step(input);
-        if let Some(pickup) = game.pickup() {
-            assert_eq!(pickup.kind, PickupKind::Multiball);
+        if game.pickup().is_some() {
             seen = true;
             break;
         }

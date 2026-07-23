@@ -101,14 +101,17 @@ pub fn strike_moving(game: &mut Game, side: Side, dir: Axis) -> Ball {
             }
         };
 
+        // The opponent returns the ball so rallies stay long and nobody wins
+        // before the strike we're after actually lands.
+        let opponent = axis_towards(game.paddle(side.opposite()).y, ball.y);
         let input = match side {
             Side::Left => Input {
                 left: axis,
-                right: Axis::Hold,
+                right: opponent,
                 ..Default::default()
             },
             Side::Right => Input {
-                left: Axis::Hold,
+                left: opponent,
                 right: axis,
                 ..Default::default()
             },

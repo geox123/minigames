@@ -24,6 +24,7 @@ const NEON_LEFT: Color = color_u8!(60, 240, 255, 255);
 const NEON_RIGHT: Color = color_u8!(255, 70, 200, 255);
 const NEON_BALL: Color = color_u8!(255, 245, 120, 255);
 const NEON_DIM: Color = color_u8!(90, 80, 140, 255);
+const NEON_SLOW: Color = color_u8!(180, 160, 255, 255);
 
 /// The dashed line down the middle of the field.
 const NET_WIDTH: f32 = 4.0;
@@ -104,9 +105,17 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
             paddle.x,
             paddle.y,
             pong_remix_core::PADDLE_WIDTH,
-            pong_remix_core::PADDLE_HEIGHT,
+            game.paddle_height(side),
             colour,
         );
+        // A shielded goal glows with a bar down the wall behind the paddle.
+        if game.has_shield(side) {
+            let x = match side {
+                PSide::Left => 0.0,
+                PSide::Right => LOGICAL_WIDTH - 2.0,
+            };
+            draw_rectangle(x, 0.0, 2.0, LOGICAL_HEIGHT, colour);
+        }
     }
 
     // The pickup, drawn as a hollow diamond so it reads as a target.
@@ -150,9 +159,14 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
 
 /// Draws a pickup as a bright square outline — a target to steer the ball into.
 fn draw_pickup(pickup: pong_remix_core::Pickup) {
+    use pong_remix_core::PickupKind;
     let size = pong_remix_core::PICKUP_SIZE;
+    // A colour per kind, so a glance tells them apart.
     let colour = match pickup.kind {
-        pong_remix_core::PickupKind::Multiball => NEON_BALL,
+        PickupKind::Multiball => NEON_BALL,
+        PickupKind::Shield => NEON_LEFT,
+        PickupKind::Widen => NEON_RIGHT,
+        PickupKind::SlowMo => NEON_SLOW,
     };
     draw_rectangle_lines(
         pickup.x - size / 2.0,
