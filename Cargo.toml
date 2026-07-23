@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["games/pong/core", "games/pong/shell"]
+members = ["games/pong/core", "games/pong/remix-core", "games/pong/shell"]
 
 [workspace.package]
 edition = "2024"

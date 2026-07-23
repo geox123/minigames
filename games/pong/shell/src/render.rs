@@ -18,6 +18,13 @@ const HEADING_SCALE: f32 = 3.0;
 const OPTION_SCALE: f32 = 2.0;
 const HINT_SCALE: f32 = 1.0;
 
+/// PULSE's neon palette, a deliberate contrast to the Faithful's white-on-black.
+const NEON_BG: Color = color_u8!(10, 8, 20, 255);
+const NEON_LEFT: Color = color_u8!(60, 240, 255, 255);
+const NEON_RIGHT: Color = color_u8!(255, 70, 200, 255);
+const NEON_BALL: Color = color_u8!(255, 245, 120, 255);
+const NEON_DIM: Color = color_u8!(90, 80, 140, 255);
+
 /// The dashed line down the middle of the field.
 const NET_WIDTH: f32 = 4.0;
 const NET_DASH: f32 = 8.0;
@@ -37,9 +44,17 @@ const SCORE_OFFSET: f32 = 56.0;
 pub fn draw(game: &Game) {
     clear_background(BLACK);
 
-    draw_net();
-    draw_number(game.score(Side::Left), LOGICAL_WIDTH / 2.0 - SCORE_OFFSET);
-    draw_number(game.score(Side::Right), LOGICAL_WIDTH / 2.0 + SCORE_OFFSET);
+    draw_net(WHITE);
+    draw_number(
+        game.score(Side::Left),
+        LOGICAL_WIDTH / 2.0 - SCORE_OFFSET,
+        WHITE,
+    );
+    draw_number(
+        game.score(Side::Right),
+        LOGICAL_WIDTH / 2.0 + SCORE_OFFSET,
+        WHITE,
+    );
 
     for side in [Side::Left, Side::Right] {
         let paddle = game.paddle(side);
@@ -65,17 +80,71 @@ pub fn draw(game: &Game) {
     }
 }
 
-fn draw_net() {
+/// Draws one frame of a PULSE match onto the logical canvas, in its neon look.
+pub fn draw_pulse(game: &pong_remix_core::Game) {
+    use pong_remix_core::{Phase as PPhase, Side as PSide};
+
+    clear_background(NEON_BG);
+
+    draw_net(NEON_DIM);
+    draw_number(
+        game.score(PSide::Left),
+        LOGICAL_WIDTH / 2.0 - SCORE_OFFSET,
+        NEON_LEFT,
+    );
+    draw_number(
+        game.score(PSide::Right),
+        LOGICAL_WIDTH / 2.0 + SCORE_OFFSET,
+        NEON_RIGHT,
+    );
+
+    for (side, colour) in [(PSide::Left, NEON_LEFT), (PSide::Right, NEON_RIGHT)] {
+        let paddle = game.paddle(side);
+        draw_rectangle(
+            paddle.x,
+            paddle.y,
+            pong_remix_core::PADDLE_WIDTH,
+            pong_remix_core::PADDLE_HEIGHT,
+            colour,
+        );
+    }
+
+    let ball = game.ball();
+    let half = pong_remix_core::BALL_SIZE / 2.0;
+    draw_rectangle(
+        ball.x - half,
+        ball.y - half,
+        pong_remix_core::BALL_SIZE,
+        pong_remix_core::BALL_SIZE,
+        NEON_BALL,
+    );
+
+    if let PPhase::GameOver { winner } = game.phase() {
+        let (who, colour) = match winner {
+            PSide::Left => ("LEFT PLAYER WINS", NEON_LEFT),
+            PSide::Right => ("RIGHT PLAYER WINS", NEON_RIGHT),
+        };
+        font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, colour);
+        font::draw_centred(
+            "PRESS R TO PLAY AGAIN",
+            LOGICAL_HEIGHT / 2.0 + 6.0,
+            HINT_SCALE,
+            NEON_BALL,
+        );
+    }
+}
+
+fn draw_net(colour: Color) {
     let x = (LOGICAL_WIDTH - NET_WIDTH) / 2.0;
     let mut y = 0.0;
     while y < LOGICAL_HEIGHT {
-        draw_rectangle(x, y, NET_WIDTH, NET_DASH.min(LOGICAL_HEIGHT - y), WHITE);
+        draw_rectangle(x, y, NET_WIDTH, NET_DASH.min(LOGICAL_HEIGHT - y), colour);
         y += NET_DASH + NET_GAP;
     }
 }
 
 /// Draws `value` centred on `centre_x`, in seven-segment digits.
-fn draw_number(value: u32, centre_x: f32) {
+fn draw_number(value: u32, centre_x: f32, colour: Color) {
     let digits: Vec<u32> = value
         .to_string()
         .chars()
@@ -85,7 +154,7 @@ fn draw_number(value: u32, centre_x: f32) {
     let span = digits.len() as f32 * DIGIT_WIDTH + (digits.len() as f32 - 1.0) * DIGIT_GAP;
     let mut x = centre_x - span / 2.0;
     for digit in digits {
-        draw_digit(digit, x, SCORE_TOP);
+        draw_digit(digit, x, SCORE_TOP, colour);
         x += DIGIT_WIDTH + DIGIT_GAP;
     }
 }
@@ -105,7 +174,7 @@ const SEGMENTS_PER_DIGIT: [[bool; 7]; 10] = [
     [true, true, true, true, false, true, true],     // 9
 ];
 
-fn draw_digit(digit: u32, x: f32, y: f32) {
+fn draw_digit(digit: u32, x: f32, y: f32, colour: Color) {
     let Some(lit) = SEGMENTS_PER_DIGIT.get(digit as usize) else {
         return;
     };
@@ -127,24 +196,20 @@ fn draw_digit(digit: u32, x: f32, y: f32) {
 
     for (segment, on) in segments.iter().zip(lit) {
         if *on {
-            draw_rectangle(segment.0, segment.1, segment.2, segment.3, WHITE);
+            draw_rectangle(segment.0, segment.1, segment.2, segment.3, colour);
         }
     }
 }
 
-/// Draws the Collection's mode-select: the two takes every Game ships. Pong's
-/// Faithful is playable; its Remix is shown but locked until it is built.
+/// Draws the Collection's mode-select: the two takes Pong ships. Both are now
+/// playable — the Faithful, and PULSE, its Remix.
 pub fn mode_select(highlight: Mode) {
     clear_background(BLACK);
 
-    font::draw_centred("PONG", 44.0, TITLE_SCALE, WHITE);
+    font::draw_centred("PONG", 40.0, TITLE_SCALE, WHITE);
+    font::draw_centred("THE FAITHFUL AND THE REMIX", 82.0, HINT_SCALE, GRAY);
     option("FAITHFUL", 118.0, highlight == Mode::Faithful, false);
-    option(
-        "REMIX  (COMING SOON)",
-        150.0,
-        highlight == Mode::Remix,
-        true,
-    );
+    option("PULSE", 150.0, highlight == Mode::Remix, false);
     font::draw_centred(
         "ARROWS TO CHOOSE   ENTER TO SELECT",
         208.0,

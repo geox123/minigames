@@ -24,6 +24,9 @@ async fn main() {
     let camera = logical_camera(&canvas);
     let mut game = Game::new(Players::Two, 7);
 
+    // A parallel PULSE game, played the same way, for the neon scenes.
+    let mut pulse = pong_remix_core::Game::new(7);
+
     // The left player follows the ball; the right player sits at the bottom of
     // the field and concedes, so the scene has a score on the board.
     let steps = if scene == "gameover" { 200_000 } else { 2_400 };
@@ -36,6 +39,12 @@ async fn main() {
             right: Axis::Down,
         };
         game.step(input);
+
+        let pulse_input = pong_remix_core::Input {
+            left: pulse_follow(pulse.paddle(pong_remix_core::Side::Left).y, pulse.ball().y),
+            right: pulse_follow(pulse.paddle(pong_remix_core::Side::Right).y, pulse.ball().y),
+        };
+        pulse.step(pulse_input);
     }
 
     // Two frames: the first gets the window up, the second is the one captured
@@ -45,6 +54,7 @@ async fn main() {
         match scene.as_str() {
             "mode" => render::mode_select(pong::app::Mode::Remix),
             "select" => render::player_select(Players::One),
+            "pulse" => render::draw_pulse(&pulse),
             "paused" => {
                 render::draw(&game);
                 render::paused_overlay();
@@ -80,5 +90,18 @@ fn follow(paddle_top: f32, target: f32) -> Axis {
         Axis::Up
     } else {
         Axis::Hold
+    }
+}
+
+/// The same, for a PULSE paddle.
+fn pulse_follow(paddle_top: f32, target: f32) -> pong_remix_core::Axis {
+    let centre = paddle_top + pong_remix_core::PADDLE_HEIGHT / 2.0;
+    let slack = pong_remix_core::PADDLE_SPEED * pong_remix_core::TIMESTEP;
+    if centre < target - slack {
+        pong_remix_core::Axis::Down
+    } else if centre > target + slack {
+        pong_remix_core::Axis::Up
+    } else {
+        pong_remix_core::Axis::Hold
     }
 }

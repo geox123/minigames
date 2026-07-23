@@ -4,6 +4,7 @@
 
 use macroquad::prelude::*;
 use pong_core::{Game, Players, TIMESTEP};
+use pong_remix_core::{self as pulse, Game as PulseGame};
 
 use crate::audio::Audio;
 use crate::render;
@@ -13,28 +14,34 @@ use crate::render;
 /// the game try to catch up by simulating minutes at once.
 const MAX_FRAME_TIME: f32 = 0.25;
 
-/// The two takes every Game in the Collection ships. Pong's Remix has not been
-/// built yet, so it is shown but locked.
+/// The two takes every Game in the Collection ships. Both of Pong's are now
+/// playable: the Faithful, and PULSE — its Remix.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// The faithful recreation — playable.
+    /// The faithful recreation.
     Faithful,
-    /// The reimagined version — not built yet.
+    /// PULSE, the reimagined version.
     Remix,
 }
 
 /// Which screen the player is looking at.
 enum Screen {
-    /// The Collection's two-takes screen: Faithful (playable) or Remix (locked).
+    /// The Collection's two-takes screen: Faithful or PULSE.
     ModeSelect { highlight: Mode },
     /// Choosing one or two players before a Faithful match.
     PlayerSelect { highlight: Players },
-    /// A match in progress.
-    Playing {
+    /// A Faithful match in progress.
+    FaithfulMatch {
         game: Game,
         /// Left-over real time not yet folded into a fixed step.
         accumulator: f32,
         /// Whether the match is paused.
+        paused: bool,
+    },
+    /// A PULSE match in progress.
+    PulseMatch {
+        game: PulseGame,
+        accumulator: f32,
         paused: bool,
     },
 }
@@ -73,11 +80,13 @@ impl App {
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
                 if mode_select_input(highlight) {
-                    // Remix is locked, so choosing it does nothing yet.
-                    if *highlight == Mode::Faithful {
-                        self.screen = Screen::PlayerSelect {
-                            highlight: Players::Two,
-                        };
+                    match *highlight {
+                        Mode::Faithful => {
+                            self.screen = Screen::PlayerSelect {
+                                highlight: Players::Two,
+                            };
+                        }
+                        Mode::Remix => self.start_pulse(),
                     }
                 } else {
                     render::mode_select(*highlight);
@@ -92,7 +101,7 @@ impl App {
                     render::player_select(*highlight);
                 }
             }
-            Screen::Playing {
+            Screen::FaithfulMatch {
                 game,
                 accumulator,
                 paused,
@@ -127,6 +136,39 @@ impl App {
                     render::paused_overlay();
                 }
             }
+            Screen::PulseMatch {
+                game,
+                accumulator,
+                paused,
+            } => {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                    return;
+                }
+                if is_key_pressed(KeyCode::P) {
+                    *paused = !*paused;
+                }
+                if is_key_pressed(KeyCode::R) {
+                    game.restart();
+                    *paused = false;
+                }
+
+                if !*paused {
+                    let input = read_pulse_input();
+                    *accumulator = (*accumulator + get_frame_time()).min(MAX_FRAME_TIME);
+                    while *accumulator >= TIMESTEP {
+                        game.step(input);
+                        *accumulator -= TIMESTEP;
+                    }
+                } else {
+                    *accumulator = 0.0;
+                }
+
+                render::draw_pulse(game);
+                if *paused {
+                    render::paused_overlay();
+                }
+            }
         }
     }
 
@@ -136,15 +178,45 @@ impl App {
         };
     }
 
-    fn start_match(&mut self, players: Players) {
-        let game = Game::new(players, self.next_seed);
-        // Move the seed on, so the next match does not replay this one.
+    /// Consumes the next seed, advancing it so the next match differs.
+    fn take_seed(&mut self) -> u64 {
+        let seed = self.next_seed;
         self.next_seed = self.next_seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        self.screen = Screen::Playing {
+        seed
+    }
+
+    fn start_match(&mut self, players: Players) {
+        let game = Game::new(players, self.take_seed());
+        self.screen = Screen::FaithfulMatch {
             game,
             accumulator: 0.0,
             paused: false,
         };
+    }
+
+    fn start_pulse(&mut self) {
+        let game = PulseGame::new(self.take_seed());
+        self.screen = Screen::PulseMatch {
+            game,
+            accumulator: 0.0,
+            paused: false,
+        };
+    }
+}
+
+/// Reads both players off one keyboard for a PULSE match.
+fn read_pulse_input() -> pulse::Input {
+    pulse::Input {
+        left: pulse_axis(KeyCode::W, KeyCode::S),
+        right: pulse_axis(KeyCode::Up, KeyCode::Down),
+    }
+}
+
+fn pulse_axis(up: KeyCode, down: KeyCode) -> pulse::Axis {
+    match (is_key_down(up), is_key_down(down)) {
+        (true, false) => pulse::Axis::Up,
+        (false, true) => pulse::Axis::Down,
+        _ => pulse::Axis::Hold,
     }
 }
 

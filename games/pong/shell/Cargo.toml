@@ -1,7 +1,7 @@
 [package]
 name = "pong"
 version = "0.1.0"
-description = "Pong — a faithful recreation, wrapped in a modern shell."
+description = "Pong — a faithful recreation and PULSE, its Remix, in one modern shell."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 macroquad.workspace = true
 pong-core = { path = "../core" }
+pong-remix-core = { path = "../remix-core" }
 
 [lints]
 workspace = true

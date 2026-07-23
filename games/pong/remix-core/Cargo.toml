@@ -1,0 +1,10 @@
+[package]
+name = "pong-remix-core"
+version = "0.1.0"
+description = "Pure, deterministic game core for PULSE — Pong's Remix. No engine dependency."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
