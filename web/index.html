@@ -114,6 +114,55 @@
         top: 40px;
         height: 4px;
       }
+      /* Breakout's mark: a little banded wall over a paddle and ball. */
+      .wall {
+        flex: none;
+        width: 96px;
+        height: 72px;
+        border: 1px solid #3a3a40;
+        border-radius: 4px;
+        position: relative;
+        background: #000;
+        overflow: hidden;
+      }
+      .wall b {
+        position: absolute;
+        left: 6px;
+        right: 6px;
+        height: 6px;
+      }
+      .wall .r1 {
+        top: 8px;
+        background: #dc463c;
+      }
+      .wall .r2 {
+        top: 15px;
+        background: #e6963c;
+      }
+      .wall .r3 {
+        top: 22px;
+        background: #5ac85a;
+      }
+      .wall .r4 {
+        top: 29px;
+        background: #e6dc46;
+      }
+      .wall i {
+        position: absolute;
+        background: var(--accent);
+      }
+      .wall .pad {
+        left: 38px;
+        bottom: 8px;
+        width: 22px;
+        height: 4px;
+      }
+      .wall .bball {
+        left: 54px;
+        top: 46px;
+        width: 4px;
+        height: 4px;
+      }
       .game-body {
         flex: 1 1 auto;
         min-width: 0;
@@ -219,6 +268,33 @@
           <div class="takes">
             <a class="play" href="./pong/">▶ Play the Faithful</a>
             <a class="play" href="./pong/">▶ Play PULSE</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="game">
+        <div class="wall" aria-hidden="true">
+          <b class="r1"></b>
+          <b class="r2"></b>
+          <b class="r3"></b>
+          <b class="r4"></b>
+          <i class="bball"></i>
+          <i class="pad"></i>
+        </div>
+        <div class="game-body">
+          <p class="game-title">
+            Breakout <span style="color: var(--muted)">· 1976 · Faithful live</span>
+          </p>
+          <p class="game-note">
+            Atari's wall-breaker, four years on from Pong. The <b>Faithful</b>
+            keeps the eight-row wall in its 1/3/5/7 bands, the paddle-angle
+            deflection, the speed-ups after four and twelve hits and on the high
+            rows, the paddle that halves at the top wall, and the second wall to
+            clear. Its <b>Remix</b> is still to come.
+          </p>
+          <div class="takes">
+            <a class="play" href="./breakout/">▶ Play the Faithful</a>
+            <span class="locked">Remix · coming soon</span>
           </div>
         </div>
       </article>

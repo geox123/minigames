@@ -22,5 +22,6 @@ build_game() {
 }
 
 build_game pong pong
+build_game breakout breakout
 
 echo "done: $dist/"
