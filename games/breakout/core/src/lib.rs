@@ -4,8 +4,9 @@
 //! rendering, audio, windows or wall-clock time, and advances in fixed timesteps
 //! so a seed and a sequence of inputs always replay the same game.
 //!
-//! So far: the paddle, the serve, contact-point deflection, and turns. Later
-//! slices add the bricks, the speed-ups and the win.
+//! It owns the whole game: the paddle and its serve, contact-point deflection,
+//! the brick wall and scoring, the faithful speed-ups and paddle shrink, the two
+//! walls, the win, and restart.
 
 /// Width of the portrait play field, in logical units.
 pub const LOGICAL_WIDTH: f32 = 240.0;
@@ -31,6 +32,9 @@ pub const PADDLE_SPEED: f32 = 210.0;
 
 /// Turns (balls) a game starts with.
 pub const TURNS: u32 = 3;
+
+/// Walls to clear to win the game.
+pub const WALLS: u32 = 2;
 
 /// The brick wall: rows, columns, where it sits, and how tall each brick is.
 pub const BRICK_COLS: usize = 14;
@@ -132,6 +136,8 @@ pub struct Events {
     pub paddle_hit: bool,
     /// A brick was broken this step, and its band (0 low to 3 high).
     pub brick_broken: Option<u8>,
+    /// The last brick of a wall fell this step, bringing up a fresh wall.
+    pub wall_cleared: bool,
     /// The ball fell past the paddle and a turn was lost.
     pub lost_turn: bool,
 }
@@ -145,6 +151,8 @@ pub enum Phase {
     Playing,
     /// Every turn has been spent.
     GameOver,
+    /// Both walls have been cleared — the game is won.
+    Won,
 }
 
 /// A game of Breakout.
@@ -167,10 +175,14 @@ pub struct Game {
     paddle_shrunk: bool,
     /// Which bands have already granted their one-time speed-up.
     band_sped_up: [bool; 4],
+    /// Walls fully cleared so far; the game is won at [`WALLS`].
+    walls_cleared: u32,
     turns: u32,
     phase: Phase,
     /// Seconds left of the pause before the serve.
     serve_countdown: f32,
+    /// The seed the game began on, so a restart replays from the very start.
+    seed: u64,
     rng: Rng,
 }
 
@@ -188,9 +200,11 @@ impl Game {
             returns: 0,
             paddle_shrunk: false,
             band_sped_up: [false; 4],
+            walls_cleared: 0,
             turns: TURNS,
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
+            seed,
             rng: Rng::new(seed),
         };
         game.begin_turn();
@@ -229,6 +243,17 @@ impl Game {
     /// Standing bricks remaining.
     pub fn bricks_left(&self) -> u32 {
         self.bricks_left
+    }
+
+    /// Walls cleared so far (0 or 1 during play, [`WALLS`] once won).
+    pub fn walls_cleared(&self) -> u32 {
+        self.walls_cleared
+    }
+
+    /// Starts the game over from the beginning: score, turns, walls, speed and
+    /// the paddle all reset, and the same seed replays the same game.
+    pub fn restart(&mut self) {
+        *self = Self::new(self.seed);
     }
 
     /// The ball, as the shell should draw it. Between turns it rests on the
@@ -271,7 +296,7 @@ impl Game {
                 Events::default()
             }
             Phase::Playing => self.advance_ball(),
-            Phase::GameOver => Events::default(),
+            Phase::GameOver | Phase::Won => Events::default(),
         }
     }
 
@@ -308,10 +333,18 @@ impl Game {
         }
 
         let brick_broken = self.collide_bricks(previous);
+
+        // The last brick of a wall brings up the next, or wins the game.
+        let mut wall_cleared = false;
+        if brick_broken.is_some() && self.bricks_left == 0 {
+            wall_cleared = true;
+            self.finish_wall();
+        }
+
         let paddle_hit = self.strike_paddle(previous);
 
         let mut lost_turn = false;
-        if self.ball.y - half > LOGICAL_HEIGHT {
+        if self.phase == Phase::Playing && self.ball.y - half > LOGICAL_HEIGHT {
             lost_turn = true;
             self.lose_turn();
         }
@@ -320,7 +353,26 @@ impl Game {
             wall_bounce,
             paddle_hit,
             brick_broken,
+            wall_cleared,
             lost_turn,
+        }
+    }
+
+    /// Handles a wall being emptied: the next wall appears, or — if that was the
+    /// last wall — the game is won.
+    fn finish_wall(&mut self) {
+        self.walls_cleared += 1;
+        if self.walls_cleared >= WALLS {
+            self.phase = Phase::Won;
+            self.ball = PARKED_BALL;
+        } else {
+            // A fresh wall. Score, turns, speed and the paddle all carry over;
+            // only the new wall's high bands may earn their speed-ups again.
+            for standing in self.bricks.iter_mut() {
+                *standing = true;
+            }
+            self.bricks_left = (BRICK_ROWS * BRICK_COLS) as u32;
+            self.band_sped_up = [false; 4];
         }
     }
 
@@ -534,5 +586,81 @@ impl Rng {
     fn range(&mut self, lo: f32, hi: f32) -> f32 {
         let unit = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
         lo + (hi - lo) * unit
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Wall progression and the win. Emptying a 112-brick wall by honest play is
+    //! not practical — a perfect paddle digs a channel and the ball then bounces
+    //! in it forever — so these set up the last standing brick and let the real
+    //! `step` path break it and cross the wall. Only the setup reaches inside;
+    //! the transition itself runs through the same code the game does. Restart is
+    //! reachable through play and is tested through the seam in `tests/walls.rs`.
+    use super::*;
+
+    /// Leaves a single standing brick and puts the ball on course to break it on
+    /// the next step, so a test can drive a wall empty.
+    fn one_brick_left(game: &mut Game, row: usize, col: usize) {
+        for standing in game.bricks.iter_mut() {
+            *standing = false;
+        }
+        game.bricks[row * BRICK_COLS + col] = true;
+        game.bricks_left = 1;
+
+        let (x, y, w, h) = brick_rect(row, col);
+        // Just below the brick, rising into its underside this step.
+        game.ball = Ball {
+            x: x + w / 2.0,
+            y: y + h + BALL_SIZE / 2.0,
+            vx: 0.0,
+            vy: -game.speed,
+        };
+        game.phase = Phase::Playing;
+    }
+
+    #[test]
+    fn clearing_a_wall_brings_up_a_fresh_one_and_keeps_score_and_turns() {
+        let mut game = Game::new(1);
+        game.score = 50;
+        let turns_before = game.turns();
+
+        one_brick_left(&mut game, 7, 7);
+        let events = game.step(Input::default());
+
+        assert!(events.wall_cleared, "clearing the last brick is reported");
+        assert_eq!(game.walls_cleared(), 1);
+        assert_eq!(
+            game.phase(),
+            Phase::Playing,
+            "a fresh wall keeps play going"
+        );
+        assert_eq!(
+            game.bricks_left(),
+            (BRICK_ROWS * BRICK_COLS) as u32,
+            "the next wall starts full"
+        );
+        assert_eq!(game.turns(), turns_before, "turns carry across the wall");
+        assert_eq!(
+            game.score(),
+            51,
+            "score carries; the last brick still scores"
+        );
+    }
+
+    #[test]
+    fn clearing_both_walls_wins_the_game() {
+        let mut game = Game::new(1);
+
+        one_brick_left(&mut game, 7, 7);
+        game.step(Input::default());
+        assert_eq!(game.walls_cleared(), 1);
+        assert_eq!(game.phase(), Phase::Playing);
+
+        one_brick_left(&mut game, 7, 7);
+        let events = game.step(Input::default());
+        assert!(events.wall_cleared);
+        assert_eq!(game.walls_cleared(), WALLS);
+        assert_eq!(game.phase(), Phase::Won, "clearing both walls wins");
     }
 }
