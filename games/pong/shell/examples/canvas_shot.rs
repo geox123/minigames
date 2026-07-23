@@ -50,6 +50,26 @@ async fn main() {
         pulse.step(pulse_input);
     }
 
+    // For the PULSE scene, play a clean centred rally until a multiball is
+    // collected, then a little longer so the two balls separate visibly.
+    if scene == "pulse" {
+        let mut after_split = 0;
+        for _ in 0..40_000 {
+            if pulse.balls().count() > 1 {
+                after_split += 1;
+                if after_split > 40 {
+                    break;
+                }
+            }
+            let input = pong_remix_core::Input {
+                left: pulse_follow(pulse.paddle(pong_remix_core::Side::Left).y, pulse.ball().y),
+                right: pulse_follow(pulse.paddle(pong_remix_core::Side::Right).y, pulse.ball().y),
+                ..Default::default()
+            };
+            pulse.step(input);
+        }
+    }
+
     // Two frames: the first gets the window up, the second is the one captured
     // — the screen has to be read back before it is swapped away.
     for frame in 0..2 {

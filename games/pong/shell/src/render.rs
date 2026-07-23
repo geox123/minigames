@@ -109,15 +109,21 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
         );
     }
 
-    let ball = game.ball();
+    // The pickup, drawn as a hollow diamond so it reads as a target.
+    if let Some(pickup) = game.pickup() {
+        draw_pickup(pickup);
+    }
+
     let half = pong_remix_core::BALL_SIZE / 2.0;
-    draw_rectangle(
-        ball.x - half,
-        ball.y - half,
-        pong_remix_core::BALL_SIZE,
-        pong_remix_core::BALL_SIZE,
-        NEON_BALL,
-    );
+    for ball in game.balls() {
+        draw_rectangle(
+            ball.x - half,
+            ball.y - half,
+            pong_remix_core::BALL_SIZE,
+            pong_remix_core::BALL_SIZE,
+            NEON_BALL,
+        );
+    }
 
     // Each player's power-shot charge, as a bar climbing beside their paddle.
     draw_charge(game.charge(PSide::Left), 6.0, NEON_LEFT);
@@ -140,6 +146,24 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
             NEON_BALL,
         );
     }
+}
+
+/// Draws a pickup as a bright square outline — a target to steer the ball into.
+fn draw_pickup(pickup: pong_remix_core::Pickup) {
+    let size = pong_remix_core::PICKUP_SIZE;
+    let colour = match pickup.kind {
+        pong_remix_core::PickupKind::Multiball => NEON_BALL,
+    };
+    draw_rectangle_lines(
+        pickup.x - size / 2.0,
+        pickup.y - size / 2.0,
+        size,
+        size,
+        2.0,
+        colour,
+    );
+    // A pip in the centre so it reads even at a glance.
+    draw_rectangle(pickup.x - 1.0, pickup.y - 1.0, 2.0, 2.0, colour);
 }
 
 /// A power-shot charge meter, filling from the bottom.

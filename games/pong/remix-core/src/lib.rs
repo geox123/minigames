@@ -3,8 +3,8 @@
 //! Like the Faithful's core it owns every rule and knows nothing about
 //! rendering, audio, windows or wall-clock time, and it advances in fixed
 //! timesteps so a seed and a sequence of inputs always replay the same game.
-//! This is the Versus baseline; spin, power shots, pickups and the other modes
-//! build on top of it.
+//! This is the Versus baseline with spin, power shots and multiball; the other
+//! modes build on top of it.
 
 /// Width of the play field, in logical units.
 pub const LOGICAL_WIDTH: f32 = 320.0;
@@ -37,6 +37,9 @@ pub const WIN_SCORE: u32 = 7;
 /// How long the ball waits in the middle before each serve.
 pub const SERVE_PAUSE: f32 = 0.8;
 
+/// A pickup is a square this many logical units on a side.
+pub const PICKUP_SIZE: f32 = 16.0;
+
 /// The number of segments a paddle is read in.
 const SEGMENTS: usize = 8;
 /// The widest angle, in degrees, the paddle's ends send the ball out at.
@@ -62,6 +65,13 @@ const COOLDOWN_TIME: f32 = 0.5;
 const COOLDOWN_PADDLE_FACTOR: f32 = 0.55;
 /// Speed of a charged return, in logical units per second.
 const POWER_SPEED: f32 = 250.0;
+
+/// Pickups spawn on the net at this cadence, and never nearer the top or bottom
+/// than [`PICKUP_MARGIN`]. A collected Multiball splits an extra ball off at
+/// [`SPLIT_ANGLE`] radians from the one that took it.
+const SPAWN_INTERVAL: f32 = 3.5;
+const PICKUP_MARGIN: f32 = 36.0;
+const SPLIT_ANGLE: f32 = 0.5;
 
 /// Which player, and which end of the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,16 +164,36 @@ pub struct Ball {
     pub vy: f32,
 }
 
+/// What kind of pickup is on the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickupKind {
+    /// Splits an extra ball into play.
+    Multiball,
+}
+
+/// A pickup waiting to be collected, centred at `(x, y)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pickup {
+    /// Horizontal centre.
+    pub x: f32,
+    /// Vertical centre.
+    pub y: f32,
+    /// What collecting it does.
+    pub kind: PickupKind,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Events {
-    /// A paddle returned the ball.
+    /// A paddle returned a ball.
     pub paddle_hit: bool,
     /// The return was a charged power shot.
     pub power_hit: bool,
-    /// The ball rebounded off the top or bottom wall.
+    /// A ball rebounded off the top or bottom wall.
     pub wall_bounce: bool,
-    /// A player won the point.
+    /// A ball was collected into a pickup.
+    pub pickup: bool,
+    /// A player won the point (a ball left the opposite goal).
     pub scored: Option<Side>,
 }
 
@@ -172,7 +202,7 @@ pub struct Events {
 pub enum Phase {
     /// The ball waits in the middle for the next serve.
     Serving,
-    /// The ball is in play.
+    /// A ball is in play.
     Rally,
     /// One player has reached [`WIN_SCORE`].
     GameOver {
@@ -181,19 +211,28 @@ pub enum Phase {
     },
 }
 
+/// A ball in flight, together with the spin curving it.
+#[derive(Clone, Copy)]
+struct LiveBall {
+    pos: Ball,
+    spin: f32,
+}
+
 /// The ball at rest in the middle, waiting to be served.
-const PARKED_BALL: Ball = Ball {
-    x: LOGICAL_WIDTH / 2.0,
-    y: LOGICAL_HEIGHT / 2.0,
-    vx: 0.0,
-    vy: 0.0,
+const PARKED_BALL: LiveBall = LiveBall {
+    pos: Ball {
+        x: LOGICAL_WIDTH / 2.0,
+        y: LOGICAL_HEIGHT / 2.0,
+        vx: 0.0,
+        vy: 0.0,
+    },
+    spin: 0.0,
 };
 
 /// A game of PULSE Versus.
 pub struct Game {
-    ball: Ball,
-    /// Angular velocity curving the ball's flight, in radians per second.
-    ball_spin: f32,
+    /// Every ball currently in play; always at least one.
+    balls: Vec<LiveBall>,
     /// Top edge of each paddle, indexed by [`Side::index`].
     paddles: [f32; 2],
     /// Each paddle's vertical velocity this step, for spin at contact.
@@ -204,6 +243,10 @@ pub struct Game {
     charging: [bool; 2],
     /// Seconds of post-power-shot cooldown left for each player.
     cooldown: [f32; 2],
+    /// The pickup on the field, if any.
+    pickup: Option<Pickup>,
+    /// Seconds until the next pickup may spawn.
+    spawn_timer: f32,
     /// Each player's score.
     scores: [u32; 2],
     phase: Phase,
@@ -220,13 +263,14 @@ impl Game {
         let mut rng = Rng::new(seed);
         let serve_towards = if rng.flip() { Side::Left } else { Side::Right };
         let mut game = Self {
-            ball: PARKED_BALL,
-            ball_spin: 0.0,
+            balls: vec![PARKED_BALL],
             paddles: [(LOGICAL_HEIGHT - PADDLE_HEIGHT) / 2.0; 2],
             paddle_vel: [0.0; 2],
             charge: [0.0; 2],
             charging: [false; 2],
             cooldown: [0.0; 2],
+            pickup: None,
+            spawn_timer: SPAWN_INTERVAL,
             scores: [0; 2],
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
@@ -241,13 +285,26 @@ impl Game {
     pub fn restart(&mut self) {
         self.scores = [0; 2];
         self.paddles = [(LOGICAL_HEIGHT - PADDLE_HEIGHT) / 2.0; 2];
-        self.phase = Phase::Serving;
+        self.charge = [0.0; 2];
+        self.cooldown = [0.0; 2];
         self.begin_serve();
     }
 
-    /// The ball, as the shell draws it. Between points it rests in the middle.
+    /// The primary ball. Between points it rests in the middle; with multiball
+    /// in play this is simply the first of several — use [`Game::balls`] to draw
+    /// them all.
     pub fn ball(&self) -> Ball {
-        self.ball
+        self.balls[0].pos
+    }
+
+    /// Every ball currently in play.
+    pub fn balls(&self) -> impl Iterator<Item = Ball> + '_ {
+        self.balls.iter().map(|b| b.pos)
+    }
+
+    /// The pickup on the field, if any.
+    pub fn pickup(&self) -> Option<Pickup> {
+        self.pickup
     }
 
     /// One player's paddle.
@@ -317,7 +374,7 @@ impl Game {
                 }
                 Events::default()
             }
-            Phase::Rally => self.advance_ball(),
+            Phase::Rally => self.advance_balls(),
             Phase::GameOver { .. } => Events::default(),
         }
     }
@@ -348,47 +405,86 @@ impl Game {
         PADDLE_SPEED * factor
     }
 
-    fn advance_ball(&mut self) -> Events {
-        self.apply_spin();
-
-        let previous = self.ball;
-        self.ball.x += self.ball.vx * TIMESTEP;
-        self.ball.y += self.ball.vy * TIMESTEP;
-
-        let hit = self
-            .strike_paddle(Side::Left, previous)
-            .or_else(|| self.strike_paddle(Side::Right, previous));
+    /// Advances every ball one step: spin, motion, paddle and wall bounces,
+    /// pickups, and scoring. Balls that leave a goal score and are removed; a
+    /// collected Multiball adds one.
+    fn advance_balls(&mut self) -> Events {
+        let mut events = Events::default();
+        self.maybe_spawn_pickup();
 
         let half = BALL_SIZE / 2.0;
-        let wall_bounce = bounce_within(&mut self.ball.y, &mut self.ball.vy, half, LOGICAL_HEIGHT);
+        let mut kept: Vec<LiveBall> = Vec::with_capacity(self.balls.len() + 1);
+        let mut spawned: Vec<LiveBall> = Vec::new();
 
-        let scored = self.past_the_field();
-        if let Some(scorer) = scored {
-            self.award_point(scorer);
+        for mut lb in std::mem::take(&mut self.balls) {
+            apply_spin(&mut lb);
+            let previous = lb.pos;
+            lb.pos.x += lb.pos.vx * TIMESTEP;
+            lb.pos.y += lb.pos.vy * TIMESTEP;
+
+            if let Some(power) = self
+                .strike_ball(&mut lb, Side::Left, previous)
+                .or_else(|| self.strike_ball(&mut lb, Side::Right, previous))
+            {
+                events.paddle_hit = true;
+                events.power_hit |= power;
+            }
+
+            if bounce_within(&mut lb.pos.y, &mut lb.pos.vy, half, LOGICAL_HEIGHT) {
+                events.wall_bounce = true;
+            }
+
+            if let Some(kind) = self.collect_pickup(&lb.pos) {
+                events.pickup = true;
+                match kind {
+                    PickupKind::Multiball => spawned.push(split_ball(&lb)),
+                }
+            }
+
+            match past_the_field(&lb.pos) {
+                Some(scorer) => {
+                    self.scores[scorer.index()] += 1;
+                    self.serve_towards = self.serve_towards.opposite();
+                    events.scored = Some(scorer);
+                }
+                None => kept.push(lb),
+            }
         }
 
-        Events {
-            paddle_hit: hit.is_some(),
-            power_hit: hit == Some(true),
-            wall_bounce,
-            scored,
+        kept.append(&mut spawned);
+        self.balls = kept;
+
+        if let Some(winner) = self.winner() {
+            self.phase = Phase::GameOver { winner };
+            self.balls = vec![PARKED_BALL];
+            self.pickup = None;
+        } else if self.balls.is_empty() {
+            self.begin_serve();
+        }
+
+        events
+    }
+
+    fn winner(&self) -> Option<Side> {
+        if self.scores[0] >= WIN_SCORE {
+            Some(Side::Left)
+        } else if self.scores[1] >= WIN_SCORE {
+            Some(Side::Right)
+        } else {
+            None
         }
     }
 
-    /// If `side`'s paddle reached the ball this step, returns the ball off it and
+    /// If `side`'s paddle reached `lb` this step, returns the ball off it and
     /// whether it was a charged power shot; otherwise `None`. Tests the path
     /// travelled, not just where the ball ended, so a fast ball can't tunnel.
-    fn strike_paddle(&mut self, side: Side, previous: Ball) -> Option<bool> {
+    fn strike_ball(&mut self, lb: &mut LiveBall, side: Side, previous: Ball) -> Option<bool> {
         let half = BALL_SIZE / 2.0;
         let paddle = self.paddle(side);
 
         let (face, before, after) = match side {
-            Side::Left => (
-                paddle.x + PADDLE_WIDTH,
-                previous.x - half,
-                self.ball.x - half,
-            ),
-            Side::Right => (paddle.x, previous.x + half, self.ball.x + half),
+            Side::Left => (paddle.x + PADDLE_WIDTH, previous.x - half, lb.pos.x - half),
+            Side::Right => (paddle.x, previous.x + half, lb.pos.x + half),
         };
         let reached = match side {
             Side::Left => previous.vx < 0.0 && before >= face && after <= face,
@@ -400,9 +496,9 @@ impl Game {
 
         let travelled = (before - after).abs();
         let contact = if travelled > f32::EPSILON {
-            previous.y + (self.ball.y - previous.y) * ((before - face).abs() / travelled)
+            previous.y + (lb.pos.y - previous.y) * ((before - face).abs() / travelled)
         } else {
-            self.ball.y
+            lb.pos.y
         };
         let missed = contact + half <= paddle.y || contact - half >= paddle.y + PADDLE_HEIGHT;
         if missed {
@@ -425,68 +521,64 @@ impl Game {
         let angle = segment_angle(segment.clamp(0, SEGMENTS as isize - 1) as usize);
         let away = -side.sign();
 
-        self.ball.x = match side {
+        lb.pos.x = match side {
             Side::Left => face + half,
             Side::Right => face - half,
         };
-        self.ball.y = contact;
-        self.ball.vx = speed * angle.cos() * away;
-        self.ball.vy = speed * angle.sin();
+        lb.pos.y = contact;
+        lb.pos.vx = speed * angle.cos() * away;
+        lb.pos.vy = speed * angle.sin();
         // The paddle's motion at contact bends the shot from here on.
-        self.ball_spin = (self.paddle_vel[i] * SPIN_PER_PADDLE_VELOCITY).clamp(-SPIN_MAX, SPIN_MAX);
+        lb.spin = (self.paddle_vel[i] * SPIN_PER_PADDLE_VELOCITY).clamp(-SPIN_MAX, SPIN_MAX);
         Some(power)
     }
 
-    /// Rotates the ball's velocity by its spin for this step and lets the spin
-    /// decay, keeping the flight angle within a returnable bound.
-    fn apply_spin(&mut self) {
-        if self.ball_spin == 0.0 {
+    /// Spawns a pickup on the net if the field is clear and its timer is up.
+    fn maybe_spawn_pickup(&mut self) {
+        if self.pickup.is_some() {
             return;
         }
-        let (sin, cos) = (self.ball_spin * TIMESTEP).sin_cos();
-        let (vx, vy) = (self.ball.vx, self.ball.vy);
-        self.ball.vx = vx * cos - vy * sin;
-        self.ball.vy = vx * sin + vy * cos;
-        clamp_flight_angle(&mut self.ball.vx, &mut self.ball.vy);
-        self.ball_spin *= SPIN_DECAY;
+        self.spawn_timer -= TIMESTEP;
+        if self.spawn_timer <= 0.0 {
+            self.spawn_timer = SPAWN_INTERVAL;
+            let y = self
+                .rng
+                .range(PICKUP_MARGIN, LOGICAL_HEIGHT - PICKUP_MARGIN);
+            self.pickup = Some(Pickup {
+                x: LOGICAL_WIDTH / 2.0,
+                y,
+                kind: PickupKind::Multiball,
+            });
+        }
     }
 
-    fn past_the_field(&self) -> Option<Side> {
-        let half = BALL_SIZE / 2.0;
-        if self.ball.x + half < 0.0 {
-            Some(Side::Right)
-        } else if self.ball.x - half > LOGICAL_WIDTH {
-            Some(Side::Left)
+    /// Collects the pickup if `ball` overlaps it, returning what it was.
+    fn collect_pickup(&mut self, ball: &Ball) -> Option<PickupKind> {
+        let pickup = self.pickup?;
+        let reach = (PICKUP_SIZE + BALL_SIZE) / 2.0;
+        if (ball.x - pickup.x).abs() < reach && (ball.y - pickup.y).abs() < reach {
+            self.pickup = None;
+            Some(pickup.kind)
         } else {
             None
         }
     }
 
-    fn award_point(&mut self, scorer: Side) {
-        self.scores[scorer.index()] += 1;
-        self.serve_towards = self.serve_towards.opposite();
-
-        if self.scores[scorer.index()] >= WIN_SCORE {
-            self.phase = Phase::GameOver { winner: scorer };
-            self.ball = PARKED_BALL;
-        } else {
-            self.phase = Phase::Serving;
-            self.begin_serve();
-        }
-    }
-
     fn begin_serve(&mut self) {
-        self.ball = PARKED_BALL;
-        self.ball_spin = 0.0;
+        self.balls = vec![PARKED_BALL];
+        self.pickup = None;
+        self.spawn_timer = SPAWN_INTERVAL;
         self.serve_countdown = SERVE_PAUSE;
+        self.phase = Phase::Serving;
     }
 
     fn serve(&mut self) {
         // One of the middle four segments, so a serve is always playable.
         let angle = segment_angle(SEGMENTS / 2 - 2 + self.rng.below(4) as usize);
         let towards = self.serve_towards.sign();
-        self.ball.vx = BALL_SPEED * angle.cos() * towards;
-        self.ball.vy = BALL_SPEED * angle.sin();
+        let ball = &mut self.balls[0].pos;
+        ball.vx = BALL_SPEED * angle.cos() * towards;
+        ball.vy = BALL_SPEED * angle.sin();
         self.phase = Phase::Rally;
     }
 }
@@ -497,7 +589,47 @@ fn segment_angle(segment: usize) -> f32 {
     (-WIDEST_ANGLE + 2.0 * WIDEST_ANGLE * across).to_radians()
 }
 
-/// Keeps the ball's flight within [`MAX_FLIGHT_SIN`] of horizontal, so however
+/// The player who wins the point if `ball` has left the opposite goal.
+fn past_the_field(ball: &Ball) -> Option<Side> {
+    let half = BALL_SIZE / 2.0;
+    if ball.x + half < 0.0 {
+        Some(Side::Right)
+    } else if ball.x - half > LOGICAL_WIDTH {
+        Some(Side::Left)
+    } else {
+        None
+    }
+}
+
+/// Splits an extra ball off `lb`, sent out at [`SPLIT_ANGLE`] from it.
+fn split_ball(lb: &LiveBall) -> LiveBall {
+    let (sin, cos) = SPLIT_ANGLE.sin_cos();
+    let (vx, vy) = (lb.pos.vx, lb.pos.vy);
+    LiveBall {
+        pos: Ball {
+            vx: vx * cos - vy * sin,
+            vy: vx * sin + vy * cos,
+            ..lb.pos
+        },
+        spin: 0.0,
+    }
+}
+
+/// Rotates a ball's velocity by its spin for this step and lets the spin decay,
+/// keeping the flight angle within a returnable bound.
+fn apply_spin(lb: &mut LiveBall) {
+    if lb.spin == 0.0 {
+        return;
+    }
+    let (sin, cos) = (lb.spin * TIMESTEP).sin_cos();
+    let (vx, vy) = (lb.pos.vx, lb.pos.vy);
+    lb.pos.vx = vx * cos - vy * sin;
+    lb.pos.vy = vx * sin + vy * cos;
+    clamp_flight_angle(&mut lb.pos.vx, &mut lb.pos.vy);
+    lb.spin *= SPIN_DECAY;
+}
+
+/// Keeps a ball's flight within [`MAX_FLIGHT_SIN`] of horizontal, so however
 /// much spin bends it, it always keeps enough horizontal speed to cross.
 fn clamp_flight_angle(vx: &mut f32, vy: &mut f32) {
     let speed = vx.hypot(*vy);
@@ -557,6 +689,12 @@ impl Rng {
         x ^= x << 17;
         self.0 = x;
         x
+    }
+
+    /// A uniform float in `lo..hi`.
+    fn range(&mut self, lo: f32, hi: f32) -> f32 {
+        let unit = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
+        lo + (hi - lo) * unit
     }
 
     fn below(&mut self, limit: u32) -> u32 {
