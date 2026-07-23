@@ -1,0 +1,10 @@
+[package]
+name = "breakout-core"
+version = "0.1.0"
+description = "Pure, deterministic game core for the Breakout Faithful — no engine dependency."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

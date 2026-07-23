@@ -1,0 +1,15 @@
+[package]
+name = "breakout"
+version = "0.1.0"
+description = "Breakout — a faithful recreation, wrapped in a modern shell."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+macroquad.workspace = true
+shell-kit = { path = "../../../shell-kit" }
+breakout-core = { path = "../core" }
+
+[lints]
+workspace = true

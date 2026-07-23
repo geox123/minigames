@@ -6,6 +6,8 @@ members = [
     "games/pong/remix-core",
     "games/pong/storage",
     "games/pong/shell",
+    "games/breakout/core",
+    "games/breakout/shell",
 ]
 
 [workspace.package]

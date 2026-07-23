@@ -47,7 +47,9 @@ jobs:
         run: cargo build --workspace
 
       - name: Build (WASM)
-        run: cargo build -p pong --target wasm32-unknown-unknown
+        run: |
+          cargo build -p pong --target wasm32-unknown-unknown
+          cargo build -p breakout --target wasm32-unknown-unknown
 
   native-windows:
     # The Collection promises a native Windows build; verify it builds and its
