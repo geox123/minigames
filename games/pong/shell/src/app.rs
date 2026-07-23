@@ -19,7 +19,7 @@ const MAX_FRAME_TIME: f32 = 0.25;
 pub enum Mode {
     /// The faithful recreation — playable.
     Faithful,
-    /// The reimagining — not built yet.
+    /// The reimagined version — not built yet.
     Remix,
 }
 
@@ -151,7 +151,7 @@ impl App {
 /// Reads the mode-select screen, moving the highlight between the two takes.
 /// Returns whether the player committed to the highlighted one.
 fn mode_select_input(highlight: &mut Mode) -> bool {
-    if pressed_vertical() {
+    if pressed_menu_move() {
         *highlight = match *highlight {
             Mode::Faithful => Mode::Remix,
             Mode::Remix => Mode::Faithful,
@@ -163,7 +163,7 @@ fn mode_select_input(highlight: &mut Mode) -> bool {
 /// Reads the player-select screen. Returns the chosen player count once the
 /// player commits, or `None` while they are still choosing.
 fn player_select_input(highlight: &mut Players) -> Option<Players> {
-    if pressed_vertical() {
+    if pressed_menu_move() {
         *highlight = match *highlight {
             Players::One => Players::Two,
             Players::Two => Players::One,
@@ -182,7 +182,7 @@ fn player_select_input(highlight: &mut Players) -> Option<Players> {
 }
 
 /// Whether the player nudged a menu highlight this frame.
-fn pressed_vertical() -> bool {
+fn pressed_menu_move() -> bool {
     is_key_pressed(KeyCode::Up)
         || is_key_pressed(KeyCode::Down)
         || is_key_pressed(KeyCode::Left)

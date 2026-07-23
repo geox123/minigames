@@ -99,7 +99,7 @@ fn a_won_match_stays_won() {
 }
 
 #[test]
-fn a_finished_match_can_be_restarted() {
+fn a_match_can_be_restarted_after_game_over() {
     let mut game = Game::new(Players::Two, 7);
     for _ in 0..WIN_SCORE {
         play_a_point(&mut game, Side::Left);

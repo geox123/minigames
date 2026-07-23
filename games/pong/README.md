@@ -48,9 +48,11 @@ nothing about rendering, audio or the clock. The details that make it play like
 
 ## The modern shell
 
-- Rendered at Pong's original **320×240 logical resolution** to an offscreen
-  canvas, then scaled to the window by a whole number with the aspect ratio
-  preserved — crisp on any display, no smearing.
+- Rendered at a fixed low **320×240 logical resolution** — a coarse canvas in
+  the spirit of the era's hardware (the 1972 original was analog and had no
+  framebuffer of its own) — to an offscreen target, then scaled to the window by
+  a whole number with the aspect ratio preserved: crisp on any display, no
+  smearing.
 - A **fixed 120 Hz simulation**: the shell accumulates real time into fixed
   steps, so behaviour is identical at any frame rate and the core stays
   deterministic and testable.

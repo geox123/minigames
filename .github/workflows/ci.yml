@@ -1,8 +1,10 @@
 name: CI
 
-# The Collection's quality bar. Every push and every pull request gets a green
-# check only if the code is formatted, clippy-clean, tested, and builds for both
-# the native and WASM targets. Any one of those failing turns the check red.
+# The Collection's quality bar, and the deploy it gates. Every push and every
+# pull request gets a green check only if the code is formatted, clippy-clean,
+# tested, and builds for the native and WASM targets. A push to main also
+# publishes the site to GitHub Pages — but only after that bar is green, so
+# players never receive a build that failed the gate.
 on:
   push:
   pull_request:
@@ -41,3 +43,57 @@ jobs:
 
       - name: Build (WASM)
         run: cargo build -p pong --target wasm32-unknown-unknown
+
+  native-windows:
+    # The Collection promises a native Windows build; verify it builds and its
+    # tests pass on Windows on every change, not just on the Linux gate.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and test (native Windows)
+        run: cargo test --workspace
+
+  deploy-pages:
+    # Publish the site only from main, and only once the quality bar is green.
+    needs: quality-gate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust and the WASM target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build the site into dist/
+        run: bash scripts/build-web.sh
+
+      - name: Upload the site as a Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

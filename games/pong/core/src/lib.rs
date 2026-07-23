@@ -58,6 +58,16 @@ impl Side {
             Side::Right => 1,
         }
     }
+
+    /// Which way this side lies along the field: -1 for the left, +1 for the
+    /// right. A serve travels towards `side.sign()`; a ball leaves a paddle
+    /// away from it, at `-side.sign()`.
+    fn sign(self) -> f32 {
+        match self {
+            Side::Left => -1.0,
+            Side::Right => 1.0,
+        }
+    }
 }
 
 /// Which way a player is pushing their paddle this step.
@@ -416,10 +426,7 @@ impl Game {
 
         // Only the middle four segments' angles, so a serve is always playable.
         let angle = segment_angle(SEGMENTS / 2 - 2 + self.rng.below(4) as usize);
-        let towards = match self.serve_towards {
-            Side::Left => -1.0,
-            Side::Right => 1.0,
-        };
+        let towards = self.serve_towards.sign();
 
         self.ball.vx = RALLY_SPEEDS[0] * angle.cos() * towards;
         self.ball.vy = RALLY_SPEEDS[0] * angle.sin();
@@ -468,10 +475,7 @@ impl Game {
         let speed = rally_speed(self.rally_hits);
         let segment = ((contact - paddle.y) / (PADDLE_HEIGHT / SEGMENTS as f32)) as isize;
         let angle = segment_angle(segment.clamp(0, SEGMENTS as isize - 1) as usize);
-        let away = match side {
-            Side::Left => 1.0,
-            Side::Right => -1.0,
-        };
+        let away = -side.sign();
 
         self.ball.x = match side {
             Side::Left => face + half,

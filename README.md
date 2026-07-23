@@ -15,8 +15,8 @@ Every game in the Collection ships **two takes**:
 - A **Faithful** — the original's rules, difficulty and feel preserved at its
   original logical resolution, wrapped in a modern shell: crisp integer
   scaling, modern input, pause, restart, fullscreen, sound.
-- A **Remix** — a reimagining that grows out of the Faithful once it ships:
-  modern mechanics, juice, new modes. It carries its own invented name.
+- A **Remix** — a reimagined version that grows out of the Faithful once it
+  ships: modern mechanics, juice, new modes. It carries its own invented name.
 
 A Game is **Done** only when both its Faithful and its Remix are live — and only
 a Done Game unlocks work on the next. The Collection grows one Game at a time,
@@ -31,7 +31,7 @@ in [`docs/adr/`](docs/adr).
 | ---- | ---- | -------- | ----- |
 | [Pong](games/pong) | 1972 | ✅ playable | coming soon |
 
-Pong is the first Game. Its Faithful is complete; its Remix — and every later
+Pong is the first Game. Its Faithful is live; its Remix — and every later
 Game — follows.
 
 ## How it's built
@@ -64,8 +64,8 @@ Every push and pull request runs [the same gate](.github/workflows/ci.yml):
 
 `unsafe` is denied at the crate level. Each Game's core is unit-tested through
 its public seam only — state in, state out — and is deterministic, so the tests
-mean what they say. Every push to `main` [rebuilds and redeploys](.github/workflows/pages.yml)
-the site.
+mean what they say. Once that bar is green, every push to `main`
+[rebuilds and redeploys](.github/workflows/ci.yml) the site.
 
 All assets are original — sound is synthesized, nothing is ripped from an
 original ([ADR 0002](docs/adr/0002-naming-and-ip-policy.md)).
