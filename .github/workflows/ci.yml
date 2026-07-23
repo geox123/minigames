@@ -21,6 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # macroquad's audio feature links against ALSA on Linux; the native build
+      # and tests won't link without its development library.
+      - name: Install ALSA development library
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Install Rust with rustfmt and clippy
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
