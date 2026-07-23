@@ -5,8 +5,21 @@
 
 pub mod render;
 
-use breakout_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
+use breakout_core::{Input, LOGICAL_HEIGHT, LOGICAL_WIDTH, Move};
 use macroquad::prelude::*;
+
+/// Reads the paddle off the keyboard: the left/right arrows or A/D.
+pub fn read_input() -> Input {
+    let left = is_key_down(KeyCode::Left) || is_key_down(KeyCode::A);
+    let right = is_key_down(KeyCode::Right) || is_key_down(KeyCode::D);
+    Input {
+        paddle: match (left, right) {
+            (true, false) => Move::Left,
+            (false, true) => Move::Right,
+            _ => Move::Hold,
+        },
+    }
+}
 
 /// The Breakout canvas, at the Faithful's portrait logical resolution.
 pub fn logical_canvas() -> RenderTarget {

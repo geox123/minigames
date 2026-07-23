@@ -1,6 +1,6 @@
 //! Drawing the core's state onto the logical canvas, in the era's stark look.
 
-use breakout_core::{BALL_SIZE, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH};
+use breakout_core::{BALL_SIZE, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, PADDLE_HEIGHT};
 use macroquad::prelude::*;
 
 /// Draws one frame of the game onto the logical canvas.
@@ -12,6 +12,9 @@ pub fn draw(game: &Game) {
     draw_rectangle(0.0, 0.0, LOGICAL_WIDTH, w, WHITE);
     draw_rectangle(0.0, 0.0, w, LOGICAL_HEIGHT, WHITE);
     draw_rectangle(LOGICAL_WIDTH - w, 0.0, w, LOGICAL_HEIGHT, WHITE);
+
+    let paddle = game.paddle();
+    draw_rectangle(paddle.x, paddle.y, paddle.width, PADDLE_HEIGHT, WHITE);
 
     let ball = game.ball();
     let half = BALL_SIZE / 2.0;

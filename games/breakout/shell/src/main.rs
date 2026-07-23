@@ -3,7 +3,7 @@
 //! This binary is the shell: it owns the window, the real clock, real input,
 //! rendering and audio. Every rule of the game lives in `breakout_core`.
 
-use breakout::{blit_canvas, logical_camera, logical_canvas, render};
+use breakout::{blit_canvas, logical_camera, logical_canvas, read_input, render};
 use breakout_core::{Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, TIMESTEP};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
@@ -34,8 +34,9 @@ async fn main() {
     let mut accumulator = Accumulator::new(TIMESTEP, MAX_FRAME_TIME);
 
     loop {
+        let input = read_input();
         for _ in 0..accumulator.steps(get_frame_time()) {
-            game.step();
+            game.step(input);
         }
 
         set_camera(&camera);

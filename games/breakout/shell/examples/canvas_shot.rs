@@ -20,7 +20,17 @@ async fn main() {
     let camera = logical_camera(&canvas);
     let mut game = Game::new(7);
     for _ in 0..steps {
-        game.step();
+        // Track the ball with the paddle so the scene shows a live rally.
+        let ball = game.ball();
+        let centre = game.paddle().x + game.paddle().width / 2.0;
+        let paddle = if centre < ball.x - 2.0 {
+            breakout_core::Move::Right
+        } else if centre > ball.x + 2.0 {
+            breakout_core::Move::Left
+        } else {
+            breakout_core::Move::Hold
+        };
+        game.step(breakout_core::Input { paddle });
     }
 
     for frame in 0..2 {
