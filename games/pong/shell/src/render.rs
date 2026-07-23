@@ -157,6 +157,72 @@ pub fn draw_pulse(game: &pong_remix_core::Game) {
     }
 }
 
+/// Draws one frame of a Gauntlet run: the player's paddle, the barrage, the
+/// score and the best, and the run-over card.
+pub fn draw_gauntlet(game: &pong_remix_core::Game, best: u32) {
+    use pong_remix_core::{Phase as PPhase, Side as PSide};
+
+    clear_background(NEON_BG);
+
+    // The right side is a wall the barrage bounces off.
+    draw_rectangle(LOGICAL_WIDTH - 3.0, 0.0, 3.0, LOGICAL_HEIGHT, NEON_DIM);
+
+    let paddle = game.paddle(PSide::Left);
+    draw_rectangle(
+        paddle.x,
+        paddle.y,
+        pong_remix_core::PADDLE_WIDTH,
+        game.paddle_height(PSide::Left),
+        NEON_LEFT,
+    );
+    if game.has_shield(PSide::Left) {
+        draw_rectangle(0.0, 0.0, 2.0, LOGICAL_HEIGHT, NEON_LEFT);
+    }
+
+    if let Some(pickup) = game.pickup() {
+        draw_pickup(pickup);
+    }
+
+    let half = pong_remix_core::BALL_SIZE / 2.0;
+    for ball in game.balls() {
+        draw_rectangle(
+            ball.x - half,
+            ball.y - half,
+            pong_remix_core::BALL_SIZE,
+            pong_remix_core::BALL_SIZE,
+            NEON_BALL,
+        );
+    }
+
+    draw_charge(game.charge(PSide::Left), 6.0, NEON_LEFT);
+
+    // Score and best, along the top.
+    let score = game.gauntlet_score();
+    font::draw_centred(&score.to_string(), 8.0, OPTION_SCALE, NEON_BALL);
+    font::draw_centred(&format!("BEST {best}"), 30.0, HINT_SCALE, NEON_DIM);
+
+    if game.phase() == PPhase::RunOver {
+        font::draw_centred(
+            "RUN OVER",
+            LOGICAL_HEIGHT / 2.0 - 28.0,
+            HEADING_SCALE,
+            NEON_RIGHT,
+        );
+        font::draw_centred(
+            &format!("SCORE {score}"),
+            LOGICAL_HEIGHT / 2.0 + 2.0,
+            OPTION_SCALE,
+            NEON_BALL,
+        );
+        font::draw_centred(
+            "PRESS R TO RUN AGAIN",
+            LOGICAL_HEIGHT / 2.0 + 26.0,
+            HINT_SCALE,
+            NEON_DIM,
+        );
+    }
+}
+
 /// Draws a pickup as a bright square outline — a target to steer the ball into.
 fn draw_pickup(pickup: pong_remix_core::Pickup) {
     use pong_remix_core::PickupKind;
@@ -293,6 +359,23 @@ pub fn player_select(highlight: Players) {
     option("1 PLAYER", 128.0, highlight == Players::One, false);
     option("2 PLAYERS", 160.0, highlight == Players::Two, false);
     font::draw_centred("ARROWS TO CHOOSE   ENTER TO START", 208.0, HINT_SCALE, GRAY);
+}
+
+/// Draws the PULSE mode-select: Versus or Gauntlet.
+pub fn pulse_mode_select(highlight: crate::app::PulseMode) {
+    use crate::app::PulseMode;
+    clear_background(NEON_BG);
+
+    font::draw_centred("PULSE", 44.0, TITLE_SCALE, NEON_LEFT);
+    font::draw_centred("CHOOSE A MODE", 90.0, OPTION_SCALE, NEON_RIGHT);
+    pulse_option("VERSUS", 128.0, highlight == PulseMode::Versus);
+    pulse_option("GAUNTLET", 160.0, highlight == PulseMode::Gauntlet);
+    font::draw_centred(
+        "ARROWS TO CHOOSE   ENTER TO SELECT",
+        208.0,
+        HINT_SCALE,
+        NEON_DIM,
+    );
 }
 
 /// Draws the PULSE player-select, in its neon look.

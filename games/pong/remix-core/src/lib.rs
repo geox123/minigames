@@ -91,6 +91,25 @@ const OPPONENT_REACTION: f32 = 0.18;
 const OPPONENT_DEADZONE: f32 = 6.0;
 const OPPONENT_AIM_DRIFT: f32 = 12.0;
 
+/// Gauntlet — solo survival. You defend the left goal; the right side is a
+/// wall. The balls speed up and multiply over time until one gets past you.
+const GAUNTLET_ADD_BALL_EVERY: f32 = 9.0;
+const GAUNTLET_MAX_BALLS: usize = 6;
+/// How fast the balls ramp up, per second, and the ceiling on the multiplier.
+const GAUNTLET_SPEEDUP_PER_SEC: f32 = 0.03;
+const GAUNTLET_MAX_SPEED_MULT: f32 = 2.4;
+/// Score is ten a return plus one a second survived.
+const GAUNTLET_RETURN_POINTS: u32 = 10;
+
+/// Which way a PULSE game is played.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    /// Head to head, first to [`WIN_SCORE`].
+    Versus,
+    /// Solo survival against an escalating barrage.
+    Gauntlet,
+}
+
 /// Which player, and which end of the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -240,11 +259,13 @@ pub enum Phase {
     Serving,
     /// A ball is in play.
     Rally,
-    /// One player has reached [`WIN_SCORE`].
+    /// One player has reached [`WIN_SCORE`] (Versus).
     GameOver {
         /// The winner.
         winner: Side,
     },
+    /// A Gauntlet run has ended — a ball got past the player.
+    RunOver,
 }
 
 /// A ball in flight, together with the spin curving it and who last hit it.
@@ -308,6 +329,16 @@ pub struct Game {
     opp_look_due: f32,
     /// How far off the ball the opponent aims this point.
     opp_aim: f32,
+    /// Whether this is a Versus or a Gauntlet game.
+    mode: Mode,
+    /// Seconds the current Gauntlet run has lasted.
+    gauntlet_elapsed: f32,
+    /// Returns the player has made this Gauntlet run.
+    gauntlet_returns: u32,
+    /// How much faster than base the Gauntlet balls fly.
+    speed_mult: f32,
+    /// Seconds until the Gauntlet adds another ball.
+    add_ball_timer: f32,
     rng: Rng,
 }
 
@@ -319,12 +350,26 @@ impl Game {
 
     /// Starts a one-player Versus game: the computer plays the right paddle.
     pub fn new_versus_cpu(seed: u64) -> Self {
-        Self::with_opponent(seed, true)
+        Self::with_mode(seed, Mode::Versus, true)
+    }
+
+    /// Starts a Gauntlet run: solo survival against an escalating barrage.
+    pub fn new_gauntlet(seed: u64) -> Self {
+        Self::with_mode(seed, Mode::Gauntlet, false)
     }
 
     fn with_opponent(seed: u64, opponent: bool) -> Self {
+        Self::with_mode(seed, Mode::Versus, opponent)
+    }
+
+    fn with_mode(seed: u64, mode: Mode, opponent: bool) -> Self {
         let mut rng = Rng::new(seed);
-        let serve_towards = if rng.flip() { Side::Left } else { Side::Right };
+        // Gauntlet always serves at the player on the left.
+        let serve_towards = match mode {
+            Mode::Gauntlet => Side::Left,
+            Mode::Versus if rng.flip() => Side::Left,
+            Mode::Versus => Side::Right,
+        };
         let mut game = Self {
             balls: vec![PARKED_BALL],
             paddles: [(LOGICAL_HEIGHT - PADDLE_HEIGHT) / 2.0; 2],
@@ -345,13 +390,18 @@ impl Game {
             opp_target: LOGICAL_HEIGHT / 2.0,
             opp_look_due: 0.0,
             opp_aim: 0.0,
+            mode,
+            gauntlet_elapsed: 0.0,
+            gauntlet_returns: 0,
+            speed_mult: 1.0,
+            add_ball_timer: GAUNTLET_ADD_BALL_EVERY,
             rng,
         };
         game.begin_serve();
         game
     }
 
-    /// Clears the scores and starts again from the opening serve.
+    /// Restarts the game (Versus) or the run (Gauntlet) from the beginning.
     pub fn restart(&mut self) {
         self.scores = [0; 2];
         self.paddles = [(LOGICAL_HEIGHT - PADDLE_HEIGHT) / 2.0; 2];
@@ -360,7 +410,16 @@ impl Game {
         self.shield = [false; 2];
         self.widen_timer = [0.0; 2];
         self.slowmo_timer = 0.0;
+        self.gauntlet_elapsed = 0.0;
+        self.gauntlet_returns = 0;
+        self.speed_mult = 1.0;
+        self.add_ball_timer = GAUNTLET_ADD_BALL_EVERY;
         self.begin_serve();
+    }
+
+    /// The current Gauntlet score: ten a return plus one a second survived.
+    pub fn gauntlet_score(&self) -> u32 {
+        self.gauntlet_returns * GAUNTLET_RETURN_POINTS + self.gauntlet_elapsed as u32
     }
 
     /// The primary ball. Between points it rests in the middle; with multiball
@@ -488,8 +547,43 @@ impl Game {
                 }
                 Events::default()
             }
-            Phase::Rally => self.advance_balls(),
-            Phase::GameOver { .. } => Events::default(),
+            Phase::Rally => {
+                if self.mode == Mode::Gauntlet {
+                    self.escalate_gauntlet();
+                }
+                self.advance_balls()
+            }
+            Phase::GameOver { .. } | Phase::RunOver => Events::default(),
+        }
+    }
+
+    /// Ramps a Gauntlet run: time and speed climb, and now and then another
+    /// ball joins from the right wall.
+    fn escalate_gauntlet(&mut self) {
+        self.gauntlet_elapsed += TIMESTEP;
+        self.speed_mult =
+            (self.speed_mult + GAUNTLET_SPEEDUP_PER_SEC * TIMESTEP).min(GAUNTLET_MAX_SPEED_MULT);
+
+        self.add_ball_timer -= TIMESTEP;
+        if self.add_ball_timer <= 0.0 {
+            self.add_ball_timer = GAUNTLET_ADD_BALL_EVERY;
+            if self.balls.len() < GAUNTLET_MAX_BALLS {
+                let y = self
+                    .rng
+                    .range(PICKUP_MARGIN, LOGICAL_HEIGHT - PICKUP_MARGIN);
+                let angle = segment_angle(SEGMENTS / 2 - 2 + self.rng.below(4) as usize);
+                // A fresh ball from the right wall, flying at the player.
+                self.balls.push(LiveBall {
+                    pos: Ball {
+                        x: LOGICAL_WIDTH - BALL_SIZE,
+                        y,
+                        vx: -BALL_SPEED * angle.cos(),
+                        vy: BALL_SPEED * angle.sin(),
+                    },
+                    spin: 0.0,
+                    last_hit: None,
+                });
+            }
         }
     }
 
@@ -554,22 +648,28 @@ impl Game {
     }
 
     /// Advances every ball one step: spin, motion, paddle and wall bounces,
-    /// pickups, and scoring. Balls that leave a goal score and are removed; a
-    /// collected Multiball adds one.
+    /// pickups, and scoring. In Versus a ball that leaves a goal scores; in
+    /// Gauntlet only the left goal is a goal — the right side is a wall — and a
+    /// ball getting past it ends the run.
     fn advance_balls(&mut self) -> Events {
         let mut events = Events::default();
         self.maybe_spawn_pickup();
 
+        let gauntlet = self.mode == Mode::Gauntlet;
         let half = BALL_SIZE / 2.0;
-        // Slow-mo scales how far the balls travel and turn, not the paddles —
-        // the point is to give the players time to react.
-        let time_scale = if self.slowmo_timer > 0.0 {
+        // Slow-mo scales the balls' motion down; the Gauntlet's ramp scales it
+        // up. Both leave the paddles at full speed.
+        let mut time_scale = if self.slowmo_timer > 0.0 {
             SLOWMO_FACTOR
         } else {
             1.0
         };
+        if gauntlet {
+            time_scale *= self.speed_mult;
+        }
         let mut kept: Vec<LiveBall> = Vec::with_capacity(self.balls.len() + 1);
         let mut spawned: Vec<LiveBall> = Vec::new();
+        let mut run_over = false;
 
         for mut lb in std::mem::take(&mut self.balls) {
             apply_spin(&mut lb, time_scale);
@@ -577,15 +677,28 @@ impl Game {
             lb.pos.x += lb.pos.vx * TIMESTEP * time_scale;
             lb.pos.y += lb.pos.vy * TIMESTEP * time_scale;
 
-            if let Some(power) = self
-                .strike_ball(&mut lb, Side::Left, previous)
-                .or_else(|| self.strike_ball(&mut lb, Side::Right, previous))
-            {
+            // In Gauntlet only the player's (left) paddle is in play.
+            let hit = if gauntlet {
+                self.strike_ball(&mut lb, Side::Left, previous)
+            } else {
+                self.strike_ball(&mut lb, Side::Left, previous)
+                    .or_else(|| self.strike_ball(&mut lb, Side::Right, previous))
+            };
+            if let Some(power) = hit {
                 events.paddle_hit = true;
                 events.power_hit |= power;
+                if gauntlet {
+                    self.gauntlet_returns += 1;
+                }
             }
 
             if bounce_within(&mut lb.pos.y, &mut lb.pos.vy, half, LOGICAL_HEIGHT) {
+                events.wall_bounce = true;
+            }
+            // The Gauntlet's right side is a wall the barrage bounces off.
+            if gauntlet && lb.pos.x + half > LOGICAL_WIDTH {
+                lb.pos.x = LOGICAL_WIDTH - half;
+                lb.pos.vx = -lb.pos.vx.abs();
                 events.wall_bounce = true;
             }
 
@@ -596,29 +709,53 @@ impl Game {
                 }
             }
 
-            match past_the_field(&lb.pos) {
-                Some(scorer) => {
-                    let defender = scorer.opposite();
-                    if self.shield[defender.index()] {
-                        // The shield saves the goal once, then is spent.
-                        self.shield[defender.index()] = false;
+            if gauntlet {
+                // Only the left goal can be breached; it ends the run.
+                if lb.pos.x - half < 0.0 {
+                    if self.shield[Side::Left.index()] {
+                        self.shield[Side::Left.index()] = false;
                         events.shield_saved = true;
-                        bounce_off_goal(&mut lb.pos, defender);
+                        bounce_off_goal(&mut lb.pos, Side::Left);
                         kept.push(lb);
                     } else {
-                        self.scores[scorer.index()] += 1;
-                        self.serve_towards = self.serve_towards.opposite();
-                        events.scored = Some(scorer);
+                        run_over = true;
                     }
+                } else {
+                    kept.push(lb);
                 }
-                None => kept.push(lb),
+            } else {
+                match past_the_field(&lb.pos) {
+                    Some(scorer) => {
+                        let defender = scorer.opposite();
+                        if self.shield[defender.index()] {
+                            // The shield saves the goal once, then is spent.
+                            self.shield[defender.index()] = false;
+                            events.shield_saved = true;
+                            bounce_off_goal(&mut lb.pos, defender);
+                            kept.push(lb);
+                        } else {
+                            self.scores[scorer.index()] += 1;
+                            self.serve_towards = self.serve_towards.opposite();
+                            events.scored = Some(scorer);
+                        }
+                    }
+                    None => kept.push(lb),
+                }
             }
         }
 
         kept.append(&mut spawned);
         self.balls = kept;
 
-        if let Some(winner) = self.winner() {
+        if gauntlet {
+            if run_over {
+                self.phase = Phase::RunOver;
+                self.balls = vec![PARKED_BALL];
+                self.pickup = None;
+            } else if self.balls.is_empty() {
+                self.begin_serve();
+            }
+        } else if let Some(winner) = self.winner() {
             self.phase = Phase::GameOver { winner };
             self.balls = vec![PARKED_BALL];
             self.pickup = None;

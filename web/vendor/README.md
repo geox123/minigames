@@ -14,3 +14,13 @@ files — no CDN, no third-party host at runtime.
 
 When the pinned `macroquad` version changes, re-copy this file from the matching
 crate source so the loader and the `.wasm` stay in step.
+
+## `pulse-storage.js`
+
+A tiny, self-contained macroquad plugin that gives the WASM two functions to
+read and write one number — PULSE's best Gauntlet score — in the browser's
+`localStorage`. It passes plain numbers, so it needs no `sapp_jsutils` and can't
+fall out of step with the bundle above. The native build persists the same value
+to a file instead. Both sides are driven by the `pong-storage` crate, which is
+the only place in the project that uses `unsafe` (the two FFI calls). Loaded
+after `mq_js_bundle.js` and before the `.wasm` in each Game's page.

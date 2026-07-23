@@ -10,6 +10,7 @@ repository.workspace = true
 macroquad.workspace = true
 pong-core = { path = "../core" }
 pong-remix-core = { path = "../remix-core" }
+pong-storage = { path = "../storage" }
 
 [lints]
 workspace = true

@@ -24,13 +24,24 @@ pub enum Mode {
     Remix,
 }
 
+/// The modes PULSE itself offers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PulseMode {
+    /// Head to head.
+    Versus,
+    /// Solo survival.
+    Gauntlet,
+}
+
 /// Which screen the player is looking at.
 enum Screen {
     /// The Collection's two-takes screen: Faithful or PULSE.
     ModeSelect { highlight: Mode },
     /// Choosing one or two players before a Faithful match.
     PlayerSelect { highlight: Players },
-    /// Choosing one or two players before a PULSE match.
+    /// Choosing which PULSE mode to play.
+    PulseModeSelect { highlight: PulseMode },
+    /// Choosing one or two players before a PULSE Versus match.
     PulsePlayerSelect { highlight: Players },
     /// A Faithful match in progress.
     FaithfulMatch {
@@ -40,20 +51,23 @@ enum Screen {
         /// Whether the match is paused.
         paused: bool,
     },
-    /// A PULSE match in progress.
+    /// A PULSE match in progress (Versus or Gauntlet).
     PulseMatch {
         game: PulseGame,
         accumulator: f32,
         paused: bool,
+        /// Whether this is a Gauntlet run rather than a Versus match.
+        gauntlet: bool,
     },
 }
 
 /// The whole shell: the current screen, the seed source for new matches, the
-/// sounds, and whether the window is fullscreen.
+/// sounds, the best Gauntlet score, and whether the window is fullscreen.
 pub struct App {
     screen: Screen,
     next_seed: u64,
     audio: Audio,
+    best_gauntlet: u32,
     fullscreen: bool,
 }
 
@@ -66,6 +80,7 @@ impl App {
             },
             next_seed: seed_from_clock(),
             audio,
+            best_gauntlet: pong_storage::best_gauntlet(),
             fullscreen: false,
         }
     }
@@ -82,15 +97,15 @@ impl App {
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
                 if mode_select_input(highlight) {
-                    let highlight = match *highlight {
+                    let next = match *highlight {
                         Mode::Faithful => Screen::PlayerSelect {
                             highlight: Players::Two,
                         },
-                        Mode::Remix => Screen::PulsePlayerSelect {
-                            highlight: Players::One,
+                        Mode::Remix => Screen::PulseModeSelect {
+                            highlight: PulseMode::Versus,
                         },
                     };
-                    self.screen = highlight;
+                    self.screen = next;
                 } else {
                     render::mode_select(*highlight);
                 }
@@ -104,9 +119,27 @@ impl App {
                     render::player_select(*highlight);
                 }
             }
-            Screen::PulsePlayerSelect { highlight } => {
+            Screen::PulseModeSelect { highlight } => {
                 if is_key_pressed(KeyCode::Escape) {
                     self.return_to_mode_select();
+                } else if pulse_mode_input(highlight) {
+                    match *highlight {
+                        PulseMode::Versus => {
+                            self.screen = Screen::PulsePlayerSelect {
+                                highlight: Players::One,
+                            };
+                        }
+                        PulseMode::Gauntlet => self.start_gauntlet(),
+                    }
+                } else {
+                    render::pulse_mode_select(*highlight);
+                }
+            }
+            Screen::PulsePlayerSelect { highlight } => {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.screen = Screen::PulseModeSelect {
+                        highlight: PulseMode::Versus,
+                    };
                 } else if let Some(chosen) = player_select_input(highlight) {
                     self.start_pulse(chosen);
                 } else {
@@ -152,6 +185,7 @@ impl App {
                 game,
                 accumulator,
                 paused,
+                gauntlet,
             } => {
                 if is_key_pressed(KeyCode::Escape) {
                     self.return_to_mode_select();
@@ -176,7 +210,18 @@ impl App {
                     *accumulator = 0.0;
                 }
 
-                render::draw_pulse(game);
+                if *gauntlet {
+                    // Bank a new best score the moment the run ends.
+                    if game.phase() == pulse::Phase::RunOver
+                        && game.gauntlet_score() > self.best_gauntlet
+                    {
+                        self.best_gauntlet = game.gauntlet_score();
+                        pong_storage::set_best_gauntlet(self.best_gauntlet);
+                    }
+                    render::draw_gauntlet(game, self.best_gauntlet);
+                } else {
+                    render::draw_pulse(game);
+                }
                 if *paused {
                     render::paused_overlay();
                 }
@@ -216,8 +261,30 @@ impl App {
             game,
             accumulator: 0.0,
             paused: false,
+            gauntlet: false,
         };
     }
+
+    fn start_gauntlet(&mut self) {
+        let game = PulseGame::new_gauntlet(self.take_seed());
+        self.screen = Screen::PulseMatch {
+            game,
+            accumulator: 0.0,
+            paused: false,
+            gauntlet: true,
+        };
+    }
+}
+
+/// Reads the PULSE mode-select, moving the highlight and reporting a commit.
+fn pulse_mode_input(highlight: &mut PulseMode) -> bool {
+    if pressed_menu_move() {
+        *highlight = match *highlight {
+            PulseMode::Versus => PulseMode::Gauntlet,
+            PulseMode::Gauntlet => PulseMode::Versus,
+        };
+    }
+    is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
 }
 
 /// Reads both players off one keyboard for a PULSE match: W/S and Left-Shift to

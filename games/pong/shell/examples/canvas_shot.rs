@@ -26,6 +26,26 @@ async fn main() {
 
     // A parallel PULSE game, played the same way, for the neon scenes.
     let mut pulse = pong_remix_core::Game::new(7);
+    // A Gauntlet run, defended for a while so the barrage has grown.
+    let mut gauntlet = pong_remix_core::Game::new_gauntlet(7);
+    if scene == "gauntlet" {
+        for _ in 0..3_000 {
+            if matches!(gauntlet.phase(), pong_remix_core::Phase::RunOver) {
+                break;
+            }
+            let target = gauntlet
+                .balls()
+                .filter(|b| b.vx < 0.0)
+                .min_by(|a, b| a.x.partial_cmp(&b.x).unwrap())
+                .map(|b| b.y)
+                .unwrap_or(120.0);
+            let input = pong_remix_core::Input {
+                left: pulse_follow(gauntlet.paddle(pong_remix_core::Side::Left).y, target),
+                ..Default::default()
+            };
+            gauntlet.step(input);
+        }
+    }
 
     // The left player follows the ball; the right player sits at the bottom of
     // the field and concedes, so the scene has a score on the board.
@@ -78,6 +98,8 @@ async fn main() {
             "mode" => render::mode_select(pong::app::Mode::Remix),
             "select" => render::player_select(Players::One),
             "pselect" => render::pulse_player_select(Players::One),
+            "pmode" => render::pulse_mode_select(pong::app::PulseMode::Gauntlet),
+            "gauntlet" => render::draw_gauntlet(&gauntlet, 240),
             "pulse" => render::draw_pulse(&pulse),
             "paused" => {
                 render::draw(&game);
