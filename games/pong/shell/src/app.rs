@@ -4,9 +4,10 @@
 
 use macroquad::prelude::*;
 use pong_core::{Game, Players, TIMESTEP};
-use pong_remix_core::{self as pulse, Game as PulseGame};
+use pong_remix_core::{self as pulse, Ball as PulseBall, Game as PulseGame};
 
 use crate::audio::Audio;
+use crate::fx::Fx;
 use crate::render;
 
 /// How much real time a single frame may contribute to the simulation. Without
@@ -74,6 +75,8 @@ enum Screen {
         paused: bool,
         /// Whether this is a Gauntlet run rather than a Versus match.
         gauntlet: bool,
+        /// The neon feel — trails, particles, shake, hit-stop.
+        fx: Fx,
     },
 }
 
@@ -85,6 +88,8 @@ pub struct App {
     audio: Audio,
     best_gauntlet: u32,
     fullscreen: bool,
+    /// The screen-shake offset to blit by this frame, in logical units.
+    blit_shake: Vec2,
 }
 
 impl App {
@@ -98,7 +103,13 @@ impl App {
             audio,
             best_gauntlet: pong_storage::best_gauntlet(),
             fullscreen: false,
+            blit_shake: Vec2::ZERO,
         }
+    }
+
+    /// The screen-shake offset the window should blit the canvas by this frame.
+    pub fn blit_shake(&self) -> Vec2 {
+        self.blit_shake
     }
 
     /// Advances the shell by one real frame: reads input, runs whatever the
@@ -109,6 +120,8 @@ impl App {
             self.fullscreen = !self.fullscreen;
             set_fullscreen(self.fullscreen);
         }
+        // Reset the shake each frame; a PULSE match sets it below.
+        self.blit_shake = Vec2::ZERO;
 
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
@@ -210,6 +223,7 @@ impl App {
                 accumulator,
                 paused,
                 gauntlet,
+                fx,
             } => {
                 if is_key_pressed(KeyCode::Escape) {
                     self.return_to_mode_select();
@@ -224,15 +238,30 @@ impl App {
                 }
 
                 if !*paused {
-                    let input = read_pulse_input();
-                    *accumulator = (*accumulator + get_frame_time()).min(MAX_FRAME_TIME);
-                    while *accumulator >= TIMESTEP {
-                        game.step(input);
-                        *accumulator -= TIMESTEP;
+                    let dt = get_frame_time();
+                    fx.update(dt);
+                    // Hit-stop freezes the simulation, not the effects.
+                    if fx.frozen() {
+                        *accumulator = 0.0;
+                    } else {
+                        let input = read_pulse_input();
+                        *accumulator = (*accumulator + dt).min(MAX_FRAME_TIME);
+                        while *accumulator >= TIMESTEP {
+                            let events = game.step(input);
+                            let balls: Vec<PulseBall> = game.balls().collect();
+                            fx.on_step(events, &balls);
+                            let fastest = balls
+                                .iter()
+                                .map(|b| b.vx.hypot(b.vy))
+                                .fold(0.0_f32, f32::max);
+                            self.audio.play_pulse(events, fastest / pulse::POWER_SPEED);
+                            *accumulator -= TIMESTEP;
+                        }
                     }
                 } else {
                     *accumulator = 0.0;
                 }
+                self.blit_shake = Vec2::from(fx.shake_offset());
 
                 if *gauntlet {
                     // Bank a new best score the moment the run ends.
@@ -246,6 +275,7 @@ impl App {
                 } else {
                     render::draw_pulse(game);
                 }
+                fx.draw(pulse::BALL_SIZE);
                 if *paused {
                     render::paused_overlay();
                 }
@@ -288,6 +318,7 @@ impl App {
             accumulator: 0.0,
             paused: false,
             gauntlet: false,
+            fx: Fx::default(),
         };
     }
 
@@ -298,6 +329,7 @@ impl App {
             accumulator: 0.0,
             paused: false,
             gauntlet: true,
+            fx: Fx::default(),
         };
     }
 }

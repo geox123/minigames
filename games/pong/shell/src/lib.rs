@@ -7,6 +7,7 @@
 pub mod app;
 pub mod audio;
 pub mod font;
+pub mod fx;
 pub mod render;
 
 pub use app::App;
@@ -53,12 +54,13 @@ pub fn logical_camera(canvas: &RenderTarget) -> Camera2D {
 
 /// Blits the logical canvas to the window: centred, aspect ratio preserved and
 /// — whenever the window is big enough — scaled by a whole number, so every
-/// logical pixel stays the same size and nothing smears.
-pub fn blit_canvas(canvas: &Texture2D) {
+/// logical pixel stays the same size and nothing smears. `shake` nudges the
+/// whole image by that many logical units, for screen shake.
+pub fn blit_canvas(canvas: &Texture2D, shake: Vec2) {
     let fit = (screen_width() / LOGICAL_WIDTH).min(screen_height() / LOGICAL_HEIGHT);
     let scale = if fit >= 1.0 { fit.floor() } else { fit };
     let size = vec2(LOGICAL_WIDTH * scale, LOGICAL_HEIGHT * scale);
-    let origin = (vec2(screen_width(), screen_height()) - size) / 2.0;
+    let origin = (vec2(screen_width(), screen_height()) - size) / 2.0 + shake * scale;
 
     draw_texture_ex(
         canvas,

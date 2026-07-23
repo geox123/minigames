@@ -35,9 +35,9 @@ async fn main() {
         app.frame();
         set_default_camera();
 
-        // ...which is then scaled up to fill the window.
+        // ...which is then scaled up to fill the window, nudged by any shake.
         clear_background(BLACK);
-        blit_canvas(&canvas.texture);
+        blit_canvas(&canvas.texture, app.blit_shake());
 
         next_frame().await;
     }

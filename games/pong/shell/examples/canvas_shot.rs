@@ -72,7 +72,9 @@ async fn main() {
     }
 
     // For the PULSE scene, play a clean centred rally until a multiball is
-    // collected, then a little longer so the two balls separate visibly.
+    // collected, then a little longer so the two balls separate visibly, feeding
+    // the effects so trails and particles show in the frame.
+    let mut fx = pong::fx::Fx::default();
     if scene == "pulse" {
         let mut after_split = 0;
         for _ in 0..40_000 {
@@ -87,7 +89,10 @@ async fn main() {
                 right: pulse_follow(pulse.paddle(pong_remix_core::Side::Right).y, pulse.ball().y),
                 ..Default::default()
             };
-            pulse.step(input);
+            let events = pulse.step(input);
+            let balls: Vec<pong_remix_core::Ball> = pulse.balls().collect();
+            fx.on_step(events, &balls);
+            fx.update(pong_remix_core::TIMESTEP);
         }
     }
 
@@ -101,7 +106,10 @@ async fn main() {
             "pselect" => render::pulse_player_select(Players::One, false),
             "pmode" => render::pulse_mode_select(pong::app::PulseMode::Gauntlet),
             "gauntlet" => render::draw_gauntlet(&gauntlet, 240),
-            "pulse" => render::draw_pulse(&pulse),
+            "pulse" => {
+                render::draw_pulse(&pulse);
+                fx.draw(pong_remix_core::BALL_SIZE);
+            }
             "paused" => {
                 render::draw(&game);
                 render::paused_overlay();
@@ -111,7 +119,7 @@ async fn main() {
         set_default_camera();
 
         clear_background(DARKGRAY);
-        blit_canvas(&canvas.texture);
+        blit_canvas(&canvas.texture, macroquad::math::Vec2::ZERO);
 
         if frame == 1 {
             canvas

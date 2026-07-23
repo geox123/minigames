@@ -64,7 +64,7 @@ const CHARGE_PADDLE_FACTOR: f32 = 0.5;
 const COOLDOWN_TIME: f32 = 0.5;
 const COOLDOWN_PADDLE_FACTOR: f32 = 0.55;
 /// Speed of a charged return, in logical units per second.
-const POWER_SPEED: f32 = 250.0;
+pub const POWER_SPEED: f32 = 250.0;
 
 /// Pickups spawn on the net at this cadence, and never nearer the top or bottom
 /// than [`PICKUP_MARGIN`]. A collected Multiball splits an extra ball off at
