@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["games/pong/core", "games/pong/shell"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/geox123/minigames"
+
+[workspace.dependencies]
+macroquad = "0.4.15"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

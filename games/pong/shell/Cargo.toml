@@ -1,0 +1,14 @@
+[package]
+name = "pong"
+version = "0.1.0"
+description = "Pong — a faithful recreation, wrapped in a modern shell."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+macroquad.workspace = true
+pong-core = { path = "../core" }
+
+[lints]
+workspace = true
