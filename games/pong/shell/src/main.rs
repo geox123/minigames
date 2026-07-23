@@ -8,13 +8,19 @@ use pong::{App, Audio, blit_canvas, logical_camera, logical_canvas};
 use pong_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
 
 fn window_conf() -> Conf {
-    Conf {
+    let mut conf = Conf {
         window_title: "Pong — Faithful".to_owned(),
         window_width: LOGICAL_WIDTH as i32 * 3,
         window_height: LOGICAL_HEIGHT as i32 * 3,
         window_resizable: true,
         ..Default::default()
-    }
+    };
+    // The Faithful renders to an offscreen target and scales it up. In the
+    // browser that offscreen framebuffer needs a WebGL2 context — the default
+    // WebGL1 rejects the framebuffer binding. Every desktop browser we target
+    // has WebGL2, so ask for it.
+    conf.platform.webgl_version = miniquad::conf::WebGLVersion::WebGL2;
+    conf
 }
 
 #[macroquad::main(window_conf)]

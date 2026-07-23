@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Minigames — a growing collection of game-history recreations</title>
+    <meta
+      name="description"
+      content="A continuously growing collection of recreations of games from the first generation of videogames onward, written in Rust, playable in the browser."
+    />
+    <style>
+      :root {
+        --bg: #0a0a0b;
+        --panel: #141416;
+        --line: #26262a;
+        --ink: #f4f4f5;
+        --muted: #9a9aa2;
+        --accent: #eaeaea;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 72px 24px 96px;
+      }
+      header {
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 28px;
+        margin-bottom: 36px;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(34px, 8vw, 56px);
+        letter-spacing: 0.02em;
+      }
+      .tag {
+        margin: 14px 0 0;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
+        max-width: 60ch;
+      }
+      .rules {
+        margin: 20px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+      .rules b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--muted);
+        margin: 0 0 16px;
+      }
+      .game {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 20px 22px;
+      }
+      /* A tiny static "court" as the game's mark. */
+      .court {
+        flex: none;
+        width: 96px;
+        height: 72px;
+        border: 1px solid #3a3a40;
+        border-radius: 4px;
+        position: relative;
+        background: #000;
+      }
+      .court::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 6px;
+        bottom: 6px;
+        border-left: 2px dashed #4a4a52;
+      }
+      .court i {
+        position: absolute;
+        width: 4px;
+        background: var(--accent);
+      }
+      .court .p-l {
+        left: 8px;
+        top: 22px;
+        height: 22px;
+      }
+      .court .p-r {
+        right: 8px;
+        top: 34px;
+        height: 22px;
+      }
+      .court .ball {
+        left: 46px;
+        top: 40px;
+        height: 4px;
+      }
+      .game-body {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .game-title {
+        font-size: 20px;
+        margin: 0;
+      }
+      .game-note {
+        color: var(--muted);
+        font-size: 13px;
+        margin: 6px 0 0;
+        line-height: 1.5;
+      }
+      .takes {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+        flex-wrap: wrap;
+      }
+      .play,
+      .locked {
+        font-size: 13px;
+        padding: 8px 16px;
+        border-radius: 8px;
+        text-decoration: none;
+        display: inline-block;
+      }
+      .play {
+        background: var(--ink);
+        color: #000;
+        font-weight: 600;
+      }
+      .play:hover {
+        background: #fff;
+      }
+      .locked {
+        border: 1px solid var(--line);
+        color: var(--muted);
+        cursor: default;
+      }
+      .soon {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 28px;
+        padding-left: 2px;
+      }
+      footer {
+        margin-top: 48px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 13px;
+      }
+      footer a {
+        color: var(--ink);
+      }
+      @media (max-width: 480px) {
+        .game {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Minigames</h1>
+        <p class="tag">
+          A continuously growing collection of recreations of games from the
+          first generation of videogames onward — written in Rust, playable
+          right here in your browser.
+        </p>
+        <p class="rules">
+          Every Game ships two takes. The <b>Faithful</b> preserves the
+          original's rules, difficulty and feel, wrapped in a modern shell. The
+          <b>Remix</b> grows out of that Faithful once it ships. A Game is
+          <b>Done</b> only when both are live — and only a Done Game unlocks the
+          next.
+        </p>
+      </header>
+
+      <h2>Games</h2>
+
+      <article class="game">
+        <div class="court" aria-hidden="true">
+          <i class="p-l"></i>
+          <i class="p-r"></i>
+          <i class="ball"></i>
+        </div>
+        <div class="game-body">
+          <p class="game-title">Pong <span style="color: var(--muted)">· 1972</span></p>
+          <p class="game-note">
+            The one that started it. Two paddles, one ball, first to eleven —
+            with the original's paddle-angle deflection and rally speed-up
+            intact. One or two players.
+          </p>
+          <div class="takes">
+            <a class="play" href="./pong/">▶ Play the Faithful</a>
+            <span class="locked">Remix — coming soon</span>
+          </div>
+        </div>
+      </article>
+
+      <p class="soon">More Games follow, in roughly the order history shipped them.</p>
+
+      <footer>
+        Built in the open ·
+        <a href="https://github.com/geox123/minigames">source on GitHub</a>
+      </footer>
+    </div>
+  </body>
+</html>

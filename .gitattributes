@@ -1,0 +1,4 @@
+# Normalize line endings. Shell scripts must stay LF or CI's bash chokes on the
+# shebang; the rest is left to Git's own detection.
+* text=auto
+*.sh text eol=lf

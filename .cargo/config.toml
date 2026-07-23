@@ -1,0 +1,7 @@
+# macroquad/miniquad expect a set of symbols (GL calls, the sokol-app shims,
+# clipboard/cursor hooks) to be resolved at runtime by the JavaScript bundle
+# rather than at link time. The wasm linker now errors on undefined symbols by
+# default, so this tells it to treat any it cannot find as imports — which is
+# exactly what the JS bundle provides when the game runs in the browser.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]
