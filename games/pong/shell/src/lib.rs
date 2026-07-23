@@ -5,9 +5,11 @@
 //! in `examples/` render real frames without a human at the keyboard.
 
 pub mod app;
+pub mod audio;
 pub mod render;
 
 pub use app::App;
+pub use audio::Audio;
 
 use macroquad::prelude::*;
 use pong_core::{Axis, Input, LOGICAL_HEIGHT, LOGICAL_WIDTH};

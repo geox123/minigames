@@ -5,6 +5,7 @@
 use macroquad::prelude::*;
 use pong_core::{Game, Players, TIMESTEP};
 
+use crate::audio::Audio;
 use crate::render;
 
 /// How much real time a single frame may contribute to the simulation. Without
@@ -33,29 +34,42 @@ enum Screen {
         game: Game,
         /// Left-over real time not yet folded into a fixed step.
         accumulator: f32,
+        /// Whether the match is paused.
+        paused: bool,
     },
 }
 
-/// The whole shell: the current screen and the seed source for new matches.
+/// The whole shell: the current screen, the seed source for new matches, the
+/// sounds, and whether the window is fullscreen.
 pub struct App {
     screen: Screen,
     next_seed: u64,
+    audio: Audio,
+    fullscreen: bool,
 }
 
 impl App {
     /// Opens the shell on the mode-select screen.
-    pub fn new() -> Self {
+    pub fn new(audio: Audio) -> Self {
         Self {
             screen: Screen::ModeSelect {
                 highlight: Mode::Faithful,
             },
             next_seed: seed_from_clock(),
+            audio,
+            fullscreen: false,
         }
     }
 
     /// Advances the shell by one real frame: reads input, runs whatever the
     /// current screen does, and draws it to the logical canvas.
     pub fn frame(&mut self) {
+        // Fullscreen can be toggled from anywhere in the shell.
+        if is_key_pressed(KeyCode::F) {
+            self.fullscreen = !self.fullscreen;
+            set_fullscreen(self.fullscreen);
+        }
+
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
                 if mode_select_input(highlight) {
@@ -78,23 +92,40 @@ impl App {
                     render::player_select(*highlight);
                 }
             }
-            Screen::Playing { game, accumulator } => {
+            Screen::Playing {
+                game,
+                accumulator,
+                paused,
+            } => {
                 // Backing out of a match returns to the Collection's mode-select.
                 if is_key_pressed(KeyCode::Escape) {
                     self.return_to_mode_select();
                     return;
                 }
+                if is_key_pressed(KeyCode::P) {
+                    *paused = !*paused;
+                }
                 if is_key_pressed(KeyCode::R) {
                     game.restart();
+                    *paused = false;
                 }
 
-                let input = crate::read_input();
-                *accumulator = (*accumulator + get_frame_time()).min(MAX_FRAME_TIME);
-                while *accumulator >= TIMESTEP {
-                    game.step(input);
-                    *accumulator -= TIMESTEP;
+                if !*paused {
+                    let input = crate::read_input();
+                    *accumulator = (*accumulator + get_frame_time()).min(MAX_FRAME_TIME);
+                    while *accumulator >= TIMESTEP {
+                        self.audio.play(game.step(input));
+                        *accumulator -= TIMESTEP;
+                    }
+                } else {
+                    // Don't let paused wall-time pile up and fast-forward on resume.
+                    *accumulator = 0.0;
                 }
+
                 render::draw(game);
+                if *paused {
+                    render::paused_overlay();
+                }
             }
         }
     }
@@ -112,13 +143,8 @@ impl App {
         self.screen = Screen::Playing {
             game,
             accumulator: 0.0,
+            paused: false,
         };
-    }
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

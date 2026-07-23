@@ -4,7 +4,7 @@
 //! rendering and audio. Every rule of the game lives in `pong_core`.
 
 use macroquad::prelude::*;
-use pong::{App, blit_canvas, logical_camera, logical_canvas};
+use pong::{App, Audio, blit_canvas, logical_camera, logical_canvas};
 use pong_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
 
 fn window_conf() -> Conf {
@@ -21,7 +21,7 @@ fn window_conf() -> Conf {
 async fn main() {
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
-    let mut app = App::new();
+    let mut app = App::new(Audio::load().await);
 
     loop {
         // Everything the game draws goes onto the logical canvas...

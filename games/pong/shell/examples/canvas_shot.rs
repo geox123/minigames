@@ -45,6 +45,10 @@ async fn main() {
         match scene.as_str() {
             "mode" => render::mode_select(pong::app::Mode::Remix),
             "select" => render::player_select(Players::One),
+            "paused" => {
+                render::draw(&game);
+                render::paused_overlay();
+            }
             _ => render::draw(&game),
         }
         set_default_camera();

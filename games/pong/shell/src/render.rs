@@ -159,6 +159,16 @@ fn option(label: &str, y: f32, highlighted: bool, locked: bool) {
     }
 }
 
+/// Draws the paused banner over a frozen match.
+pub fn paused_overlay() {
+    centred_text("PAUSED", LOGICAL_HEIGHT / 2.0 - 4.0, 24);
+    centred_text(
+        "P TO RESUME   F FULLSCREEN   ESC TO QUIT",
+        LOGICAL_HEIGHT / 2.0 + 20.0,
+        9,
+    );
+}
+
 /// Draws a line of text centred across the field, with `y` as its baseline.
 pub fn centred_text(text: &str, y: f32, size: u16) {
     let width = measure_text(text, None, size, 1.0).width;

@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/geox123/minigames"
 
 [workspace.dependencies]
-macroquad = "0.4.15"
+macroquad = { version = "0.4.15", features = ["audio"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
