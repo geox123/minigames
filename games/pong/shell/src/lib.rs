@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod font;
 pub mod render;
 
 pub use app::App;

@@ -10,6 +10,13 @@ use pong_core::{
 };
 
 use crate::app::Mode;
+use crate::font;
+
+/// Text sizes, as the pixel scale each is drawn at.
+const TITLE_SCALE: f32 = 5.0;
+const HEADING_SCALE: f32 = 3.0;
+const OPTION_SCALE: f32 = 2.0;
+const HINT_SCALE: f32 = 1.0;
 
 /// The dashed line down the middle of the field.
 const NET_WIDTH: f32 = 4.0;
@@ -48,8 +55,13 @@ pub fn draw(game: &Game) {
             Side::Left => "LEFT PLAYER WINS",
             Side::Right => "RIGHT PLAYER WINS",
         };
-        centred_text(who, LOGICAL_HEIGHT / 2.0 - 8.0, 16);
-        centred_text("PRESS R TO PLAY AGAIN", LOGICAL_HEIGHT / 2.0 + 12.0, 10);
+        font::draw_centred(who, LOGICAL_HEIGHT / 2.0 - 20.0, OPTION_SCALE, WHITE);
+        font::draw_centred(
+            "PRESS R TO PLAY AGAIN",
+            LOGICAL_HEIGHT / 2.0 + 6.0,
+            HINT_SCALE,
+            WHITE,
+        );
     }
 }
 
@@ -125,52 +137,59 @@ fn draw_digit(digit: u32, x: f32, y: f32) {
 pub fn mode_select(highlight: Mode) {
     clear_background(BLACK);
 
-    centred_text("PONG", 64.0, 40);
-    option("FAITHFUL", 120.0, highlight == Mode::Faithful, false);
+    font::draw_centred("PONG", 44.0, TITLE_SCALE, WHITE);
+    option("FAITHFUL", 118.0, highlight == Mode::Faithful, false);
     option(
         "REMIX  (COMING SOON)",
         150.0,
         highlight == Mode::Remix,
         true,
     );
-    centred_text("ARROWS TO CHOOSE   ENTER TO SELECT", 210.0, 9);
+    font::draw_centred(
+        "ARROWS TO CHOOSE   ENTER TO SELECT",
+        208.0,
+        HINT_SCALE,
+        GRAY,
+    );
 }
 
 /// Draws the screen that picks one or two players before a match.
 pub fn player_select(highlight: Players) {
     clear_background(BLACK);
 
-    centred_text("PONG  FAITHFUL", 64.0, 24);
-    option("1 PLAYER", 120.0, highlight == Players::One, false);
-    option("2 PLAYERS", 150.0, highlight == Players::Two, false);
-    centred_text("ARROWS TO CHOOSE   ENTER TO START", 210.0, 9);
+    font::draw_centred("PONG", 44.0, TITLE_SCALE, WHITE);
+    font::draw_centred("FAITHFUL", 90.0, OPTION_SCALE, GRAY);
+    option("1 PLAYER", 128.0, highlight == Players::One, false);
+    option("2 PLAYERS", 160.0, highlight == Players::Two, false);
+    font::draw_centred("ARROWS TO CHOOSE   ENTER TO START", 208.0, HINT_SCALE, GRAY);
 }
 
 /// One menu row: its label, marked with a caret when highlighted and dimmed
 /// when it is locked.
 fn option(label: &str, y: f32, highlighted: bool, locked: bool) {
-    let size = 16;
     let colour = if locked { GRAY } else { WHITE };
-    let width = measure_text(label, None, size, 1.0).width;
+    let width = font::text_width(label, OPTION_SCALE);
     let x = (LOGICAL_WIDTH - width) / 2.0;
-    draw_text(label, x, y, size as f32, colour);
+    font::draw(label, x, y, OPTION_SCALE, colour);
     if highlighted {
-        draw_text(">", x - 16.0, y, size as f32, colour);
+        // A caret one glyph-width to the left of the label.
+        font::draw(
+            ">",
+            x - font::text_width("> ", OPTION_SCALE),
+            y,
+            OPTION_SCALE,
+            colour,
+        );
     }
 }
 
 /// Draws the paused banner over a frozen match.
 pub fn paused_overlay() {
-    centred_text("PAUSED", LOGICAL_HEIGHT / 2.0 - 4.0, 24);
-    centred_text(
-        "P TO RESUME   F FULLSCREEN   ESC TO QUIT",
-        LOGICAL_HEIGHT / 2.0 + 20.0,
-        9,
+    font::draw_centred("PAUSED", LOGICAL_HEIGHT / 2.0 - 16.0, HEADING_SCALE, WHITE);
+    font::draw_centred(
+        "P RESUME   F FULLSCREEN   ESC QUIT",
+        LOGICAL_HEIGHT / 2.0 + 16.0,
+        HINT_SCALE,
+        WHITE,
     );
-}
-
-/// Draws a line of text centred across the field, with `y` as its baseline.
-pub fn centred_text(text: &str, y: f32, size: u16) {
-    let width = measure_text(text, None, size, 1.0).width;
-    draw_text(text, (LOGICAL_WIDTH - width) / 2.0, y, size as f32, WHITE);
 }
