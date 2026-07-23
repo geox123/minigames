@@ -27,12 +27,13 @@ in [`docs/adr/`](docs/adr).
 
 ## What's here
 
-| Game | Year | Faithful | Remix |
-| ---- | ---- | -------- | ----- |
-| [Pong](games/pong) | 1972 | ✅ playable | coming soon |
+| Game | Year | Faithful | Remix | Status |
+| ---- | ---- | -------- | ----- | ------ |
+| [Pong](games/pong) | 1972 | ✅ playable | ✅ [PULSE](games/pong/PULSE.md) | **Done** |
 
-Pong is the first Game. Its Faithful is live; its Remix — and every later
-Game — follows.
+**Pong is Done** — the Collection's first: both its Faithful and its Remix,
+[PULSE](games/pong/PULSE.md), have shipped. Per the rules, that unlocks work on
+the next Game.
 
 ## How it's built
 

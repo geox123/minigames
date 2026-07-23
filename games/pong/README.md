@@ -1,10 +1,21 @@
+# Pong
+
+The game that started the Collection, and the Collection's first **Done** Game —
+both of its takes have shipped:
+
+- **Faithful** — Atari's 1972 *Pong* recreated: two paddles, one ball, first to
+  eleven, the original's feel kept intact under a modern shell. Documented below.
+- **[PULSE](PULSE.md)** — the Remix: the same core reimagined with spin, power
+  shots, pickups, three modes and neon juice.
+
+Pick either from the mode-select. **▶ Play: https://geox123.github.io/minigames/pong/**
+
+---
+
 # Pong — Faithful
 
-A faithful recreation of Atari's 1972 *Pong*, the game that started the
-Collection. Two paddles, one ball, first to eleven — with the original's feel
-kept intact and a modern shell around it.
-
-**▶ Play: https://geox123.github.io/minigames/pong/**
+A faithful recreation of Atari's 1972 *Pong*. Two paddles, one ball, first to
+eleven — with the original's feel kept intact and a modern shell around it.
 
 ## Controls
 
