@@ -1,0 +1,43 @@
+name: CI
+
+# The Collection's quality bar. Every push and every pull request gets a green
+# check only if the code is formatted, clippy-clean, tested, and builds for both
+# the native and WASM targets. Any one of those failing turns the check red.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust with rustfmt and clippy
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt clippy
+          rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy (warnings denied)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Build (native)
+        run: cargo build --workspace
+
+      - name: Build (WASM)
+        run: cargo build -p pong --target wasm32-unknown-unknown
