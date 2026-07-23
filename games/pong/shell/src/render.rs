@@ -5,7 +5,8 @@
 
 use macroquad::prelude::*;
 use pong_core::{
-    BALL_SIZE, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, PADDLE_HEIGHT, PADDLE_WIDTH, Phase, Side,
+    BALL_SIZE, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, PADDLE_HEIGHT, PADDLE_WIDTH, Phase, Players,
+    Side,
 };
 
 /// The dashed line down the middle of the field.
@@ -114,6 +115,27 @@ fn draw_digit(digit: u32, x: f32, y: f32) {
         if *on {
             draw_rectangle(segment.0, segment.1, segment.2, segment.3, WHITE);
         }
+    }
+}
+
+/// Draws the screen that picks one or two players before a match.
+pub fn player_select(highlight: Players) {
+    clear_background(BLACK);
+
+    centred_text("PONG", 64.0, 40);
+    option("1 PLAYER", 120.0, highlight == Players::One);
+    option("2 PLAYERS", 150.0, highlight == Players::Two);
+    centred_text("ARROWS TO CHOOSE   ENTER TO START", 210.0, 9);
+}
+
+/// One menu row: its label, marked with a caret when it is the highlighted one.
+fn option(label: &str, y: f32, highlighted: bool) {
+    let size = 16;
+    let width = measure_text(label, None, size, 1.0).width;
+    let x = (LOGICAL_WIDTH - width) / 2.0;
+    draw_text(label, x, y, size as f32, WHITE);
+    if highlighted {
+        draw_text(">", x - 16.0, y, size as f32, WHITE);
     }
 }
 

@@ -3,11 +3,13 @@
 mod common;
 
 use common::{centred_rally, conceding, play_a_point, serve_direction, speed};
-use pong_core::{BALL_SPEED, Game, Input, LOGICAL_HEIGHT, LOGICAL_WIDTH, Phase, Side, WIN_SCORE};
+use pong_core::{
+    BALL_SPEED, Game, Input, LOGICAL_HEIGHT, LOGICAL_WIDTH, Phase, Players, Side, WIN_SCORE,
+};
 
 #[test]
 fn a_ball_that_gets_past_a_paddle_scores_for_the_other_player() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     let scorer = play_a_point(&mut game, Side::Left);
 
@@ -18,7 +20,7 @@ fn a_ball_that_gets_past_a_paddle_scores_for_the_other_player() {
 
 #[test]
 fn each_point_starts_again_from_the_middle_at_the_opening_speed() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     // Get the ball up to its fastest, then lose the point.
     centred_rally(&mut game, 13);
@@ -42,7 +44,7 @@ fn each_point_starts_again_from_the_middle_at_the_opening_speed() {
 
 #[test]
 fn serves_alternate_between_the_players() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     let mut serves = Vec::new();
     for _ in 0..4 {
@@ -60,7 +62,7 @@ fn serves_alternate_between_the_players() {
 
 #[test]
 fn the_first_player_to_eleven_points_wins() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     for _ in 0..WIN_SCORE {
         play_a_point(&mut game, Side::Left);
@@ -77,7 +79,7 @@ fn the_first_player_to_eleven_points_wins() {
 
 #[test]
 fn a_won_match_stays_won() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
     for _ in 0..WIN_SCORE {
         play_a_point(&mut game, Side::Left);
     }
@@ -98,7 +100,7 @@ fn a_won_match_stays_won() {
 
 #[test]
 fn a_finished_match_can_be_restarted() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
     for _ in 0..WIN_SCORE {
         play_a_point(&mut game, Side::Left);
     }
@@ -115,7 +117,7 @@ fn a_finished_match_can_be_restarted() {
 
 #[test]
 fn a_match_can_be_restarted_in_the_middle() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
     play_a_point(&mut game, Side::Left);
     play_a_point(&mut game, Side::Left);
 
@@ -127,7 +129,7 @@ fn a_match_can_be_restarted_in_the_middle() {
 
 #[test]
 fn the_ball_waits_before_each_serve() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     let still = (0..30).all(|_| {
         game.step(Input::default());

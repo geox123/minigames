@@ -12,7 +12,7 @@
 
 use macroquad::prelude::*;
 use pong::{blit_canvas, logical_camera, logical_canvas, render};
-use pong_core::{Axis, Game, Input, PADDLE_HEIGHT, PADDLE_SPEED, Phase, Side, TIMESTEP};
+use pong_core::{Axis, Game, Input, PADDLE_HEIGHT, PADDLE_SPEED, Phase, Players, Side, TIMESTEP};
 
 #[macroquad::main("canvas shot")]
 async fn main() {
@@ -22,7 +22,7 @@ async fn main() {
 
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     // The left player follows the ball; the right player sits at the bottom of
     // the field and concedes, so the scene has a score on the board.
@@ -42,7 +42,10 @@ async fn main() {
     // — the screen has to be read back before it is swapped away.
     for frame in 0..2 {
         set_camera(&camera);
-        render::draw(&game);
+        match scene.as_str() {
+            "select" => render::player_select(Players::One),
+            _ => render::draw(&game),
+        }
         set_default_camera();
 
         clear_background(DARKGRAY);

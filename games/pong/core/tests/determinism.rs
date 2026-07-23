@@ -1,7 +1,7 @@
 //! The core is deterministic: the same seed and the same inputs always replay
 //! the same game, which is what makes any of the other tests meaningful.
 
-use pong_core::{Axis, Game, Input, Side};
+use pong_core::{Axis, Game, Input, Players, Side};
 
 /// A snapshot of everything a player can see.
 type Snapshot = (f32, f32, f32, f32, u32, u32);
@@ -9,7 +9,7 @@ type Snapshot = (f32, f32, f32, f32, u32, u32);
 /// Plays a long match against a fixed, varied input script and samples the
 /// game as it goes.
 fn replay(seed: u64) -> Vec<Snapshot> {
-    let mut game = Game::new(seed);
+    let mut game = Game::new(Players::Two, seed);
     let mut samples = Vec::new();
 
     for step in 0..20_000 {

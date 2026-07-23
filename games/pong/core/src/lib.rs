@@ -81,15 +81,6 @@ pub struct Input {
     pub right: Axis,
 }
 
-impl Input {
-    fn axis(self, side: Side) -> Axis {
-        match side {
-            Side::Left => self.left,
-            Side::Right => self.right,
-        }
-    }
-}
-
 /// A paddle, as the shell should draw it: the top-left corner of a
 /// [`PADDLE_WIDTH`] by [`PADDLE_HEIGHT`] rectangle.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -138,6 +129,15 @@ pub enum Phase {
     },
 }
 
+/// Who is playing the right paddle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Players {
+    /// One player, with the computer on the right paddle.
+    One,
+    /// Two players at one keyboard.
+    Two,
+}
+
 /// The score a player has to reach to win, as in the original.
 pub const WIN_SCORE: u32 = 11;
 
@@ -155,6 +155,22 @@ const WIDEST_ANGLE: f32 = 45.0;
 /// it takes to reach each — the original stepped the ball up twice.
 const RALLY_SPEEDS: [f32; 3] = [BALL_SPEED, 175.0, 220.0];
 const SPEED_UP_AFTER_HITS: [u32; 2] = [4, 12];
+
+/// How the computer opponent plays.
+///
+/// It is a shade slower than a player; it only takes a fresh look at the ball
+/// every [`OPPONENT_REACTION`] seconds and keeps moving on what it last saw in
+/// between; it waits until the ball is genuinely coming at it before
+/// committing; it plays the ball where it is rather than working out where a
+/// bounce will put it; and it is content to be roughly right. Those add up to a
+/// human's weaknesses — a fast ball struck off the end of a paddle changes
+/// direction faster than the opponent notices, which is how a player beats it.
+const OPPONENT_SPEED: f32 = PADDLE_SPEED * 0.9;
+const OPPONENT_REACTION: f32 = 0.16;
+const OPPONENT_REACTS_AT: f32 = LOGICAL_WIDTH * 0.35;
+const OPPONENT_DEADZONE: f32 = 6.0;
+/// How far off the ball the opponent aims, re-drawn on every serve.
+const OPPONENT_AIM_DRIFT: f32 = 10.0;
 
 /// The angle the ball leaves at when it lands on `segment`, counting from the
 /// top of the paddle down.
@@ -188,6 +204,13 @@ pub struct Game {
     serve_countdown: f32,
     /// Which player the next serve goes to. Serves alternate.
     serve_towards: Side,
+    players: Players,
+    /// How far off the ball the computer opponent is aiming this point.
+    opponent_aim: f32,
+    /// Where the opponent last decided to move its paddle to.
+    opponent_target: f32,
+    /// Seconds until the opponent next takes a fresh look at the ball.
+    opponent_look_due: f32,
     rng: Rng,
 }
 
@@ -201,7 +224,7 @@ const PARKED_BALL: Ball = Ball {
 
 impl Game {
     /// Starts a new game. The same seed always produces the same game.
-    pub fn new(seed: u64) -> Self {
+    pub fn new(players: Players, seed: u64) -> Self {
         let mut rng = Rng::new(seed);
         let serve_towards = if rng.flip() { Side::Left } else { Side::Right };
         Self {
@@ -212,6 +235,10 @@ impl Game {
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
             serve_towards,
+            players,
+            opponent_aim: 0.0,
+            opponent_target: LOGICAL_HEIGHT / 2.0,
+            opponent_look_due: 0.0,
             rng,
         }
     }
@@ -253,10 +280,26 @@ impl Game {
 
     /// Advances the game by exactly one [`TIMESTEP`].
     pub fn step(&mut self, input: Input) -> Events {
-        // The players keep hold of their paddles whatever the ball is doing.
-        for side in [Side::Left, Side::Right] {
-            move_paddle(&mut self.paddles[side.index()], input.axis(side));
-        }
+        // Everyone keeps hold of their paddle whatever the ball is doing. In a
+        // one-player game the computer has the right paddle, and the right
+        // player's keys do nothing.
+        let (right_axis, right_speed) = match self.players {
+            Players::Two => (input.right, PADDLE_SPEED),
+            Players::One => {
+                self.opponent_looks();
+                (self.opponent_axis(), OPPONENT_SPEED)
+            }
+        };
+        move_paddle(
+            &mut self.paddles[Side::Left.index()],
+            input.left,
+            PADDLE_SPEED,
+        );
+        move_paddle(
+            &mut self.paddles[Side::Right.index()],
+            right_axis,
+            right_speed,
+        );
 
         match self.phase {
             Phase::Serving => {
@@ -268,6 +311,39 @@ impl Game {
             }
             Phase::Rally => self.advance_ball(),
             Phase::GameOver { .. } => Events::default(),
+        }
+    }
+
+    /// Lets the computer opponent take a fresh look at the ball, if it is due
+    /// one. Between looks it keeps playing what it last saw.
+    fn opponent_looks(&mut self) {
+        self.opponent_look_due -= TIMESTEP;
+        if self.opponent_look_due > 0.0 {
+            return;
+        }
+        self.opponent_look_due = OPPONENT_REACTION;
+
+        // It commits only once the ball is coming its way and has crossed into
+        // its half, and it plays the ball where it is — it does not work out
+        // where a bounce will put it. Otherwise it drifts back to the middle,
+        // which is where a player waits too.
+        let watching = self.ball.vx > 0.0 && self.ball.x > OPPONENT_REACTS_AT;
+        self.opponent_target = if watching {
+            self.ball.y + self.opponent_aim
+        } else {
+            LOGICAL_HEIGHT / 2.0
+        };
+    }
+
+    /// Which way the computer opponent pushes its paddle this step.
+    fn opponent_axis(&self) -> Axis {
+        let centre = self.paddles[Side::Right.index()] + PADDLE_HEIGHT / 2.0;
+        if centre < self.opponent_target - OPPONENT_DEADZONE {
+            Axis::Down
+        } else if centre > self.opponent_target + OPPONENT_DEADZONE {
+            Axis::Up
+        } else {
+            Axis::Hold
         }
     }
 
@@ -333,6 +409,11 @@ impl Game {
     /// Puts the ball back in play, at the opening speed and a shallow angle,
     /// towards whichever player is due to receive.
     fn serve(&mut self) {
+        // The opponent takes a fresh view of where on the paddle it wants the
+        // ball each point, so it does not play every rally identically.
+        let drift = 2.0 * OPPONENT_AIM_DRIFT;
+        self.opponent_aim = self.rng.below(drift as u32 + 1) as f32 - OPPONENT_AIM_DRIFT;
+
         // Only the middle four segments' angles, so a serve is always playable.
         let angle = segment_angle(SEGMENTS / 2 - 2 + self.rng.below(4) as usize);
         let towards = match self.serve_towards {
@@ -404,8 +485,8 @@ impl Game {
 }
 
 /// Moves one paddle for a step and keeps it within the reach the field allows.
-fn move_paddle(y: &mut f32, axis: Axis) {
-    let travel = PADDLE_SPEED * TIMESTEP;
+fn move_paddle(y: &mut f32, axis: Axis, speed: f32) {
+    let travel = speed * TIMESTEP;
     match axis {
         Axis::Up => *y -= travel,
         Axis::Down => *y += travel,

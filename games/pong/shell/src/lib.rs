@@ -1,13 +1,34 @@
-//! The shell's reusable pieces: the logical canvas the game is drawn to, and
-//! the drawing code itself.
+//! The shell's reusable pieces: the front-end state machine, the logical
+//! canvas the game is drawn to, and the drawing code.
 //!
 //! The binary in `main.rs` is the game. Splitting these out lets the dev tools
 //! in `examples/` render real frames without a human at the keyboard.
 
+pub mod app;
 pub mod render;
 
+pub use app::App;
+
 use macroquad::prelude::*;
-use pong_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
+use pong_core::{Axis, Input, LOGICAL_HEIGHT, LOGICAL_WIDTH};
+
+/// Reads both players off one keyboard, as the original's two knobs: W/S on the
+/// left, the arrow keys on the right.
+pub fn read_input() -> Input {
+    Input {
+        left: axis(KeyCode::W, KeyCode::S),
+        right: axis(KeyCode::Up, KeyCode::Down),
+    }
+}
+
+fn axis(up: KeyCode, down: KeyCode) -> Axis {
+    match (is_key_down(up), is_key_down(down)) {
+        (true, false) => Axis::Up,
+        (false, true) => Axis::Down,
+        // Both or neither: stay put.
+        _ => Axis::Hold,
+    }
+}
 
 /// The offscreen canvas the game is drawn to, at the Faithful's logical
 /// resolution. Nearest-neighbour filtering keeps it crisp when it is scaled up

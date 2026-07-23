@@ -3,14 +3,14 @@
 mod common;
 
 use common::tracking;
-use pong_core::{BALL_SIZE, Game, LOGICAL_HEIGHT};
+use pong_core::{BALL_SIZE, Game, LOGICAL_HEIGHT, Players};
 
 /// A hundred seconds of play — many points, many rallies.
 const LONG_RUN: usize = 12_000;
 
 #[test]
 fn the_ball_never_leaves_the_field_through_the_top_or_bottom() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     for step in 0..LONG_RUN {
         let input = tracking(&game, 0.0, 0.0);
@@ -28,7 +28,7 @@ fn the_ball_never_leaves_the_field_through_the_top_or_bottom() {
 
 #[test]
 fn the_ball_rebounds_off_the_top_and_bottom_without_losing_its_way() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
     let mut rebounds = 0;
 
     for _ in 0..LONG_RUN {

@@ -3,15 +3,15 @@
 mod common;
 
 use common::{centred_rally, speed, strike};
-use pong_core::{Game, Side};
+use pong_core::{Game, Players, Side};
 
 /// The original's paddle is read in eight segments: where the ball lands along
 /// the paddle decides the angle it leaves at, which is what lets a player aim.
 #[test]
 fn where_the_ball_strikes_the_paddle_decides_where_it_goes() {
-    let struck_high = strike(&mut Game::new(7), Side::Left, 12.0);
-    let struck_centre = strike(&mut Game::new(7), Side::Left, 0.0);
-    let struck_low = strike(&mut Game::new(7), Side::Left, -12.0);
+    let struck_high = strike(&mut Game::new(Players::Two, 7), Side::Left, 12.0);
+    let struck_centre = strike(&mut Game::new(Players::Two, 7), Side::Left, 0.0);
+    let struck_low = strike(&mut Game::new(Players::Two, 7), Side::Left, -12.0);
 
     assert!(
         struck_high.vy < 0.0,
@@ -31,7 +31,7 @@ fn where_the_ball_strikes_the_paddle_decides_where_it_goes() {
 
 #[test]
 fn a_paddle_sends_the_ball_back_the_way_it_came() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     let off_the_left = strike(&mut game, Side::Left, 0.0);
     assert!(off_the_left.vx > 0.0, "left paddle did not turn the ball");
@@ -42,7 +42,7 @@ fn a_paddle_sends_the_ball_back_the_way_it_came() {
 
 #[test]
 fn a_paddle_hit_is_reported_to_the_shell() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     // `strike` only returns on a reported hit, so reaching here is the assertion.
     strike(&mut game, Side::Left, 0.0);
@@ -52,7 +52,7 @@ fn a_paddle_hit_is_reported_to_the_shell() {
 /// tension in a long exchange comes from.
 #[test]
 fn the_ball_speeds_up_as_the_rally_goes_on() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     let rally = centred_rally(&mut game, 16);
     let (opening, middle, late) = (
@@ -69,7 +69,7 @@ fn the_ball_speeds_up_as_the_rally_goes_on() {
 
 #[test]
 fn the_ball_holds_its_speed_between_the_step_ups() {
-    let mut game = Game::new(7);
+    let mut game = Game::new(Players::Two, 7);
 
     let rally = centred_rally(&mut game, 16);
 
