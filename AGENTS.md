@@ -3,7 +3,8 @@
 Always use the **geox123** GitHub account in this repo — never the `johnjohto` account, even though it is the active `gh` account.
 
 - For `gh` commands: prefix with `GH_TOKEN=$(gh auth token --user geox123)`, e.g. `GH_TOKEN=$(gh auth token --user geox123) gh issue list`.
-- The remote repo is `geox123/minigames` (private): `https://github.com/geox123/minigames`.
+- For `git push`/`fetch`: the repo-local `credential.helper` (set in `.git/config`) already authenticates as geox123, overriding the global credential manager's johnjohto credential. Don't remove it.
+- The remote repo is `geox123/minigames` (public): `https://github.com/geox123/minigames`.
 
 ## Agent skills
 
