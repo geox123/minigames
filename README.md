@@ -30,10 +30,11 @@ in [`docs/adr/`](docs/adr).
 | Game | Year | Faithful | Remix | Status |
 | ---- | ---- | -------- | ----- | ------ |
 | [Pong](games/pong) | 1972 | ✅ playable | ✅ [PULSE](games/pong/PULSE.md) | **Done** |
+| [Breakout](games/breakout) | 1976 | ✅ playable | 🔜 coming | Faithful live |
 
 **Pong is Done** — the Collection's first: both its Faithful and its Remix,
-[PULSE](games/pong/PULSE.md), have shipped. Per the rules, that unlocks work on
-the next Game.
+[PULSE](games/pong/PULSE.md), have shipped. **Breakout's Faithful is now live**
+too; its Remix is next, and Breakout becomes Done once that ships.
 
 ## How it's built
 
