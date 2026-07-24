@@ -189,16 +189,44 @@ fn draw_game_over() {
 /// HAILFALL's neon palette — the Remix's vivid look, against the Faithful's mono.
 const NEON_SHIP: Color = color_u8!(90, 220, 255, 255);
 const NEON_GLOW: Color = color_u8!(40, 120, 160, 255);
+const NEON_BULLET: Color = color_u8!(255, 240, 140, 255);
+const NEON_ENEMY: Color = color_u8!(255, 90, 170, 255);
 
-/// Draws one frame of HAILFALL — the Remix — onto the logical canvas. The tracer
-/// bullet draws the field and the ship; the swarm, the fire and the HUD follow in
-/// later tickets.
+/// Draws one frame of HAILFALL — the Remix — onto the logical canvas. The swarm,
+/// the ship and its fire; the enemy fire, the tools and the HUD follow in later
+/// tickets.
 pub fn draw_remix(game: &stepfall_remix_core::Game) {
-    use stepfall_remix_core::{SHIP_HEIGHT, SHIP_WIDTH};
+    use stepfall_remix_core::{
+        ENEMY_HEIGHT, ENEMY_WIDTH, PLAYER_BULLET_HEIGHT, PLAYER_BULLET_WIDTH, SHIP_HEIGHT,
+        SHIP_WIDTH,
+    };
     clear_background(color_u8!(4, 6, 14, 255));
 
+    // The squadron.
+    for enemy in game.enemies() {
+        draw_rectangle(enemy.x, enemy.y, ENEMY_WIDTH, ENEMY_HEIGHT, NEON_ENEMY);
+        draw_rectangle(
+            enemy.x + 2.0,
+            enemy.y + 3.0,
+            ENEMY_WIDTH - 4.0,
+            2.0,
+            color_u8!(20, 8, 16, 255),
+        );
+    }
+
+    // The ship's fire, climbing.
+    for bullet in game.bullets() {
+        draw_rectangle(
+            bullet.x,
+            bullet.y,
+            PLAYER_BULLET_WIDTH,
+            PLAYER_BULLET_HEIGHT,
+            NEON_BULLET,
+        );
+    }
+
+    // The ship: a bright arrowhead over a glow.
     let ship = game.ship();
-    // A little arrowhead cockpit: a glow behind a bright hull.
     draw_rectangle(
         ship.x - 1.0,
         ship.y - 1.0,

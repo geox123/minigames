@@ -33,6 +33,31 @@ const MARGIN: f32 = 8.0;
 /// it stays the defender at the bottom even with full freedom to weave.
 const BAND_TOP: f32 = LOGICAL_HEIGHT * 0.5;
 
+/// The ship's fire: bullet size, how fast it climbs, and the interrupts between
+/// shots while fire is held.
+pub const PLAYER_BULLET_WIDTH: f32 = 2.0;
+pub const PLAYER_BULLET_HEIGHT: f32 = 6.0;
+const PLAYER_BULLET_SPEED: f32 = 300.0;
+const FIRE_INTERVAL: u32 = 9;
+
+/// A squadron of enemies: how big each is, how many enter at once, how they are
+/// spaced, and how they fly in and sway once settled.
+pub const ENEMY_WIDTH: f32 = 12.0;
+pub const ENEMY_HEIGHT: f32 = 10.0;
+const SQUAD_COLS: usize = 6;
+const SQUAD_ROWS: usize = 2;
+const ENEMY_GAP_X: f32 = 26.0;
+const ENEMY_GAP_Y: f32 = 18.0;
+/// Where the squadron's top row settles, how fast it flies in, and its sway.
+const SQUAD_TOP: f32 = 34.0;
+const ENTRY_SPEED: f32 = 90.0;
+const SWAY_AMP: f32 = 22.0;
+const SWAY_RATE: f32 = 0.9;
+/// Interrupts to wait before the next squadron flies in once the field is clear.
+const WAVE_GAP: u32 = 90;
+/// What downing one enemy scores.
+const ENEMY_SCORE: u32 = 100;
+
 /// Which run a game is playing. The behaviours differ from a later ticket; here
 /// the mode is only recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,10 +105,33 @@ pub struct Ship {
     pub y: f32,
 }
 
+/// One of the ship's shots in flight, as the shell should draw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bullet {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+}
+
+/// An enemy still flying, as the shell should draw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Enemy {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It
-/// grows a field per ticket; empty for the tracer bullet.
+/// grows a field per ticket.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Events {}
+pub struct Events {
+    /// The ship fired a shot this step.
+    pub shot_fired: bool,
+    /// A shot downed an enemy this step.
+    pub enemy_killed: bool,
+}
 
 /// Where a run is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,12 +142,38 @@ pub enum Phase {
     Over,
 }
 
+/// A bullet's position.
+#[derive(Clone, Copy)]
+struct Pos {
+    x: f32,
+    y: f32,
+}
+
+/// One enemy of a squadron: its home column, its live position, and the row it
+/// settles at once it has flown in.
+#[derive(Clone, Copy)]
+struct EnemyState {
+    home_x: f32,
+    x: f32,
+    y: f32,
+    hold_y: f32,
+}
+
 /// A game of HAILFALL.
 pub struct Game {
     /// Left edge of the ship.
     ship_x: f32,
     /// Top edge of the ship.
     ship_y: f32,
+    /// The ship's shots in flight.
+    bullets: Vec<Pos>,
+    /// Interrupts until the ship may fire again.
+    fire_cooldown: u32,
+    /// The enemies currently flying.
+    enemies: Vec<EnemyState>,
+    /// Interrupts until the next squadron flies in, once the field is clear.
+    wave_gap: u32,
+    score: u32,
     mode: Mode,
     #[allow(dead_code)]
     loadout: Loadout,
@@ -114,15 +188,22 @@ impl Game {
     /// Starts a new run on `seed`, in `mode`, flying `loadout`. The same seed and
     /// inputs always produce the same run.
     pub fn new(seed: u64, mode: Mode, loadout: Loadout) -> Self {
-        Self {
+        let mut game = Self {
             ship_x: (LOGICAL_WIDTH - SHIP_WIDTH) / 2.0,
             ship_y: LOGICAL_HEIGHT - SHIP_HEIGHT - MARGIN * 3.0,
+            bullets: Vec::new(),
+            fire_cooldown: 0,
+            enemies: Vec::new(),
+            wave_gap: 0,
+            score: 0,
             mode,
             loadout,
             phase: Phase::Playing,
             steps: 0,
             seed,
-        }
+        };
+        game.spawn_squadron();
+        game
     }
 
     /// The ship, as the shell should draw it.
@@ -131,6 +212,21 @@ impl Game {
             x: self.ship_x,
             y: self.ship_y,
         }
+    }
+
+    /// The ship's shots in flight, for the shell to draw.
+    pub fn bullets(&self) -> impl Iterator<Item = Bullet> + '_ {
+        self.bullets.iter().map(|b| Bullet { x: b.x, y: b.y })
+    }
+
+    /// The enemies flying, for the shell to draw.
+    pub fn enemies(&self) -> impl Iterator<Item = Enemy> + '_ {
+        self.enemies.iter().map(|e| Enemy { x: e.x, y: e.y })
+    }
+
+    /// The score so far.
+    pub fn score(&self) -> u32 {
+        self.score
     }
 
     /// Which run this is.
@@ -151,11 +247,16 @@ impl Game {
     /// Advances the run by exactly one [`TIMESTEP`].
     pub fn step(&mut self, input: Input) -> Events {
         self.steps += 1;
-        let events = Events::default();
+        let mut events = Events::default();
         if self.phase == Phase::Over {
             return events;
         }
         self.fly(input);
+        self.fire(input, &mut events);
+        self.advance_bullets();
+        self.advance_enemies();
+        self.resolve_hits(&mut events);
+        self.manage_waves();
         events
     }
 
@@ -173,6 +274,104 @@ impl Game {
             .ship_y
             .clamp(BAND_TOP, LOGICAL_HEIGHT - MARGIN - SHIP_HEIGHT);
     }
+
+    /// Fires a shot on its cadence while fire is held — one every [`FIRE_INTERVAL`]
+    /// interrupts, from the ship's nose.
+    fn fire(&mut self, input: Input, events: &mut Events) {
+        self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
+        if input.fire && self.fire_cooldown == 0 {
+            self.bullets.push(Pos {
+                x: self.ship_x + SHIP_WIDTH / 2.0 - PLAYER_BULLET_WIDTH / 2.0,
+                y: self.ship_y - PLAYER_BULLET_HEIGHT,
+            });
+            self.fire_cooldown = FIRE_INTERVAL;
+            events.shot_fired = true;
+        }
+    }
+
+    /// Climbs every shot, retiring the ones that leave the top of the field.
+    fn advance_bullets(&mut self) {
+        let dy = PLAYER_BULLET_SPEED * TIMESTEP;
+        for b in &mut self.bullets {
+            b.y -= dy;
+        }
+        self.bullets.retain(|b| b.y + PLAYER_BULLET_HEIGHT > 0.0);
+    }
+
+    /// Flies the squadron in from above until it settles, then sways it gently
+    /// side to side as one.
+    fn advance_enemies(&mut self) {
+        let sway = SWAY_AMP * (self.steps as f32 * TIMESTEP * SWAY_RATE).sin();
+        let dy = ENTRY_SPEED * TIMESTEP;
+        for e in &mut self.enemies {
+            e.y = (e.y + dy).min(e.hold_y);
+            e.x = e.home_x + sway;
+        }
+    }
+
+    /// Spends each shot on the first enemy it overlaps, downing the enemy and
+    /// scoring it.
+    fn resolve_hits(&mut self, events: &mut Events) {
+        let mut survivors = Vec::with_capacity(self.bullets.len());
+        for bullet in std::mem::take(&mut self.bullets) {
+            let rect = (
+                bullet.x,
+                bullet.y,
+                PLAYER_BULLET_WIDTH,
+                PLAYER_BULLET_HEIGHT,
+            );
+            let hit = self
+                .enemies
+                .iter()
+                .position(|e| overlaps(rect, (e.x, e.y, ENEMY_WIDTH, ENEMY_HEIGHT)));
+            if let Some(i) = hit {
+                self.enemies.swap_remove(i);
+                self.score += ENEMY_SCORE;
+                events.enemy_killed = true;
+            } else {
+                survivors.push(bullet);
+            }
+        }
+        self.bullets = survivors;
+    }
+
+    /// Sends in a fresh squadron a short beat after the field is cleared.
+    fn manage_waves(&mut self) {
+        if self.enemies.is_empty() {
+            if self.wave_gap == 0 {
+                self.spawn_squadron();
+            } else {
+                self.wave_gap -= 1;
+            }
+        } else {
+            self.wave_gap = WAVE_GAP;
+        }
+    }
+
+    /// Sends a squadron flying in from above the top of the field.
+    fn spawn_squadron(&mut self) {
+        let span = (SQUAD_COLS as f32 - 1.0) * ENEMY_GAP_X;
+        let first_centre = (LOGICAL_WIDTH - span) / 2.0;
+        for row in 0..SQUAD_ROWS {
+            for col in 0..SQUAD_COLS {
+                let centre = first_centre + col as f32 * ENEMY_GAP_X;
+                let home_x = centre - ENEMY_WIDTH / 2.0;
+                let hold_y = SQUAD_TOP + row as f32 * ENEMY_GAP_Y;
+                let y = hold_y - LOGICAL_HEIGHT * 0.6 - row as f32 * ENEMY_GAP_Y;
+                self.enemies.push(EnemyState {
+                    home_x,
+                    x: home_x,
+                    y,
+                    hold_y,
+                });
+            }
+        }
+    }
+}
+
+/// Whether two rectangles, each `(x, y, width, height)`, overlap.
+fn overlaps(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 < b.0 + b.2 && a.0 + a.2 > b.0 && a.1 < b.1 + b.3 && a.1 + a.3 > b.1
 }
 
 #[cfg(test)]
@@ -278,4 +477,72 @@ mod tests {
             });
         }
     }
+
+    fn firing() -> Input {
+        Input {
+            fire: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn holding_fire_launches_a_shot_that_climbs() {
+        let mut game = game();
+        game.step(firing());
+        let launched = game
+            .bullets()
+            .next()
+            .expect("holding fire launches a shot")
+            .y;
+
+        // The cadence holds the next shot back a few steps, so this one is alone
+        // and climbing.
+        for _ in 0..4 {
+            game.step(firing());
+        }
+        let now = game.bullets().next().expect("the shot is in flight").y;
+        assert!(now < launched, "the shot climbs the field");
+    }
+
+    #[test]
+    fn a_squadron_flies_in_and_settles() {
+        let mut game = game();
+        assert_eq!(
+            game.enemies().count(),
+            SQUAD_COLS * SQUAD_ROWS,
+            "a full squadron enters"
+        );
+
+        // Let it fly in; the top row settles in view near its hold row.
+        for _ in 0..300 {
+            game.step(Input::default());
+        }
+        let top = game.enemies().map(|e| e.y).fold(f32::INFINITY, f32::min);
+        assert!(
+            (top - SQUAD_TOP).abs() < 1.0,
+            "the squadron settled at its row"
+        );
+    }
+
+    #[test]
+    fn a_shot_downs_an_enemy_and_scores() {
+        let mut game = game();
+        let before = game.enemies().count();
+
+        // Hold fire; the squadron sways over the ship and a shot connects.
+        let mut downed = false;
+        for _ in 0..MAX_STEPS {
+            let events = game.step(firing());
+            if events.enemy_killed {
+                downed = true;
+                break;
+            }
+        }
+        assert!(downed, "a held stream of fire never downed an enemy");
+        assert!(game.enemies().count() < before, "the squadron thinned");
+        assert!(game.score() > 0, "downing an enemy scores");
+    }
+
+    /// A generous ceiling on how long a firing test plays before giving up.
+    const MAX_STEPS: usize = 20_000;
 }
