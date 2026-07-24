@@ -5,8 +5,12 @@
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 use stepfall_core::{Game, Phase, TIMESTEP};
-use stepfall_remix_core::{Game as RemixGame, Loadout, Mode as RunMode, Phase as RemixPhase};
+use stepfall_remix_core::{
+    BOSS_HEIGHT, BOSS_WIDTH, Game as RemixGame, Loadout, Mode as RunMode, Phase as RemixPhase,
+    SHIP_HEIGHT, SHIP_WIDTH,
+};
 
+use crate::fx::Fx;
 use crate::{Audio, read_input, read_remix_input, render};
 
 /// How much real time a single frame may contribute to the simulation. Without
@@ -49,6 +53,8 @@ enum Screen {
     RemixMatch {
         game: Box<RemixGame>,
         accumulator: Accumulator,
+        /// The run's feel: trails, particles, shake and hit-stop.
+        fx: Fx,
         paused: bool,
         /// Which mode this run is.
         mode: RunMode,
@@ -69,6 +75,8 @@ pub struct App {
     fullscreen: bool,
     /// The best score this session, carried across restarts and new games.
     best: u32,
+    /// How far to nudge the blit this frame — HAILFALL's screen shake, else zero.
+    blit_shake: Vec2,
     audio: Audio,
 }
 
@@ -82,13 +90,22 @@ impl App {
             next_seed: seed_from_clock(),
             fullscreen: false,
             best: 0,
+            blit_shake: Vec2::ZERO,
             audio,
         }
+    }
+
+    /// How far to nudge the canvas when it is blitted this frame.
+    pub fn blit_shake(&self) -> Vec2 {
+        self.blit_shake
     }
 
     /// Advances the shell by one real frame: reads input, runs whatever the
     /// current screen does, and draws it to the logical canvas.
     pub fn frame(&mut self) {
+        // Any shake is set anew each frame by the run that is playing.
+        self.blit_shake = Vec2::ZERO;
+
         // Fullscreen can be toggled from anywhere in the shell.
         if is_key_pressed(KeyCode::F) {
             self.fullscreen = !self.fullscreen;
@@ -182,6 +199,7 @@ impl App {
             Screen::RemixMatch {
                 game,
                 accumulator,
+                fx,
                 paused,
                 mode,
                 day,
@@ -199,15 +217,32 @@ impl App {
                     return;
                 }
 
+                let dt = get_frame_time();
+                fx.update(dt);
+
                 let over = game.phase() == RemixPhase::Over;
                 if !over {
                     if is_key_pressed(KeyCode::P) {
                         *paused = !*paused;
                     }
-                    if !*paused {
+                    // Hit-stop holds the sim still for a beat on the big impacts.
+                    if !*paused && !fx.frozen() {
                         let input = read_remix_input();
-                        for _ in 0..accumulator.steps(get_frame_time()) {
-                            game.step(input);
+                        for _ in 0..accumulator.steps(dt) {
+                            let events = game.step(input);
+                            self.audio.play_remix(&events);
+                            let ship = game.ship();
+                            let ship_centre =
+                                (ship.x + SHIP_WIDTH / 2.0, ship.y + SHIP_HEIGHT / 2.0);
+                            let boss_centre = game
+                                .boss()
+                                .map(|b| (b.x + BOSS_WIDTH / 2.0, b.y + BOSS_HEIGHT / 2.0));
+                            fx.on_step(
+                                events,
+                                ship_centre,
+                                boss_centre,
+                                game.phase() == RemixPhase::Playing,
+                            );
                         }
                     } else {
                         accumulator.reset();
@@ -231,7 +266,9 @@ impl App {
                     }
                 }
 
+                self.blit_shake = Vec2::from(fx.shake_offset());
                 render::draw_remix(game, *best);
+                fx.draw();
                 if over {
                     render::remix_summary(game, *mode, *best);
                 } else if *paused {
@@ -282,6 +319,7 @@ impl App {
         self.screen = Screen::RemixMatch {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
+            fx: Fx::default(),
             paused: false,
             mode,
             day,

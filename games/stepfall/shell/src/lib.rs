@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod fx;
 pub mod render;
 pub mod sprites;
 
@@ -55,7 +56,8 @@ pub fn logical_camera(canvas: &RenderTarget) -> Camera2D {
     shell_kit::screen::logical_camera(canvas, LOGICAL_WIDTH, LOGICAL_HEIGHT)
 }
 
-/// Blits STEPFALL's canvas to the window.
-pub fn blit_canvas(canvas: &Texture2D) {
-    shell_kit::screen::blit_canvas(canvas, LOGICAL_WIDTH, LOGICAL_HEIGHT, Vec2::ZERO);
+/// Blits STEPFALL's canvas to the window, nudged by `shake` (HAILFALL's screen
+/// shake; the Faithful and the menus pass zero).
+pub fn blit_canvas(canvas: &Texture2D, shake: Vec2) {
+    shell_kit::screen::blit_canvas(canvas, LOGICAL_WIDTH, LOGICAL_HEIGHT, shake);
 }
