@@ -13,7 +13,10 @@ fn replay(seed: u64) -> Vec<Snapshot> {
             1 => Move::Right,
             _ => Move::Hold,
         };
-        game.step(Input { paddle });
+        game.step(Input {
+            paddle,
+            ..Default::default()
+        });
         if step % 250 == 0 {
             let ball = game.ball();
             let p = game.paddle();

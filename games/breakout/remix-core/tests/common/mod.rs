@@ -35,6 +35,9 @@ pub fn rally_until(game: &mut Game, mut stop: impl FnMut(&Game) -> bool) {
             return;
         }
         let paddle = track(game, 0.0);
-        game.step(Input { paddle });
+        game.step(Input {
+            paddle,
+            ..Default::default()
+        });
     }
 }
