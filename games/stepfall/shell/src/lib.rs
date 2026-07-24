@@ -4,10 +4,12 @@
 //! render real frames without a human at the keyboard.
 
 pub mod app;
+pub mod audio;
 pub mod render;
 pub mod sprites;
 
 pub use app::App;
+pub use audio::Audio;
 
 use macroquad::prelude::*;
 use stepfall_core::{Input, LOGICAL_HEIGHT, LOGICAL_WIDTH, Move};
