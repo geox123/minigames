@@ -18,6 +18,8 @@
 //! so the core never knows the concept of "unlocks": it only ever draws on the
 //! pool it is handed.
 
+pub mod meta;
+
 /// Width of the portrait play field, in logical units.
 pub const LOGICAL_WIDTH: f32 = 240.0;
 /// Height of the portrait play field, in logical units.
