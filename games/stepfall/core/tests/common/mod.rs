@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use invaders_core::{Game, Input, Move};
+use stepfall_core::{Game, Input, Move};
 
 /// A generous ceiling on how long a test plays before giving up.
 pub const MAX_STEPS: usize = 200_000;

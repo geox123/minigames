@@ -3,7 +3,7 @@
 mod common;
 
 use common::{MAX_STEPS, formation_top, game, still};
-use invaders_core::{COLS, INVADERS, ROWS};
+use stepfall_core::{COLS, INVADERS, ROWS};
 
 #[test]
 fn a_fresh_formation_is_five_rows_of_eleven() {

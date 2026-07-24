@@ -71,9 +71,11 @@ Faithfuls reference the original name plainly; Remixes ship under invented names
   posture as Pong.
 - **Space Invaders** — Taito is more protective than Atari, though a rung below
   the Nintendo-tier ADR 0002 flags. The required per-title re-check is done and
-  recorded in [ADR 0004](adr/0004-space-invaders-ip-recheck.md): build the
-  Faithful under its real name with hand-authored sprites and synthesized audio,
-  with renaming held as the cheap fallback if the rights holder ever objects.
+  recorded in [ADR 0004](adr/0004-space-invaders-ip-recheck.md), and unlike
+  Pong's and Breakout's it resolved *against* the real name: the Game ships as
+  **STEPFALL**, an invented name, still faithful to the 1978 original's rules and
+  still describing plainly what it recreates. Expect the same for Pac-Man and the
+  Nintendo-era titles — budget an invented name from the start.
 - **Pac-Man** (next batch) — Namco; do the per-title re-check when it comes up.
 
 ## Working notes
