@@ -17,6 +17,8 @@ const DAILY_DAY: usize = 1;
 const DAILY_BEST: usize = 2;
 /// Slot for the highest Ascension tier reached.
 const ASCENSION_TIER: usize = 3;
+/// Slot for the bitset of unlocked content.
+const UNLOCKED: usize = 4;
 
 /// How many slots the store holds (room to spare for later).
 const SLOTS: usize = 8;
@@ -57,6 +59,18 @@ pub fn set_ascension_tier(tier: u32) {
     backend::set(ASCENSION_TIER, tier as f64);
 }
 
+/// The saved bitset of unlocked content, or 0 if nothing is saved. The meaning
+/// of the bits belongs to the game's meta, which reads 0 as "a fresh player" and
+/// hands back the starting kit — this crate only keeps the number.
+pub fn unlocked_bits() -> u32 {
+    backend::get(UNLOCKED) as u32
+}
+
+/// Saves the bitset of unlocked content.
+pub fn set_unlocked_bits(bits: u32) {
+    backend::set(UNLOCKED, bits as f64);
+}
+
 #[cfg(target_arch = "wasm32")]
 mod backend {
     unsafe extern "C" {
@@ -74,6 +88,27 @@ mod backend {
         // Safety: the function is provided by rift-storage.js and only writes a
         // number into localStorage.
         unsafe { rift_storage_set(slot as i32, value) }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_unlock_bitset_round_trips() {
+        // Borrow the real save and put it back, so running the suite never
+        // clobbers a player's progress.
+        let original = unlocked_bits();
+
+        set_unlocked_bits(0b1010_1010);
+        assert_eq!(unlocked_bits(), 0b1010_1010, "saved bits read back exactly");
+
+        set_unlocked_bits(0);
+        assert_eq!(unlocked_bits(), 0, "an unsaved set reads back as zero");
+
+        set_unlocked_bits(original);
+        assert_eq!(unlocked_bits(), original, "the real save is left as it was");
     }
 }
 
