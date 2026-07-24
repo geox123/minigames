@@ -422,6 +422,30 @@ struct Face {
     prev_x: f32,
 }
 
+/// The difficulty modifiers an Ascension tier layers onto a run. Tier 0 is the
+/// base run; each higher tier speeds the ball, thins the lives, and thickens the
+/// walls with specials.
+#[derive(Clone, Copy)]
+struct Modifiers {
+    /// The ball's serve/return speed.
+    ball_speed: f32,
+    /// Lives the run starts with.
+    lives: u32,
+    /// A multiplier on each special brick's spawn chance.
+    special_mult: f32,
+}
+
+impl Modifiers {
+    fn for_tier(tier: u32) -> Self {
+        let t = tier as f32;
+        Self {
+            ball_speed: BALL_SPEED * (1.0 + t * 0.08),
+            lives: LIVES_START.saturating_sub(tier / 2).max(1),
+            special_mult: 1.0 + t * 0.15,
+        }
+    }
+}
+
 /// A run of RIFT.
 pub struct Game {
     ball: Ball,
@@ -442,6 +466,12 @@ pub struct Game {
     lives: u32,
     /// Steps the current wall has been in play, driving movers and spawners.
     wall_steps: u32,
+    /// The Ascension tier this run plays at (0 for a plain Run or Daily).
+    tier: u32,
+    /// The ball's speed (raised by the Ascension tier).
+    ball_speed: f32,
+    /// A multiplier on special brick spawn chances (raised by the tier).
+    special_mult: f32,
     /// The ball plows through the bricks it breaks (a Pierce boon).
     pierce: bool,
     /// The ball's breaks explode (a Blast boon).
@@ -469,9 +499,20 @@ pub struct Game {
 }
 
 impl Game {
-    /// Starts a new run on `seed`, drawing on `pool`. The same seed and pool
-    /// always replay the same run.
+    /// Starts a new plain run on `seed`, drawing on `pool`. The same seed and
+    /// pool always replay the same run.
     pub fn new_run(seed: u64, pool: &Pool) -> Self {
+        Self::with_tier(seed, pool, 0)
+    }
+
+    /// Starts an Ascension run at `tier`: its difficulty modifiers escalate the
+    /// descent (a faster ball, fewer lives, denser walls). Tier 0 is a plain run.
+    pub fn new_ascension(seed: u64, tier: u32, pool: &Pool) -> Self {
+        Self::with_tier(seed, pool, tier)
+    }
+
+    fn with_tier(seed: u64, pool: &Pool, tier: u32) -> Self {
+        let modifiers = Modifiers::for_tier(tier);
         let mut game = Self {
             ball: PARKED_BALL,
             paddle_x: LOGICAL_WIDTH / 2.0,
@@ -481,8 +522,11 @@ impl Game {
             score: 0,
             depth: 0,
             wall_in_depth: 0,
-            lives: LIVES_START,
+            lives: modifiers.lives,
             wall_steps: 0,
+            tier,
+            ball_speed: modifiers.ball_speed,
+            special_mult: modifiers.special_mult,
             pierce: false,
             blast: false,
             paddle_speed: PADDLE_SPEED,
@@ -571,11 +615,16 @@ impl Game {
         &self.taken
     }
 
-    /// Starts the run over from the beginning: the same seed and pool replay the
-    /// same run.
+    /// Starts the run over from the beginning: the same seed, pool and tier
+    /// replay the same run.
     pub fn restart(&mut self) {
         let pool = self.pool.clone();
-        *self = Self::new_run(self.seed, &pool);
+        *self = Self::with_tier(self.seed, &pool, self.tier);
+    }
+
+    /// The Ascension tier this run plays at (0 for a plain Run or Daily).
+    pub fn tier(&self) -> u32 {
+        self.tier
     }
 
     /// The ball, as the shell should draw it. Between balls it rests on the
@@ -807,7 +856,7 @@ impl Game {
             // rolls wins, otherwise the cell is a normal brick.
             let mut kind = Kind::Normal;
             for &special in &specials {
-                if self.rng.range(0.0, 1.0) < special.chance() {
+                if self.rng.range(0.0, 1.0) < special.chance() * self.special_mult {
                     kind = special;
                     break;
                 }
@@ -1089,8 +1138,8 @@ impl Game {
 
         self.ball.x = contact_x;
         self.ball.y = top - half;
-        self.ball.vx = BALL_SPEED * angle.sin();
-        self.ball.vy = -BALL_SPEED * angle.cos();
+        self.ball.vx = self.ball_speed * angle.sin();
+        self.ball.vy = -self.ball_speed * angle.cos();
         true
     }
 
@@ -1109,8 +1158,8 @@ impl Game {
     fn serve(&mut self) {
         // Launch up the field with a slight, seeded lean.
         let lean = self.rng.range(-0.35, 0.35);
-        self.ball.vx = BALL_SPEED * lean.sin();
-        self.ball.vy = -BALL_SPEED * lean.cos();
+        self.ball.vx = self.ball_speed * lean.sin();
+        self.ball.vy = -self.ball_speed * lean.cos();
         self.phase = Phase::Playing;
     }
 }
@@ -1739,5 +1788,62 @@ mod tests {
             "a second Widen stacks on the first"
         );
         assert_eq!(game.boons().len(), 2, "both boons are recorded");
+    }
+
+    /// The speed the ball is served at, for comparing tiers.
+    fn served_speed(mut game: Game) -> f32 {
+        for _ in 0..1_000 {
+            game.step(Input::default());
+            let ball = game.ball();
+            let speed = ball.vx.hypot(ball.vy);
+            if speed > 0.0 {
+                return speed;
+            }
+        }
+        panic!("the ball was never served");
+    }
+
+    #[test]
+    fn ascension_tiers_escalate_the_run() {
+        let pool = Pool::base();
+        let base = Game::new_run(1, &pool);
+        let high = Game::new_ascension(1, 4, &pool);
+
+        assert_eq!(base.tier(), 0, "a plain run is tier 0");
+        assert_eq!(high.tier(), 4);
+        assert!(
+            high.lives() < base.lives(),
+            "a higher tier starts with fewer lives"
+        );
+        assert!(
+            served_speed(Game::new_ascension(1, 4, &pool)) > served_speed(Game::new_run(1, &pool)),
+            "a higher tier serves a faster ball"
+        );
+    }
+
+    #[test]
+    fn a_restarted_ascension_run_keeps_its_tier() {
+        let mut game = Game::new_ascension(5, 3, &Pool::base());
+        assert_eq!(game.tier(), 3);
+        game.restart();
+        assert_eq!(game.tier(), 3, "restart keeps the Ascension tier");
+    }
+
+    #[test]
+    fn winning_an_ascension_run_carries_its_tier_for_the_unlock() {
+        let mut game = Game::new_ascension(1, 2, &Pool::base());
+        // Stand on the final guardian and clear it.
+        game.depth = DEPTHS - 1;
+        game.wall_in_depth = ORDINARY_WALLS_PER_DEPTH;
+        one_brick_left(&mut game, 7, 7);
+        let events = game.step(Input::default());
+
+        assert!(events.won, "clearing the final guardian wins the run");
+        assert_eq!(game.phase(), Phase::Won);
+        assert_eq!(
+            game.tier(),
+            2,
+            "the won run's tier drives the next-tier unlock"
+        );
     }
 }

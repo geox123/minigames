@@ -28,7 +28,7 @@ async fn main() {
     if mode == "menu" {
         for frame in 0..2 {
             set_camera(&camera);
-            render::rift_menu(RiftMode::Daily);
+            render::rift_menu(RiftMode::Ascension, 3);
             set_default_camera();
             clear_background(DARKGRAY);
             blit_canvas(&canvas.texture);
@@ -74,7 +74,7 @@ async fn main() {
     for frame in 0..2 {
         set_camera(&camera);
         rift::draw(&game);
-        rift::run_summary(&game, 2, "RUN");
+        rift::run_summary(&game, "RUN BEST DEPTH 2");
         set_default_camera();
 
         clear_background(DARKGRAY);
