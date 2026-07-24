@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use stepfall_core::{Game, Input, Move};
+use stepfall_core::{Game, INVADER_HEIGHT, Input, Move};
 
 /// A generous ceiling on how long a test plays before giving up.
 pub const MAX_STEPS: usize = 200_000;
@@ -40,5 +40,12 @@ pub fn formation_top(game: &Game) -> f32 {
 pub fn formation_right(game: &Game) -> f32 {
     game.invaders()
         .map(|i| i.x)
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// The lowest edge of the formation.
+pub fn formation_bottom(game: &Game) -> f32 {
+    game.invaders()
+        .map(|i| i.y + INVADER_HEIGHT)
         .fold(f32::NEG_INFINITY, f32::max)
 }

@@ -94,6 +94,25 @@ pub const LIVES_START: u32 = 3;
 const EXTRA_LIFE_AT: u32 = 1500;
 const DEATH_PAUSE: f32 = 1.0;
 
+/// The four bunkers: how they are built, where they stand, and how a hit bites
+/// into them. Each is a small grid of blocks that wears away a block at a time,
+/// so it takes holes and degrades rather than vanishing whole.
+pub const BUNKERS: usize = 4;
+/// One bunker block, in logical units — a single "pixel" of the shield.
+pub const BUNKER_CELL: f32 = 2.0;
+/// A bunker's grid, in blocks.
+pub const BUNKER_COLS: usize = 11;
+pub const BUNKER_ROWS: usize = 8;
+/// A bunker's size, in logical units.
+pub const BUNKER_WIDTH: f32 = BUNKER_COLS as f32 * BUNKER_CELL;
+pub const BUNKER_HEIGHT: f32 = BUNKER_ROWS as f32 * BUNKER_CELL;
+/// The row the bunkers stand on: below the formation's descent start, above the
+/// cannon, with room for the cannon to shelter under them.
+const BUNKER_TOP: f32 = 176.0;
+/// How far a hit's bite reaches from the block it strikes, in blocks — a radius
+/// of one clears a small cluster, so cover wears away in chunks.
+const BITE_RADIUS: i32 = 1;
+
 /// Which way the player is pushing the cannon this step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Move {
@@ -169,6 +188,16 @@ pub struct Bomb {
     pub kind: BombKind,
 }
 
+/// A single intact block of a bunker, as the shell should draw it — a
+/// [`BUNKER_CELL`]-sized square.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BunkerBlock {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Events {
@@ -213,6 +242,113 @@ struct BombState {
     kind: BombKind,
 }
 
+/// One bunker: a grid of blocks, each intact or eaten away. Indexed
+/// `row * BUNKER_COLS + col`, row 0 the top.
+#[derive(Clone)]
+struct Bunker {
+    /// Left edge.
+    x: f32,
+    /// Top edge.
+    y: f32,
+    cells: Vec<bool>,
+}
+
+impl Bunker {
+    /// A fresh bunker at `x`: solid but for the shaved top corners and the arch
+    /// cut up into the bottom middle — the silhouette the original's shields wore.
+    fn fresh(x: f32) -> Self {
+        let mut cells = vec![true; BUNKER_COLS * BUNKER_ROWS];
+        let idx = |r: usize, c: usize| r * BUNKER_COLS + c;
+        // The shaved top corners.
+        cells[idx(0, 0)] = false;
+        cells[idx(0, BUNKER_COLS - 1)] = false;
+        // The arch cut up into the bottom middle.
+        cells[idx(BUNKER_ROWS - 3, 5)] = false;
+        for c in 4..=6 {
+            cells[idx(BUNKER_ROWS - 2, c)] = false;
+            cells[idx(BUNKER_ROWS - 1, c)] = false;
+        }
+        Self {
+            x,
+            y: BUNKER_TOP,
+            cells,
+        }
+    }
+
+    fn intact(&self, r: usize, c: usize) -> bool {
+        self.cells[r * BUNKER_COLS + c]
+    }
+
+    /// The rectangle a block occupies, in logical units.
+    fn block_rect(&self, r: usize, c: usize) -> (f32, f32, f32, f32) {
+        (
+            self.x + c as f32 * BUNKER_CELL,
+            self.y + r as f32 * BUNKER_CELL,
+            BUNKER_CELL,
+            BUNKER_CELL,
+        )
+    }
+
+    /// The block a projectile strikes, if it overlaps any intact one: the lowest
+    /// when the fire comes from below (a shot), the highest when it comes from
+    /// above (a bomb) — so cover erodes from the side it was fired at.
+    fn impact(&self, rect: (f32, f32, f32, f32), from_below: bool) -> Option<(usize, usize)> {
+        let mut hit: Option<(usize, usize)> = None;
+        for r in 0..BUNKER_ROWS {
+            for c in 0..BUNKER_COLS {
+                if self.intact(r, c) && overlaps(rect, self.block_rect(r, c)) {
+                    let better = match hit {
+                        None => true,
+                        Some((hr, _)) if from_below => r > hr,
+                        Some((hr, _)) => r < hr,
+                    };
+                    if better {
+                        hit = Some((r, c));
+                    }
+                }
+            }
+        }
+        hit
+    }
+
+    /// Bites a cluster out of the shield, centred on `(r, c)`.
+    fn bite(&mut self, r: usize, c: usize) {
+        for dr in -BITE_RADIUS..=BITE_RADIUS {
+            for dc in -BITE_RADIUS..=BITE_RADIUS {
+                let nr = r as i32 + dr;
+                let nc = c as i32 + dc;
+                if (0..BUNKER_ROWS as i32).contains(&nr) && (0..BUNKER_COLS as i32).contains(&nc) {
+                    self.cells[nr as usize * BUNKER_COLS + nc as usize] = false;
+                }
+            }
+        }
+    }
+
+    /// Scrapes away every block a descending invader has reached.
+    fn scrape(&mut self, rect: (f32, f32, f32, f32)) {
+        for r in 0..BUNKER_ROWS {
+            for c in 0..BUNKER_COLS {
+                if self.intact(r, c) && overlaps(rect, self.block_rect(r, c)) {
+                    self.cells[r * BUNKER_COLS + c] = false;
+                }
+            }
+        }
+    }
+
+    /// The intact blocks, for the shell to draw.
+    fn blocks(&self) -> impl Iterator<Item = BunkerBlock> + '_ {
+        let (x, y) = (self.x, self.y);
+        self.cells
+            .iter()
+            .enumerate()
+            .filter(|&(_, &intact)| intact)
+            .map(move |(i, _)| BunkerBlock {
+                x: x + (i % BUNKER_COLS) as f32 * BUNKER_CELL,
+                y: y + (i / BUNKER_COLS) as f32 * BUNKER_CELL,
+            })
+    }
+}
+
 /// A game of Space Invaders.
 pub struct Game {
     /// Left edge of the cannon.
@@ -239,6 +375,8 @@ pub struct Game {
     bomb_spawn_tick: u32,
     /// Bombs dropped so far, driving the kind and column rotation.
     spawns: u32,
+    /// The four bunkers, eroding from both sides as the game is played.
+    bunkers: Vec<Bunker>,
     score: u32,
     /// Lives left; the game ends when this reaches zero.
     lives: u32,
@@ -278,6 +416,12 @@ impl Game {
             bombs: Vec::new(),
             bomb_spawn_tick: 0,
             spawns: 0,
+            bunkers: (0..BUNKERS)
+                .map(|i| {
+                    let centre = (i as f32 + 0.5) / BUNKERS as f32 * LOGICAL_WIDTH;
+                    Bunker::fresh(centre - BUNKER_WIDTH / 2.0)
+                })
+                .collect(),
             score: 0,
             lives: LIVES_START,
             extra_awarded: false,
@@ -325,6 +469,11 @@ impl Game {
             y: b.y,
             kind: b.kind,
         })
+    }
+
+    /// The intact blocks of every bunker, for the shell to draw.
+    pub fn bunker_blocks(&self) -> impl Iterator<Item = BunkerBlock> + '_ {
+        self.bunkers.iter().flat_map(|b| b.blocks())
     }
 
     /// The score so far.
@@ -426,6 +575,12 @@ impl Game {
         self.invaders[index] = Some(moved);
         events.marched = true;
 
+        // An invader that has descended into a bunker scrapes the cover away.
+        let scraped = (moved.x, moved.y, INVADER_WIDTH, INVADER_HEIGHT);
+        for bunker in &mut self.bunkers {
+            bunker.scrape(scraped);
+        }
+
         if moved.x < EDGE_MARGIN || moved.x + INVADER_WIDTH > LOGICAL_WIDTH - EDGE_MARGIN {
             self.edge_hit = true;
         }
@@ -451,6 +606,12 @@ impl Game {
         self.shot = Some(shot);
 
         let shot_rect = (shot.x, shot.y, SHOT_WIDTH, SHOT_HEIGHT);
+        // Cover comes first: a shot is spent on the bunker it grazes, biting up
+        // into it from below.
+        if self.strike_bunkers(shot_rect, true) {
+            self.shot = None;
+            return;
+        }
         for i in 0..INVADERS {
             if let Some(pos) = self.invaders[i]
                 && overlaps(shot_rect, (pos.x, pos.y, INVADER_WIDTH, INVADER_HEIGHT))
@@ -492,7 +653,13 @@ impl Game {
         let mut hit = false;
         for mut bomb in std::mem::take(&mut self.bombs) {
             bomb.y += speed;
-            if overlaps((bomb.x, bomb.y, BOMB_WIDTH, BOMB_HEIGHT), cannon_rect) {
+            let rect = (bomb.x, bomb.y, BOMB_WIDTH, BOMB_HEIGHT);
+            // A bomb is spent on any bunker it reaches, biting down into it from
+            // above — cover the cannon might have been sheltering under.
+            if self.strike_bunkers(rect, false) {
+                continue;
+            }
+            if overlaps(rect, cannon_rect) {
                 hit = true;
                 break;
             }
@@ -505,6 +672,18 @@ impl Game {
         } else {
             self.bombs = survivors;
         }
+    }
+
+    /// Strikes the bunkers with a projectile, biting into the first one it
+    /// grazes. Returns whether the projectile was spent on a bunker.
+    fn strike_bunkers(&mut self, rect: (f32, f32, f32, f32), from_below: bool) -> bool {
+        for bunker in &mut self.bunkers {
+            if let Some((r, c)) = bunker.impact(rect, from_below) {
+                bunker.bite(r, c);
+                return true;
+            }
+        }
+        false
     }
 
     /// Spends a life to a bomb: clears the sky, and either holds for the cannon
@@ -800,6 +979,27 @@ mod tests {
         assert!(
             drop(FEW_INVADERS) > drop(INVADERS as u32),
             "a thinned formation drops faster bombs"
+        );
+    }
+
+    #[test]
+    fn a_descending_invader_scrapes_a_bunker_away() {
+        let mut game = Game::new(1);
+        let before = game.bunker_blocks().count();
+
+        // Drop the marching invader straight onto the nearest cover; the march
+        // then carries it through, and what it reaches is scraped away.
+        let block = game.bunker_blocks().next().expect("a bunker stands");
+        game.invaders[0] = Some(Pos {
+            x: block.x,
+            y: block.y,
+        });
+        game.cursor = 0;
+        interrupt(&mut game);
+
+        assert!(
+            game.bunker_blocks().count() < before,
+            "the invader scraped cover away"
         );
     }
 

@@ -7,8 +7,8 @@
 
 use macroquad::prelude::*;
 use stepfall_core::{
-    BOMB_HEIGHT, BOMB_WIDTH, CANNON_HEIGHT, CANNON_WIDTH, Game, INVADER_HEIGHT, INVADER_WIDTH,
-    LOGICAL_HEIGHT, LOGICAL_WIDTH, Phase, SHOT_HEIGHT, SHOT_WIDTH,
+    BOMB_HEIGHT, BOMB_WIDTH, BUNKER_CELL, CANNON_HEIGHT, CANNON_WIDTH, Game, INVADER_HEIGHT,
+    INVADER_WIDTH, LOGICAL_HEIGHT, LOGICAL_WIDTH, Phase, SHOT_HEIGHT, SHOT_WIDTH,
 };
 
 use crate::app::Mode;
@@ -33,6 +33,11 @@ pub fn draw(game: &Game) {
     // The invaders — plain white blocks until the sprites ticket.
     for invader in game.invaders() {
         draw_rectangle(invader.x, invader.y, INVADER_WIDTH, INVADER_HEIGHT, WHITE);
+    }
+
+    // The bunkers — green cover, wearing holes as it is eaten from both sides.
+    for block in game.bunker_blocks() {
+        draw_rectangle(block.x, block.y, BUNKER_CELL, BUNKER_CELL, GROUND);
     }
 
     // Bombs falling, and the player's shot climbing.
