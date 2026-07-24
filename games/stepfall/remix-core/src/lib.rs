@@ -43,6 +43,13 @@ pub const PLAYER_BULLET_HEIGHT: f32 = 6.0;
 const PLAYER_BULLET_SPEED: f32 = 300.0;
 const FIRE_INTERVAL: u32 = 9;
 
+/// The weapon ladder: its top tier, the tighter cadence a rapid tier fires on, the
+/// outward lean of a spread's flanking shots, and the offset of a drone's stream.
+const WEAPON_MAX: u32 = 4;
+const RAPID_FIRE_INTERVAL: u32 = 5;
+const SPREAD_VX: f32 = 70.0;
+const DRONE_OFFSET: f32 = 9.0;
+
 /// A squadron of enemies: how big each is, how many enter at once, how they are
 /// spaced, and how they fly in and sway once settled.
 pub const ENEMY_WIDTH: f32 = 12.0;
@@ -128,6 +135,12 @@ const FOCUS_HITBOX: f32 = 1.5;
 const GRAZE_RADIUS: f32 = 11.0;
 const GRAZE_CHARGE: f32 = 0.06;
 pub const OVERDRIVE_MAX: f32 = 1.0;
+
+/// Power-ups: how often a downed enemy leaves one, how big a pickup is (caught
+/// against the whole hull, not the tiny hitbox), and how fast it drifts down.
+const DROP_CHANCE: u32 = 6;
+const PICKUP_SIZE: f32 = 6.0;
+const PICKUP_FALL_SPEED: f32 = 55.0;
 
 /// Which run a game is playing. The behaviours differ from a later ticket; here
 /// the mode is only recorded.
@@ -283,6 +296,30 @@ pub struct EnemyBullet {
     pub kind: ShotKind,
 }
 
+/// What a power-up grants when the ship catches it — earned in a run by clearing
+/// enemies, never handed down (that is Phase B's loadout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PowerUp {
+    /// Steps the ship's weapon up its ladder (spread → pierce → rapid → drones).
+    Weapon,
+    /// Raises a shield that soaks the next hit.
+    Shield,
+    /// Fills the overdrive meter, a nova ready.
+    Overdrive,
+}
+
+/// A power-up drifting down the field, as the shell should draw it — a small square
+/// centred on `(x, y)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pickup {
+    /// Centre x.
+    pub x: f32,
+    /// Centre y.
+    pub y: f32,
+    /// What it grants when caught.
+    pub kind: PowerUp,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It
 /// grows a field per ticket.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -299,6 +336,10 @@ pub struct Events {
     pub grazed: bool,
     /// A full overdrive was spent on a nova this step.
     pub overdrive_fired: bool,
+    /// A power-up was collected this step.
+    pub power_up_taken: bool,
+    /// A shield soaked a hit this step, sparing a life.
+    pub shield_broke: bool,
     /// The last life was spent this step — the run is over.
     pub run_over: bool,
 }
@@ -341,11 +382,24 @@ impl Rng {
     }
 }
 
-/// A bullet's position.
+/// One of the ship's shots in flight: its position, its velocity (logical units
+/// per second — the spread's flankers lean outward), and whether it pierces on
+/// through the enemies it downs rather than spending itself on the first.
 #[derive(Clone, Copy)]
-struct Pos {
+struct ShotState {
     x: f32,
     y: f32,
+    vx: f32,
+    vy: f32,
+    pierce: bool,
+}
+
+/// A power-up drifting down the field, and what it grants when caught.
+#[derive(Clone, Copy)]
+struct PickupState {
+    x: f32,
+    y: f32,
+    kind: PowerUp,
 }
 
 /// An enemy bullet's position and velocity (logical units per second), whether it
@@ -401,9 +455,15 @@ pub struct Game {
     /// Top edge of the ship.
     ship_y: f32,
     /// The ship's shots in flight.
-    bullets: Vec<Pos>,
+    bullets: Vec<ShotState>,
     /// Interrupts until the ship may fire again.
     fire_cooldown: u32,
+    /// The ship's weapon tier, `0..=WEAPON_MAX`, stepped up by power-ups.
+    weapon_level: u32,
+    /// Whether a shield is up to soak the next hit.
+    shield: bool,
+    /// The power-ups drifting down the field, waiting to be caught.
+    pickups: Vec<PickupState>,
     /// The enemies currently flying.
     enemies: Vec<EnemyState>,
     /// The enemy bullets in the air.
@@ -447,6 +507,9 @@ impl Game {
             ship_y: LOGICAL_HEIGHT - SHIP_HEIGHT - MARGIN * 3.0,
             bullets: Vec::new(),
             fire_cooldown: 0,
+            weapon_level: 0,
+            shield: false,
+            pickups: Vec::new(),
             enemies: Vec::new(),
             enemy_bullets: Vec::new(),
             wave_gap: WAVE_GAP,
@@ -481,6 +544,25 @@ impl Game {
     /// The ship's shots in flight, for the shell to draw.
     pub fn bullets(&self) -> impl Iterator<Item = Bullet> + '_ {
         self.bullets.iter().map(|b| Bullet { x: b.x, y: b.y })
+    }
+
+    /// The power-ups drifting down the field, for the shell to draw.
+    pub fn pickups(&self) -> impl Iterator<Item = Pickup> + '_ {
+        self.pickups.iter().map(|p| Pickup {
+            x: p.x,
+            y: p.y,
+            kind: p.kind,
+        })
+    }
+
+    /// The ship's weapon tier, from `0` (base) up to [`WEAPON_MAX`].
+    pub fn weapon_level(&self) -> u32 {
+        self.weapon_level
+    }
+
+    /// Whether a shield is up to soak the next hit.
+    pub fn has_shield(&self) -> bool {
+        self.shield
     }
 
     /// The enemies flying, for the shell to draw.
@@ -554,6 +636,7 @@ impl Game {
         self.resolve_hits(&mut events);
         self.enemy_fire();
         self.advance_enemy_bullets(&mut events);
+        self.advance_pickups(&mut events);
         self.try_overdrive(input, &mut events);
         self.manage_waves();
         events
@@ -608,8 +691,10 @@ impl Game {
             .clamp(BAND_TOP, LOGICAL_HEIGHT - MARGIN - SHIP_HEIGHT);
     }
 
-    /// Fires on its cadence while fire is held — from the ship's nose, or a
-    /// concentrated twin stream while focusing.
+    /// Fires on its cadence while fire is held. The weapon ladder shapes the volley:
+    /// a single shot at base, a spread fan once it opens, side drones at the top —
+    /// or a concentrated twin while focusing. Pierce and the rapid cadence ride the
+    /// ladder too.
     fn fire(&mut self, input: Input, events: &mut Events) {
         self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
         if !input.fire || self.fire_cooldown != 0 {
@@ -617,23 +702,55 @@ impl Game {
         }
         let cx = self.ship_x + SHIP_WIDTH / 2.0 - PLAYER_BULLET_WIDTH / 2.0;
         let y = self.ship_y - PLAYER_BULLET_HEIGHT;
+        let pierce = self.weapon_level >= 2;
+        let up = -PLAYER_BULLET_SPEED;
         if input.focus {
-            self.bullets.push(Pos { x: cx - 2.0, y });
-            self.bullets.push(Pos { x: cx + 2.0, y });
+            // A concentrated twin, for precise, heavy fire while threading.
+            self.push_shot(cx - 2.0, y, 0.0, up, pierce);
+            self.push_shot(cx + 2.0, y, 0.0, up, pierce);
+        } else if self.weapon_level == 0 {
+            self.push_shot(cx, y, 0.0, up, pierce);
         } else {
-            self.bullets.push(Pos { x: cx, y });
+            // A spread fan, once the ladder opens up.
+            self.push_shot(cx, y, 0.0, up, pierce);
+            self.push_shot(cx, y, -SPREAD_VX, up, pierce);
+            self.push_shot(cx, y, SPREAD_VX, up, pierce);
+            if self.weapon_level >= WEAPON_MAX {
+                // Side drones add two parallel streams.
+                self.push_shot(cx - DRONE_OFFSET, y, 0.0, up, pierce);
+                self.push_shot(cx + DRONE_OFFSET, y, 0.0, up, pierce);
+            }
         }
-        self.fire_cooldown = FIRE_INTERVAL;
+        self.fire_cooldown = if self.weapon_level >= 3 {
+            RAPID_FIRE_INTERVAL
+        } else {
+            FIRE_INTERVAL
+        };
         events.shot_fired = true;
     }
 
-    /// Climbs every shot, retiring the ones that leave the top of the field.
+    /// Adds one of the ship's shots at `(x, y)` with velocity `(vx, vy)`.
+    fn push_shot(&mut self, x: f32, y: f32, vx: f32, vy: f32, pierce: bool) {
+        self.bullets.push(ShotState {
+            x,
+            y,
+            vx,
+            vy,
+            pierce,
+        });
+    }
+
+    /// Flies every shot on its heading, retiring the ones that leave the field.
     fn advance_bullets(&mut self) {
-        let dy = PLAYER_BULLET_SPEED * TIMESTEP;
         for b in &mut self.bullets {
-            b.y -= dy;
+            b.x += b.vx * TIMESTEP;
+            b.y += b.vy * TIMESTEP;
         }
-        self.bullets.retain(|b| b.y + PLAYER_BULLET_HEIGHT > 0.0);
+        self.bullets.retain(|b| {
+            b.y + PLAYER_BULLET_HEIGHT > 0.0
+                && b.x + PLAYER_BULLET_WIDTH > 0.0
+                && b.x < LOGICAL_WIDTH
+        });
     }
 
     /// Flies each enemy along its entry path to its home, then holds it there —
@@ -660,8 +777,9 @@ impl Game {
         }
     }
 
-    /// Spends each shot on the first enemy it overlaps, downing the enemy and
-    /// scoring it.
+    /// Resolves each shot against the enemies. An ordinary shot spends itself on the
+    /// first enemy it overlaps; a piercing shot downs every enemy it touches and
+    /// flies on. A downed enemy sometimes leaves a power-up where it fell.
     fn resolve_hits(&mut self, events: &mut Events) {
         let mut survivors = Vec::with_capacity(self.bullets.len());
         for bullet in std::mem::take(&mut self.bullets) {
@@ -671,19 +789,91 @@ impl Game {
                 PLAYER_BULLET_WIDTH,
                 PLAYER_BULLET_HEIGHT,
             );
-            let hit = self
+            if bullet.pierce {
+                let mut i = 0;
+                while i < self.enemies.len() {
+                    let e = self.enemies[i];
+                    if overlaps(rect, (e.x, e.y, ENEMY_WIDTH, ENEMY_HEIGHT)) {
+                        self.down_enemy(i, events);
+                    } else {
+                        i += 1;
+                    }
+                }
+                survivors.push(bullet);
+            } else if let Some(i) = self
                 .enemies
                 .iter()
-                .position(|e| overlaps(rect, (e.x, e.y, ENEMY_WIDTH, ENEMY_HEIGHT)));
-            if let Some(i) = hit {
-                self.enemies.swap_remove(i);
-                self.score += ENEMY_SCORE;
-                events.enemy_killed = true;
+                .position(|e| overlaps(rect, (e.x, e.y, ENEMY_WIDTH, ENEMY_HEIGHT)))
+            {
+                self.down_enemy(i, events);
             } else {
                 survivors.push(bullet);
             }
         }
         self.bullets = survivors;
+    }
+
+    /// Downs the enemy at `i`: scores it, and sometimes drops a power-up where it fell.
+    fn down_enemy(&mut self, i: usize, events: &mut Events) {
+        let e = self.enemies.swap_remove(i);
+        self.score += ENEMY_SCORE;
+        events.enemy_killed = true;
+        self.maybe_drop(e.x, e.y);
+    }
+
+    /// Sometimes leaves a power-up where an enemy fell — a weapon step most often,
+    /// an overdrive charge or a shield less so.
+    fn maybe_drop(&mut self, x: f32, y: f32) {
+        if self.rng.below(DROP_CHANCE) != 0 {
+            return;
+        }
+        let kind = match self.rng.below(100) {
+            0..=54 => PowerUp::Weapon,
+            55..=84 => PowerUp::Overdrive,
+            _ => PowerUp::Shield,
+        };
+        self.pickups.push(PickupState {
+            x: x + ENEMY_WIDTH / 2.0,
+            y: y + ENEMY_HEIGHT / 2.0,
+            kind,
+        });
+    }
+
+    /// Drifts every power-up down, retiring those that fall past the foot, and lets
+    /// the ship catch any its whole hull touches — not just the tiny hitbox.
+    fn advance_pickups(&mut self, events: &mut Events) {
+        let hull = (self.ship_x, self.ship_y, SHIP_WIDTH, SHIP_HEIGHT);
+        let dy = PICKUP_FALL_SPEED * TIMESTEP;
+        let mut survivors = Vec::with_capacity(self.pickups.len());
+        for mut p in std::mem::take(&mut self.pickups) {
+            p.y += dy;
+            if p.y - PICKUP_SIZE / 2.0 > LOGICAL_HEIGHT {
+                continue;
+            }
+            let rect = (
+                p.x - PICKUP_SIZE / 2.0,
+                p.y - PICKUP_SIZE / 2.0,
+                PICKUP_SIZE,
+                PICKUP_SIZE,
+            );
+            if overlaps(rect, hull) {
+                self.take_powerup(p.kind, events);
+                continue;
+            }
+            survivors.push(p);
+        }
+        self.pickups = survivors;
+    }
+
+    /// Applies a caught power-up: steps the weapon up its ladder, raises a shield,
+    /// or fills the overdrive.
+    fn take_powerup(&mut self, kind: PowerUp, events: &mut Events) {
+        match kind {
+            PowerUp::Weapon => self.weapon_level = (self.weapon_level + 1).min(WEAPON_MAX),
+            PowerUp::Shield => self.shield = true,
+            PowerUp::Overdrive => self.overdrive = OVERDRIVE_MAX,
+        }
+        events.power_up_taken = true;
     }
 
     /// Every settled enemy fires its own pattern on its own cadence — the pattern
@@ -878,7 +1068,14 @@ impl Game {
         }
         self.enemy_bullets = survivors;
         if struck {
-            self.lose_life(events);
+            if self.shield {
+                // The shield soaks the hit and breaks, sparing the ship for a beat.
+                self.shield = false;
+                self.invuln = self.invuln.max(HIT_INVULN);
+                events.shield_broke = true;
+            } else {
+                self.lose_life(events);
+            }
         }
     }
 
@@ -1603,6 +1800,211 @@ mod tests {
             run() == run(),
             "the same seed and inputs replay the same run"
         );
+    }
+
+    /// Drops a power-up of `kind` right onto the ship, for it to catch this step.
+    fn pickup_on_ship(game: &mut Game, kind: PowerUp) {
+        let s = game.ship();
+        game.pickups.push(PickupState {
+            x: s.x + SHIP_WIDTH / 2.0,
+            y: s.y + SHIP_HEIGHT / 2.0,
+            kind,
+        });
+    }
+
+    /// Settles a lone, still Dart at `(x, y)` — for reading a shot's path against it.
+    fn settled_enemy(game: &mut Game, x: f32, y: f32) {
+        game.enemies.push(EnemyState {
+            kind: EnemyKind::Dart,
+            home_x: x,
+            home_y: y,
+            x,
+            y,
+            entered: true,
+            sways: false,
+            fire_tick: 0,
+            spin: 0.0,
+            salvo: 0,
+        });
+    }
+
+    fn firing_input() -> Input {
+        Input {
+            fire: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_weapon_pickup_steps_the_ladder_and_caps() {
+        let mut g = game();
+        assert_eq!(g.weapon_level(), 0, "a run starts at the base weapon");
+
+        pickup_on_ship(&mut g, PowerUp::Weapon);
+        let events = g.step(Input::default());
+        assert!(events.power_up_taken, "the ship catches the power-up");
+        assert_eq!(g.weapon_level(), 1, "a weapon pickup steps the ladder");
+
+        for _ in 0..WEAPON_MAX + 3 {
+            pickup_on_ship(&mut g, PowerUp::Weapon);
+            g.step(Input::default());
+        }
+        assert_eq!(
+            g.weapon_level(),
+            WEAPON_MAX,
+            "the ladder caps at its top tier"
+        );
+    }
+
+    #[test]
+    fn the_ladder_widens_the_volley() {
+        // Base: a single shot.
+        let mut g = game();
+        g.step(firing_input());
+        assert_eq!(g.bullets().count(), 1, "the base weapon fires one shot");
+
+        // Spread: a three-way fan that leans outward.
+        let mut g = game();
+        g.weapon_level = 1;
+        g.step(firing_input());
+        let xs: Vec<f32> = g.bullets().map(|b| b.x).collect();
+        assert_eq!(xs.len(), 3, "the spread fires a three-way fan");
+        let min = xs.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(max - min > 0.5, "the fan leans to both sides");
+
+        // Drones: the top tier adds two parallel streams.
+        let mut g = game();
+        g.weapon_level = WEAPON_MAX;
+        g.step(firing_input());
+        assert_eq!(g.bullets().count(), 5, "drones add two parallel streams");
+    }
+
+    #[test]
+    fn a_piercing_shot_downs_more_than_an_ordinary_one() {
+        let column = 100.0 + ENEMY_WIDTH / 2.0 - PLAYER_BULLET_WIDTH / 2.0;
+
+        // Piercing: flies through both stacked enemies.
+        let mut g = game();
+        g.enemies.clear();
+        g.bullets.clear();
+        settled_enemy(&mut g, 100.0, 60.0);
+        settled_enemy(&mut g, 100.0, 40.0);
+        g.bullets.push(ShotState {
+            x: column,
+            y: 74.0,
+            vx: 0.0,
+            vy: -PLAYER_BULLET_SPEED,
+            pierce: true,
+        });
+        for _ in 0..80 {
+            g.step(Input::default());
+            if g.enemies().count() == 0 {
+                break;
+            }
+        }
+        assert_eq!(g.enemies().count(), 0, "a piercing shot downs both");
+
+        // Ordinary: spends itself on the first; the second survives.
+        let mut g = game();
+        g.enemies.clear();
+        g.bullets.clear();
+        settled_enemy(&mut g, 100.0, 60.0);
+        settled_enemy(&mut g, 100.0, 40.0);
+        g.bullets.push(ShotState {
+            x: column,
+            y: 74.0,
+            vx: 0.0,
+            vy: -PLAYER_BULLET_SPEED,
+            pierce: false,
+        });
+        for _ in 0..80 {
+            g.step(Input::default());
+        }
+        assert_eq!(
+            g.enemies().count(),
+            1,
+            "an ordinary shot stops at the first"
+        );
+    }
+
+    #[test]
+    fn the_rapid_tier_fires_faster() {
+        let volleys_over = |level: u32, steps: usize| {
+            let mut g = game();
+            g.weapon_level = level;
+            let mut shots = 0;
+            for _ in 0..steps {
+                if g.step(firing_input()).shot_fired {
+                    shots += 1;
+                }
+            }
+            shots
+        };
+        assert!(
+            volleys_over(3, 120) > volleys_over(0, 120),
+            "the rapid tier fires more volleys over the same time"
+        );
+    }
+
+    #[test]
+    fn a_shield_soaks_one_hit_then_is_gone() {
+        let mut g = game();
+        g.shield = true;
+        let (cx, cy) = ship_centre(&g);
+        bullet_at(&mut g, cx, cy);
+
+        let events = g.step(Input::default());
+        assert!(events.shield_broke, "the shield soaks the hit");
+        assert!(!events.player_hit, "no life is lost");
+        assert_eq!(g.lives(), LIVES_START, "the shield spared the life");
+        assert!(!g.has_shield(), "the shield is spent");
+
+        // Wait out the spare, then a second hit costs a life.
+        for _ in 0..HIT_INVULN + 1 {
+            g.step(Input::default());
+        }
+        let (cx, cy) = ship_centre(&g);
+        bullet_at(&mut g, cx, cy);
+        let events = g.step(Input::default());
+        assert!(
+            events.player_hit,
+            "with the shield gone, a hit costs a life"
+        );
+        assert_eq!(g.lives(), LIVES_START - 1);
+    }
+
+    #[test]
+    fn an_overdrive_charge_fills_the_meter() {
+        let mut g = game();
+        assert_eq!(g.overdrive(), 0.0);
+        pickup_on_ship(&mut g, PowerUp::Overdrive);
+        g.step(Input::default());
+        assert_eq!(
+            g.overdrive(),
+            OVERDRIVE_MAX,
+            "an overdrive charge fills the meter"
+        );
+    }
+
+    #[test]
+    fn downing_enemies_sometimes_drops_a_pickup() {
+        // Down enemies through the real kill path; over many kills at least one
+        // leaves a power-up, but not every kill does.
+        let mut g = game();
+        let mut kills = 0;
+        let mut drops = 0;
+        while kills < 300 {
+            g.enemies.clear();
+            g.pickups.clear();
+            settled_enemy(&mut g, 40.0, 30.0);
+            let mut events = Events::default();
+            g.down_enemy(0, &mut events);
+            kills += 1;
+            drops += g.pickups.len();
+        }
+        assert!(drops > 0, "some downed enemies drop a power-up");
+        assert!(drops < 300, "but not every one does");
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.
