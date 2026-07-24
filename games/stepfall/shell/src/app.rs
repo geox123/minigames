@@ -18,14 +18,43 @@ use crate::{Audio, read_input, read_remix_input, render};
 /// the game try to catch up by simulating seconds at once.
 const MAX_FRAME_TIME: f32 = 0.25;
 
-/// The two takes every Game in the Collection ships. STEPFALL's Remix is not
-/// built yet, so only the Faithful is playable — the Remix shows as locked.
+/// The two takes every Game in the Collection ships — both playable: the Faithful
+/// and HAILFALL, its Remix.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// The faithful recreation.
     Faithful,
-    /// The reimagined version — coming later.
+    /// The reimagined version, HAILFALL.
     Remix,
+}
+
+/// A row on HAILFALL's menu: one of its modes to play, or the collection to browse.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MenuRow {
+    /// Start a run in this mode.
+    Mode(RunMode),
+    /// Open the collection screen.
+    Collection,
+}
+
+impl MenuRow {
+    /// The rows, top to bottom.
+    pub const ROWS: [MenuRow; 4] = [
+        MenuRow::Mode(RunMode::Sortie),
+        MenuRow::Mode(RunMode::Onslaught),
+        MenuRow::Mode(RunMode::Daily),
+        MenuRow::Collection,
+    ];
+
+    /// The label shown for this row.
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuRow::Mode(RunMode::Sortie) => "SORTIE",
+            MenuRow::Mode(RunMode::Onslaught) => "ONSLAUGHT",
+            MenuRow::Mode(RunMode::Daily) => "DAILY",
+            MenuRow::Collection => "COLLECTION",
+        }
+    }
 }
 
 /// Which screen the player is looking at.
@@ -47,8 +76,10 @@ enum Screen {
         march_note: usize,
         saucer_sounding: bool,
     },
-    /// HAILFALL's mode picker — the Remix chooses Sortie, Onslaught or Daily.
-    RemixSelect { highlight: RunMode },
+    /// HAILFALL's menu — its three modes, and the collection.
+    RemixSelect { highlight: MenuRow },
+    /// The collection screen, browsing what has been unlocked.
+    Collection { unlocked: meta::Unlocked },
     /// A HAILFALL run in progress — the Remix. Boxed like the Faithful's game.
     RemixMatch {
         game: Box<RemixGame>,
@@ -122,12 +153,8 @@ impl App {
                 if mode_select_input(highlight) {
                     match *highlight {
                         Mode::Faithful => self.start_match(),
-                        // The Remix picks its mode first.
-                        Mode::Remix => {
-                            self.screen = Screen::RemixSelect {
-                                highlight: RunMode::Sortie,
-                            };
-                        }
+                        // The Remix opens its own menu first.
+                        Mode::Remix => self.open_remix_menu(),
                     }
                 } else {
                     render::mode_select(*highlight);
@@ -138,11 +165,21 @@ impl App {
                     self.return_to_mode_select();
                     return;
                 }
-                if let Some(mode) = remix_select_input(highlight) {
-                    self.start_remix_match(mode);
+                if let Some(chosen) = remix_menu_input(highlight) {
+                    match chosen {
+                        MenuRow::Mode(mode) => self.start_remix_match(mode),
+                        MenuRow::Collection => self.open_collection(),
+                    }
                 } else {
                     render::remix_select(*highlight);
                 }
+            }
+            Screen::Collection { unlocked } => {
+                if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Enter) {
+                    self.open_remix_menu();
+                    return;
+                }
+                render::draw_collection(*unlocked);
             }
             Screen::Match {
                 game,
@@ -306,6 +343,20 @@ impl App {
         };
     }
 
+    /// Opens HAILFALL's menu on its first mode.
+    fn open_remix_menu(&mut self) {
+        self.screen = Screen::RemixSelect {
+            highlight: MenuRow::Mode(RunMode::Sortie),
+        };
+    }
+
+    /// Opens the collection on what this player has unlocked so far.
+    fn open_collection(&mut self) {
+        self.screen = Screen::Collection {
+            unlocked: meta::Unlocked::from_bits(stepfall_storage::unlocked_bits()),
+        };
+    }
+
     /// Consumes the next seed, advancing it so the next game differs.
     fn take_seed(&mut self) -> u64 {
         let seed = self.next_seed;
@@ -368,21 +419,15 @@ fn mode_select_input(highlight: &mut Mode) -> bool {
     is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
 }
 
-/// Reads HAILFALL's mode picker, cycling the highlight through the three modes.
-/// Returns the chosen mode once the player commits to it.
-fn remix_select_input(highlight: &mut RunMode) -> Option<RunMode> {
+/// Reads HAILFALL's menu, cycling the highlight through its rows. Returns the
+/// chosen row once the player commits to it.
+fn remix_menu_input(highlight: &mut MenuRow) -> Option<MenuRow> {
+    let rows = MenuRow::ROWS;
+    let i = rows.iter().position(|r| r == highlight).unwrap_or(0);
     if pressed_menu_next() {
-        *highlight = match *highlight {
-            RunMode::Sortie => RunMode::Onslaught,
-            RunMode::Onslaught => RunMode::Daily,
-            RunMode::Daily => RunMode::Sortie,
-        };
+        *highlight = rows[(i + 1) % rows.len()];
     } else if pressed_menu_prev() {
-        *highlight = match *highlight {
-            RunMode::Sortie => RunMode::Daily,
-            RunMode::Onslaught => RunMode::Sortie,
-            RunMode::Daily => RunMode::Onslaught,
-        };
+        *highlight = rows[(i + rows.len() - 1) % rows.len()];
     }
     (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)).then_some(*highlight)
 }

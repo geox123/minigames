@@ -11,7 +11,7 @@ use stepfall_core::{
     LOGICAL_WIDTH, Phase, SHOT_HEIGHT, SHOT_WIDTH,
 };
 
-use crate::app::Mode;
+use crate::app::{MenuRow, Mode};
 use crate::sprites;
 use shell_kit::font;
 
@@ -542,28 +542,68 @@ pub fn remix_summary(
     );
 }
 
-/// HAILFALL's mode picker — the three runs the Remix offers.
-pub fn remix_select(highlight: stepfall_remix_core::Mode) {
-    use stepfall_remix_core::Mode as RunMode;
+/// HAILFALL's menu — its three modes and the collection.
+pub fn remix_select(highlight: MenuRow) {
     clear_background(color_u8!(4, 6, 14, 255));
 
-    font::draw_centred(LOGICAL_WIDTH, "HAILFALL", 44.0, TITLE_SCALE, NEON_DART);
+    font::draw_centred(LOGICAL_WIDTH, "HAILFALL", 40.0, TITLE_SCALE, NEON_DART);
     font::draw_centred(
         LOGICAL_WIDTH,
         "CHOOSE YOUR RUN",
-        86.0,
+        80.0,
         HINT_SCALE,
         NEON_GLOW,
     );
 
-    remix_option("SORTIE", 120.0, highlight == RunMode::Sortie);
-    remix_option("ONSLAUGHT", 150.0, highlight == RunMode::Onslaught);
-    remix_option("DAILY", 180.0, highlight == RunMode::Daily);
+    let mut y = 112.0;
+    for row in MenuRow::ROWS {
+        remix_option(row.label(), y, row == highlight);
+        y += 28.0;
+    }
 
     font::draw_centred(
         LOGICAL_WIDTH,
-        "ENTER PLAY    ESC BACK",
-        224.0,
+        "ENTER SELECT    ESC BACK",
+        228.0,
+        HINT_SCALE,
+        NEON_GLOW,
+    );
+}
+
+/// The collection screen: every ship option, earned ones in gold, locked ones
+/// with the condition that unlocks them. Reflects the persisted unlocked set.
+pub fn draw_collection(unlocked: stepfall_remix_core::meta::Unlocked) {
+    use stepfall_remix_core::meta;
+    clear_background(color_u8!(4, 6, 14, 255));
+
+    let have = meta::ALL.iter().filter(|c| unlocked.has(**c)).count();
+    font::draw_centred(LOGICAL_WIDTH, "COLLECTION", 28.0, OPTION_SCALE, NEON_DART);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("{have} OF {} UNLOCKED", meta::ALL.len()),
+        56.0,
+        HINT_SCALE,
+        NEON_GLOW,
+    );
+
+    let mut y = 84.0;
+    for content in meta::ALL {
+        let (text, colour) = if unlocked.has(content) {
+            (content.label().to_string(), NEON_BULLET)
+        } else {
+            (
+                format!("{}   {}", content.label(), content.condition()),
+                NEON_GLOW,
+            )
+        };
+        font::draw_centred(LOGICAL_WIDTH, &text, y, HINT_SCALE, colour);
+        y += 16.0;
+    }
+
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "ESC BACK",
+        LOGICAL_HEIGHT - 24.0,
         HINT_SCALE,
         NEON_GLOW,
     );
