@@ -560,10 +560,16 @@ impl Game {
         }
     }
 
-    /// Builds a fresh wall, drawing each cell's kind from the pool: mostly normal
-    /// bricks, with the pool's special kinds sprinkled in at their own rates. The
-    /// same seed and pool always build the same wall.
+    /// Builds a fresh wall. A guardian wall is a designed set-piece for the
+    /// depth; an ordinary wall draws each cell's kind from the pool — mostly
+    /// normal bricks, with the pool's special kinds sprinkled in at their own
+    /// rates. The same seed and pool always build the same wall.
     fn build_wall(&mut self) {
+        if self.on_guardian() {
+            self.build_guardian();
+            return;
+        }
+
         let specials = self.pool.specials.clone();
         let mut destructible = 0;
         for i in 0..self.bricks.len() {
@@ -589,6 +595,37 @@ impl Game {
                 };
             }
             self.bricks[i] = Some(cell);
+        }
+        self.bricks_left = destructible;
+        self.wall_steps = 0;
+    }
+
+    /// Lays out the guardian for the current depth from its designed template.
+    /// Deeper guardians are tougher; the deepest is the run's final test.
+    fn build_guardian(&mut self) {
+        let template = GUARDIANS[(self.depth as usize).min(GUARDIANS.len() - 1)];
+        for cell in self.bricks.iter_mut() {
+            *cell = None;
+        }
+        let mut destructible = 0;
+        for (row, line) in template.iter().enumerate() {
+            for (col, ch) in line.chars().enumerate().take(BRICK_COLS) {
+                let Some(kind) = kind_from_char(ch) else {
+                    continue;
+                };
+                if kind.destructible() {
+                    destructible += 1;
+                }
+                let mut cell = Cell::of(kind);
+                if kind == Kind::Mover {
+                    cell.dir = if self.rng.range(0.0, 1.0) < 0.5 {
+                        -1
+                    } else {
+                        1
+                    };
+                }
+                self.bricks[row * BRICK_COLS + col] = Some(cell);
+            }
         }
         self.bricks_left = destructible;
         self.wall_steps = 0;
@@ -836,6 +873,61 @@ fn brick_rect(row: usize, col: usize) -> (f32, f32, f32, f32) {
 fn band_of(row: usize) -> u8 {
     // Row 0 is the top; it belongs to the highest band (index 3).
     (BRICK_ROWS / 2 - 1 - row / 2) as u8
+}
+
+/// The designed guardian set-pieces, one per depth, deepest last and toughest.
+/// Each is [`BRICK_ROWS`] rows of [`BRICK_COLS`] glyphs — `.` empty, `N` normal,
+/// `A` armoured, `M` mirror, `E` explosive, `V` mover, `S` spawner. A well-formed
+/// test guards their shape; explosives crack open the armoured shells.
+const GUARDIANS: [[&str; BRICK_ROWS]; DEPTHS as usize] = [
+    // Depth 1 — the Bastion: an armoured border with explosive corners around a
+    // mirrored core.
+    [
+        "AANNNNNNNNNNAA",
+        "AENNNNNNNNNNEA",
+        "ANNNNNNNNNNNNA",
+        "ANNNMMMMMMNNNA",
+        "ANNNMMMMMMNNNA",
+        "ANNNNNNNNNNNNA",
+        "AENNNNNNNNNNEA",
+        "AANNNNNNNNNNAA",
+    ],
+    // Depth 2 — the Works: thicker armour, sliding movers, mirror buttresses.
+    [
+        "AAAANNNNNNAAAA",
+        "AEEANNNNNNAEEA",
+        "ANNNVVVVVVNNNA",
+        "ANMMNNNNNNMMNA",
+        "ANMMNNNNNNMMNA",
+        "ANNNVVVVVVNNNA",
+        "AEEANNNNNNAEEA",
+        "AAAANNNNNNAAAA",
+    ],
+    // Depth 3 — the Vault: a solid armoured shell, spawners regrowing the walls,
+    // and mirror-shielded explosive pockets. The final test.
+    [
+        "AAAAAAAAAAAAAA",
+        "ANSNNNNNNNNSNA",
+        "ANMMMMNNMMMMNA",
+        "ANMEENNNNEEMNA",
+        "ANMEENNNNEEMNA",
+        "ANMMMMNNMMMMNA",
+        "ANSNNNNNNNNSNA",
+        "AAAAAAAAAAAAAA",
+    ],
+];
+
+/// The brick kind a guardian-template glyph stands for, or `None` for empty.
+fn kind_from_char(glyph: char) -> Option<Kind> {
+    match glyph {
+        'N' => Some(Kind::Normal),
+        'A' => Some(Kind::Armoured),
+        'M' => Some(Kind::Mirror),
+        'E' => Some(Kind::Explosive),
+        'V' => Some(Kind::Mover),
+        'S' => Some(Kind::Spawner),
+        _ => None,
+    }
 }
 
 /// The wall-cell indices orthogonally adjacent to `i`, in the order below, left,
@@ -1199,5 +1291,64 @@ mod tests {
             2,
             "the spawned brick counts toward the clear"
         );
+    }
+
+    #[test]
+    fn guardian_templates_are_well_formed() {
+        for template in GUARDIANS {
+            assert_eq!(
+                template.len(),
+                BRICK_ROWS,
+                "a guardian has {BRICK_ROWS} rows"
+            );
+            let mut destructibles = 0;
+            for line in template {
+                assert_eq!(
+                    line.chars().count(),
+                    BRICK_COLS,
+                    "a guardian row is {BRICK_COLS} wide"
+                );
+                for ch in line.chars() {
+                    assert!(".NAMEVS".contains(ch), "unexpected guardian glyph {ch:?}");
+                    if kind_from_char(ch).is_some_and(Kind::destructible) {
+                        destructibles += 1;
+                    }
+                }
+            }
+            assert!(destructibles > 0, "a guardian must be clearable");
+        }
+    }
+
+    #[test]
+    fn a_guardian_wall_lays_out_its_designed_set_piece() {
+        // Depth 0's guardian is laid out exactly from its template, not randomly.
+        let mut game = Game::new_run(1, &Pool::base());
+        game.wall_in_depth = ORDINARY_WALLS_PER_DEPTH;
+        game.build_wall();
+        assert!(game.on_guardian());
+        let expected: Vec<Option<Kind>> = GUARDIANS[0]
+            .iter()
+            .flat_map(|line| line.chars())
+            .map(kind_from_char)
+            .collect();
+        let actual: Vec<Option<Kind>> = game
+            .bricks
+            .iter()
+            .map(|c| c.as_ref().map(|cell| cell.kind))
+            .collect();
+        assert_eq!(actual, expected, "the guardian matches its template");
+
+        // The deepest guardian is distinctly tougher — a solid armoured top row.
+        let mut deep = Game::new_run(1, &Pool::base());
+        deep.depth = DEPTHS - 1;
+        deep.wall_in_depth = ORDINARY_WALLS_PER_DEPTH;
+        deep.build_wall();
+        for col in 0..BRICK_COLS {
+            assert_eq!(
+                deep.bricks[col].map(|cell| cell.kind),
+                Some(Kind::Armoured),
+                "the final guardian's top row is solid armour"
+            );
+        }
     }
 }
