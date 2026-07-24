@@ -444,7 +444,11 @@ fn draw_remix_hud(game: &stepfall_remix_core::Game, best: u32) {
         HINT_SCALE,
         NEON_SHIP,
     );
-    let stage = format!("STAGE {}", game.stage() + 1);
+    let stage = if game.tier() > 0 {
+        format!("STAGE {} T{}", game.stage() + 1, game.tier())
+    } else {
+        format!("STAGE {}", game.stage() + 1)
+    };
     let stage_w = font::text_width(&stage, HINT_SCALE);
     font::draw(
         &stage,
@@ -473,6 +477,7 @@ pub fn remix_summary(
     game: &stepfall_remix_core::Game,
     mode: stepfall_remix_core::Mode,
     best: u32,
+    ascension: bool,
     earned: &[stepfall_remix_core::meta::Content],
 ) {
     use stepfall_remix_core::{Mode as RunMode, Outcome};
@@ -509,11 +514,19 @@ pub fn remix_summary(
         HINT_SCALE,
         NEON_SHIP,
     );
-    let best_line = match mode {
-        RunMode::Onslaught => format!("ONSLAUGHT BEST {best:06}"),
-        RunMode::Daily => format!("DAILY BEST {best:06}"),
-        RunMode::Sortie if won => "SORTIE CLEARED".to_string(),
-        RunMode::Sortie => "SORTIE FAILED".to_string(),
+    let best_line = if ascension {
+        if won {
+            format!("ASCENDED — TIER {} CLEARED", game.tier())
+        } else {
+            format!("ASCENSION TIER {} FELL", game.tier())
+        }
+    } else {
+        match mode {
+            RunMode::Onslaught => format!("ONSLAUGHT BEST {best:06}"),
+            RunMode::Daily => format!("DAILY BEST {best:06}"),
+            RunMode::Sortie if won => "SORTIE CLEARED".to_string(),
+            RunMode::Sortie => "SORTIE FAILED".to_string(),
+        }
     };
     font::draw_centred(LOGICAL_WIDTH, &best_line, mid + 12.0, HINT_SCALE, NEON_GLOW);
 

@@ -80,6 +80,12 @@ const WAVE_CAP: u32 = 8;
 const CADENCE_PER_WAVE: u32 = 7;
 const SPEED_PER_WAVE: f32 = 7.0;
 
+/// Ascension: what each tier layers onto a run — tighter fire, faster bullets, and
+/// a deeper mothership. Tier 0 is a plain run.
+const TIER_CADENCE: u32 = 4;
+const TIER_SPEED: f32 = 6.0;
+const TIER_BOSS_HP: u32 = 18;
+
 /// Where emplacements (turrets, spinners, wall gunners) anchor, and the inset the
 /// row of them keeps from the field's sides.
 const TURRET_ROW: f32 = 46.0;
@@ -582,6 +588,9 @@ pub struct Game {
     waves_this_stage: u32,
     /// The stage the run is on — deepens the mothership and its fire.
     stage: u32,
+    /// The Ascension tier this run plays at (0 for a plain run) — layers denser
+    /// fire and a deeper mothership on top of the stage escalation.
+    tier: u32,
     /// The mothership, present only while a boss caps the stage.
     boss: Option<Mothership>,
     /// Lives left; the run ends when this reaches zero.
@@ -615,6 +624,16 @@ impl Game {
     /// Starts a new run on `seed`, in `mode`, flying `loadout`. The same seed and
     /// inputs always produce the same run.
     pub fn new(seed: u64, mode: Mode, loadout: Loadout) -> Self {
+        Self::with(seed, mode, loadout, 0)
+    }
+
+    /// Starts an Ascension run at `tier`: a Sortie whose fire and motherships
+    /// escalate with the tier. Tier 0 is a plain Sortie.
+    pub fn new_ascension(seed: u64, tier: u32, loadout: Loadout) -> Self {
+        Self::with(seed, Mode::Sortie, loadout, tier)
+    }
+
+    fn with(seed: u64, mode: Mode, loadout: Loadout, tier: u32) -> Self {
         let mut game = Self {
             ship_x: (LOGICAL_WIDTH - SHIP_WIDTH) / 2.0,
             ship_y: LOGICAL_HEIGHT - SHIP_HEIGHT - MARGIN * 3.0,
@@ -630,6 +649,7 @@ impl Game {
             waves_spawned: 0,
             waves_this_stage: 1,
             stage: 0,
+            tier,
             boss: None,
             lives: LIVES_START + loadout.bonus_lives,
             invuln: 0,
@@ -758,6 +778,11 @@ impl Game {
         self.stage
     }
 
+    /// The Ascension tier this run plays at (0 for a plain run).
+    pub fn tier(&self) -> u32 {
+        self.tier
+    }
+
     /// The score so far.
     pub fn score(&self) -> u32 {
         self.score
@@ -778,9 +803,10 @@ impl Game {
         self.outcome
     }
 
-    /// Starts the run over from the beginning; the same seed replays it.
+    /// Starts the run over from the beginning; the same seed, loadout and tier
+    /// replay it.
     pub fn restart(&mut self) {
-        *self = Self::new(self.seed, self.mode, self.loadout);
+        *self = Self::with(self.seed, self.mode, self.loadout, self.tier);
     }
 
     /// Advances the run by exactly one [`TIMESTEP`].
@@ -1112,11 +1138,12 @@ impl Game {
         }
     }
 
-    /// How often `kind` fires, tightening as the run escalates but never past its
-    /// own floor, so late waves rain fire without seizing up.
+    /// How often `kind` fires, tightening as the run escalates (and with the
+    /// Ascension tier) but never past its own floor, so late waves rain fire
+    /// without seizing up.
     fn enemy_cadence(&self, kind: EnemyKind) -> u32 {
         kind.base_cadence()
-            .saturating_sub(self.escalation() * CADENCE_PER_WAVE)
+            .saturating_sub(self.escalation() * CADENCE_PER_WAVE + self.tier * TIER_CADENCE)
             .max(kind.min_cadence())
     }
 
@@ -1126,9 +1153,12 @@ impl Game {
         self.waves_spawned.saturating_sub(1).min(WAVE_CAP)
     }
 
-    /// How fast enemy fire flies this wave — faster the deeper the run.
+    /// How fast enemy fire flies this wave — faster the deeper the run, and faster
+    /// still at higher Ascension tiers.
     fn wave_bullet_speed(&self) -> f32 {
-        ENEMY_BULLET_SPEED + self.escalation() as f32 * SPEED_PER_WAVE
+        ENEMY_BULLET_SPEED
+            + self.escalation() as f32 * SPEED_PER_WAVE
+            + self.tier as f32 * TIER_SPEED
     }
 
     /// Adds a pellet at `(x, y)` flying along `angle` at `speed`.
@@ -1326,7 +1356,7 @@ impl Game {
     /// Sends the mothership flying in from above the top of the field, its health
     /// deepening with the stage.
     fn spawn_boss(&mut self) {
-        let max_hp = BOSS_BASE_HP + self.stage * BOSS_HP_PER_STAGE;
+        let max_hp = BOSS_BASE_HP + self.stage * BOSS_HP_PER_STAGE + self.tier * TIER_BOSS_HP;
         self.boss = Some(Mothership {
             x: (LOGICAL_WIDTH - BOSS_WIDTH) / 2.0,
             y: -BOSS_HEIGHT,
@@ -2600,6 +2630,42 @@ mod tests {
         g.step(Input::default());
         assert_eq!(g.weapon_level(), 1);
         assert!(g.lives() >= LIVES_START, "no rule broke on a seeded run");
+    }
+
+    #[test]
+    fn ascension_tiers_escalate_the_run() {
+        // A plain run is tier 0.
+        assert_eq!(
+            Game::new(1, Mode::Sortie, Loadout::default()).tier(),
+            0,
+            "a plain run is tier 0"
+        );
+
+        // A higher tier fires faster.
+        let speed_at_tier = |tier: u32| {
+            let mut g = Game::new_ascension(1, tier, Loadout::default());
+            only_enemy(&mut g, EnemyKind::Dart, 100.0, 40.0);
+            g.step(Input::default());
+            let (mx, my) = (100.0 + ENEMY_WIDTH / 2.0, 40.0 + ENEMY_HEIGHT);
+            let b = g.enemy_bullets().next().expect("the dart fired");
+            (b.x - mx).hypot(b.y - my) / TIMESTEP
+        };
+        assert!(
+            speed_at_tier(4) > speed_at_tier(0),
+            "a higher tier's fire flies faster"
+        );
+
+        // A higher tier deepens the mothership.
+        let boss_hp_at_tier = |tier: u32| {
+            let mut g = Game::new_ascension(1, tier, Loadout::default());
+            g.enemies.clear();
+            g.spawn_boss();
+            g.boss().unwrap().max_hp
+        };
+        assert!(
+            boss_hp_at_tier(3) > boss_hp_at_tier(0),
+            "a higher tier's mothership is tougher"
+        );
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.

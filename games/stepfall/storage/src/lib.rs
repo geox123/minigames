@@ -17,6 +17,8 @@ const DAILY_DAY: usize = 1;
 const DAILY_BEST: usize = 2;
 /// Slot for the bitset of unlocked ship options (Phase B's meta).
 const UNLOCKED: usize = 3;
+/// Slot for the highest Ascension tier reached.
+const ASCENSION_TIER: usize = 4;
 
 /// How many slots the store holds — room to spare.
 const SLOTS: usize = 8;
@@ -57,6 +59,16 @@ pub fn unlocked_bits() -> u32 {
 /// Saves the bitset of unlocked ship options.
 pub fn set_unlocked_bits(bits: u32) {
     backend::set(UNLOCKED, f64::from(bits));
+}
+
+/// The highest Ascension tier reached (0 if none).
+pub fn ascension_tier() -> u32 {
+    backend::get(ASCENSION_TIER) as u32
+}
+
+/// Saves `tier` as the highest Ascension tier reached.
+pub fn set_ascension_tier(tier: u32) {
+    backend::set(ASCENSION_TIER, f64::from(tier));
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -120,11 +132,17 @@ mod tests {
             "the unlock bits read back exactly"
         );
 
+        // The Ascension tier round-trips.
+        let original_tier = ascension_tier();
+        set_ascension_tier(3);
+        assert_eq!(ascension_tier(), 3, "the tier reads back exactly");
+
         // Put the real save back exactly as it was.
         set_onslaught_best(original_onslaught);
         backend::set(DAILY_DAY, f64::from(original_day));
         backend::set(DAILY_BEST, f64::from(original_daily));
         set_unlocked_bits(original_unlocked);
+        set_ascension_tier(original_tier);
         assert_eq!(
             onslaught_best(),
             original_onslaught,
