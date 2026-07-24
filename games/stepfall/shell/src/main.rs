@@ -4,7 +4,7 @@
 //! rendering. Every rule of the game lives in `stepfall_core`.
 
 use macroquad::prelude::*;
-use stepfall::{App, blit_canvas, logical_camera, logical_canvas};
+use stepfall::{App, Audio, blit_canvas, logical_camera, logical_canvas};
 use stepfall_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
 
 fn window_conf() -> Conf {
@@ -26,7 +26,7 @@ fn window_conf() -> Conf {
 async fn main() {
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
-    let mut app = App::new();
+    let mut app = App::new(Audio::load().await);
 
     loop {
         // Everything the game draws goes onto the logical canvas...

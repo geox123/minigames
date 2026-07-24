@@ -4,9 +4,9 @@
 
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
-use stepfall_core::{Game, TIMESTEP};
+use stepfall_core::{Game, Phase, TIMESTEP};
 
-use crate::{read_input, render};
+use crate::{Audio, read_input, render};
 
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make
@@ -35,28 +35,29 @@ enum Screen {
         accumulator: Accumulator,
         /// Whether the game is paused.
         paused: bool,
+        /// The march frame last seen, so a flip (one formation step) triggers the
+        /// next march note; the note to play next; and whether the saucer's
+        /// warble is currently sounding.
+        march_frame: u8,
+        march_note: usize,
+        saucer_sounding: bool,
     },
 }
 
-/// The whole shell: the current screen, the seed source for new games, and
-/// whether the window is fullscreen.
+/// The whole shell: the current screen, the seed source for new games, whether
+/// the window is fullscreen, the session best, and the sound.
 pub struct App {
     screen: Screen,
     next_seed: u64,
     fullscreen: bool,
     /// The best score this session, carried across restarts and new games.
     best: u32,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
+    audio: Audio,
 }
 
 impl App {
     /// Opens the shell on the mode-select screen.
-    pub fn new() -> Self {
+    pub fn new(audio: Audio) -> Self {
         Self {
             screen: Screen::ModeSelect {
                 highlight: Mode::Faithful,
@@ -64,6 +65,7 @@ impl App {
             next_seed: seed_from_clock(),
             fullscreen: false,
             best: 0,
+            audio,
         }
     }
 
@@ -92,9 +94,13 @@ impl App {
                 game,
                 accumulator,
                 paused,
+                march_frame,
+                march_note,
+                saucer_sounding,
             } => {
                 // Backing out of a game returns to the Collection's mode-select.
                 if is_key_pressed(KeyCode::Escape) {
+                    self.audio.set_saucer(false);
                     self.return_to_mode_select();
                     return;
                 }
@@ -104,16 +110,35 @@ impl App {
                 if is_key_pressed(KeyCode::R) {
                     game.restart();
                     *paused = false;
+                    *march_frame = game.march_frame();
+                    *march_note = 0;
                 }
 
                 if !*paused {
                     let input = read_input();
                     for _ in 0..accumulator.steps(get_frame_time()) {
-                        game.step(input);
+                        self.audio.play(&game.step(input));
+                    }
+                    // The march is the sound of the game: one of the four
+                    // descending notes each time the formation takes a step (its
+                    // frame flips), so the tempo is the march's own — faster as it
+                    // thins, frantic for the last invader.
+                    if game.march_frame() != *march_frame {
+                        *march_frame = game.march_frame();
+                        self.audio.march_note(*march_note);
+                        *march_note += 1;
                     }
                 } else {
                     // Don't let paused wall-time pile up and fast-forward on resume.
                     accumulator.reset();
+                }
+
+                // The saucer warbles while it crosses a live, unpaused game.
+                let should_warble =
+                    !*paused && game.saucer().is_some() && game.phase() == Phase::Playing;
+                if should_warble != *saucer_sounding {
+                    *saucer_sounding = should_warble;
+                    self.audio.set_saucer(should_warble);
                 }
 
                 self.best = self.best.max(game.score());
@@ -141,6 +166,9 @@ impl App {
     fn start_match(&mut self) {
         let game = Box::new(Game::new(self.take_seed()));
         self.screen = Screen::Match {
+            march_frame: game.march_frame(),
+            march_note: 0,
+            saucer_sounding: false,
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
             paused: false,
