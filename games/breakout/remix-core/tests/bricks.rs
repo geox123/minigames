@@ -2,7 +2,7 @@
 
 mod common;
 
-use breakout_remix_core::{BRICK_COLS, BRICK_ROWS, Input, Move};
+use breakout_remix_core::{BRICK_COLS, BRICK_ROWS, Input, Kind, Move};
 use common::{rally_until, run, track};
 
 #[test]
@@ -25,6 +25,25 @@ fn the_wall_starts_full_in_four_bands() {
     assert_eq!(game.band_points(1), 3);
     assert_eq!(game.band_points(2), 5);
     assert_eq!(game.band_points(3), 7);
+}
+
+#[test]
+fn the_wall_includes_the_special_brick_kinds() {
+    // A base-pool wall is mostly normal bricks with armoured and mirror kinds
+    // sprinkled in.
+    let kinds: Vec<Kind> = run(7).bricks().map(|b| b.kind).collect();
+    assert!(
+        kinds.contains(&Kind::Normal),
+        "normal bricks still make up the wall"
+    );
+    assert!(
+        kinds.contains(&Kind::Armoured),
+        "armoured bricks appear in the wall"
+    );
+    assert!(
+        kinds.contains(&Kind::Mirror),
+        "mirror bricks appear in the wall"
+    );
 }
 
 #[test]
