@@ -113,6 +113,25 @@ const BUNKER_TOP: f32 = 176.0;
 /// of one clears a small cluster, so cover wears away in chunks.
 const BITE_RADIUS: i32 = 1;
 
+/// The mystery saucer: its size, the lane it runs along the top, how fast it
+/// crosses, how long between runs, and how thin the formation may get before it
+/// stops appearing.
+pub const SAUCER_WIDTH: f32 = 16.0;
+pub const SAUCER_HEIGHT: f32 = 7.0;
+const SAUCER_TOP: f32 = 40.0;
+const SAUCER_SPEED: f32 = 2.0;
+/// Interrupts between saucer runs.
+const SAUCER_INTERVAL: u32 = 1500;
+/// The saucer only appears while at least this many invaders remain.
+pub const SAUCER_MIN_INVADERS: u32 = 8;
+/// The shot number that first scores the saucer 300, and the period after it —
+/// so the 23rd shot, and every fifteenth after (38th, 53rd, …), is worth 300.
+const SAUCER_SCORE_300_AT: u32 = 23;
+const SAUCER_SCORE_PERIOD: u32 = 15;
+/// The other saucer values, cycled by the shot count: 50 to 150, the original's
+/// lesser prizes.
+const SAUCER_SCORE_TABLE: [u32; 8] = [50, 100, 50, 100, 100, 50, 100, 150];
+
 /// Which way the player is pushing the cannon this step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Move {
@@ -188,6 +207,15 @@ pub struct Bomb {
     pub kind: BombKind,
 }
 
+/// The mystery saucer crossing the top, as the shell should draw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Saucer {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+}
+
 /// A single intact block of a bunker, as the shell should draw it — a
 /// [`BUNKER_CELL`]-sized square.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -213,6 +241,8 @@ pub struct Events {
     pub player_hit: bool,
     /// An extra life was earned this step.
     pub extra_life: bool,
+    /// A shot struck the saucer this step, scoring this many points.
+    pub saucer_hit: Option<u32>,
     /// The last life was spent this step — the game is over.
     pub game_over: bool,
 }
@@ -240,6 +270,13 @@ struct BombState {
     x: f32,
     y: f32,
     kind: BombKind,
+}
+
+/// The saucer's position and heading: `dir` is +1 running right, −1 running left.
+#[derive(Clone, Copy)]
+struct SaucerState {
+    x: f32,
+    dir: f32,
 }
 
 /// One bunker: a grid of blocks, each intact or eaten away. Indexed
@@ -377,6 +414,13 @@ pub struct Game {
     spawns: u32,
     /// The four bunkers, eroding from both sides as the game is played.
     bunkers: Vec<Bunker>,
+    /// The saucer crossing the top, if one is out.
+    saucer: Option<SaucerState>,
+    /// Interrupts since the last saucer run, timing the next.
+    saucer_tick: u32,
+    /// Shots the player has fired all game — sets the saucer's heading and the
+    /// prize for shooting it.
+    shots_fired: u32,
     score: u32,
     /// Lives left; the game ends when this reaches zero.
     lives: u32,
@@ -422,6 +466,9 @@ impl Game {
                     Bunker::fresh(centre - BUNKER_WIDTH / 2.0)
                 })
                 .collect(),
+            saucer: None,
+            saucer_tick: 0,
+            shots_fired: 0,
             score: 0,
             lives: LIVES_START,
             extra_awarded: false,
@@ -476,6 +523,14 @@ impl Game {
         self.bunkers.iter().flat_map(|b| b.blocks())
     }
 
+    /// The mystery saucer crossing the top, if one is out.
+    pub fn saucer(&self) -> Option<Saucer> {
+        self.saucer.map(|s| Saucer {
+            x: s.x,
+            y: SAUCER_TOP,
+        })
+    }
+
     /// The score so far.
     pub fn score(&self) -> u32 {
         self.score
@@ -519,15 +574,18 @@ impl Game {
                 x: self.cannon_x + CANNON_WIDTH / 2.0 - SHOT_WIDTH / 2.0,
                 y: CANNON_TOP,
             });
+            self.shots_fired += 1;
             events.shot_fired = true;
         }
 
         // Everything but the cannon stirs only on a machine interrupt.
         if self.steps.is_multiple_of(STEPS_PER_INTERRUPT) {
             self.advance_march(&mut events);
+            self.advance_saucer();
             self.advance_shot(&mut events);
             self.advance_bombs(&mut events);
             self.spawn_bomb();
+            self.spawn_saucer();
         }
         events
     }
@@ -618,8 +676,21 @@ impl Game {
             {
                 self.destroy(i, events);
                 self.shot = None;
-                break;
+                return;
             }
+        }
+        // Nothing between the shot and the sky: it can reach the saucer.
+        if let Some(saucer) = self.saucer
+            && overlaps(
+                shot_rect,
+                (saucer.x, SAUCER_TOP, SAUCER_WIDTH, SAUCER_HEIGHT),
+            )
+        {
+            let prize = saucer_score(self.shots_fired);
+            self.add_score(prize, events);
+            events.saucer_hit = Some(prize);
+            self.saucer = None;
+            self.shot = None;
         }
     }
 
@@ -629,8 +700,14 @@ impl Game {
         let row = index / COLS;
         self.invaders[index] = None;
         self.alive -= 1;
-        self.score += row_score(row);
+        self.add_score(row_score(row), events);
         events.invader_killed = Some(row as u8);
+    }
+
+    /// Adds `points` to the score, granting the one extra life the moment the
+    /// score first crosses the threshold.
+    fn add_score(&mut self, points: u32, events: &mut Events) {
+        self.score += points;
         if !self.extra_awarded && self.score >= EXTRA_LIFE_AT {
             self.extra_awarded = true;
             self.lives += 1;
@@ -692,6 +769,7 @@ impl Game {
         events.player_hit = true;
         self.bombs.clear();
         self.shot = None;
+        self.saucer = None;
         self.lives -= 1;
         if self.lives == 0 {
             self.phase = Phase::GameOver;
@@ -699,6 +777,37 @@ impl Game {
         } else {
             self.dead = DEATH_PAUSE;
         }
+    }
+
+    /// Slides the saucer along the top, retiring it once it has run off the far
+    /// side.
+    fn advance_saucer(&mut self) {
+        if let Some(mut saucer) = self.saucer.take() {
+            saucer.x += saucer.dir * SAUCER_SPEED;
+            if (-SAUCER_WIDTH..=LOGICAL_WIDTH).contains(&saucer.x) {
+                self.saucer = Some(saucer);
+            }
+        }
+    }
+
+    /// Sends a saucer across on its cadence — but only while the formation is
+    /// still thick enough. It enters from the left when the player's shot count
+    /// is even and from the right when it is odd.
+    fn spawn_saucer(&mut self) {
+        self.saucer_tick += 1;
+        if self.saucer.is_some()
+            || self.saucer_tick < SAUCER_INTERVAL
+            || self.alive < SAUCER_MIN_INVADERS
+        {
+            return;
+        }
+        self.saucer_tick = 0;
+        let (x, dir) = if self.shots_fired.is_multiple_of(2) {
+            (-SAUCER_WIDTH, 1.0)
+        } else {
+            (LOGICAL_WIDTH, -1.0)
+        };
+        self.saucer = Some(SaucerState { x, dir });
     }
 
     /// Drops a new bomb on its cadence, from one of the three column rules — the
@@ -809,6 +918,20 @@ fn row_score(row: usize) -> u32 {
     }
 }
 
+/// What shooting the saucer scores, given the number of shots the player has
+/// fired (counting the one that hit it). Every prize is between 50 and 300, and
+/// the 23rd shot — and every fifteenth after it — is worth the full 300, the
+/// original's famous quirk.
+fn saucer_score(shots_fired: u32) -> u32 {
+    if shots_fired >= SAUCER_SCORE_300_AT
+        && (shots_fired - SAUCER_SCORE_300_AT).is_multiple_of(SAUCER_SCORE_PERIOD)
+    {
+        300
+    } else {
+        SAUCER_SCORE_TABLE[shots_fired as usize % SAUCER_SCORE_TABLE.len()]
+    }
+}
+
 /// Whether two rectangles, each `(x, y, width, height)`, overlap.
 fn overlaps(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
     a.0 < b.0 + b.2 && a.0 + a.2 > b.0 && a.1 < b.1 + b.3 && a.1 + a.3 > b.1
@@ -838,6 +961,12 @@ mod tests {
     fn interrupt(game: &mut Game) {
         game.step(Input::default());
         game.step(Input::default());
+    }
+
+    /// Steps one interrupt and hands back the events of the acting step.
+    fn interrupt_events(game: &mut Game) -> Events {
+        game.step(Input::default());
+        game.step(Input::default())
     }
 
     /// Leaves only `keep` invaders standing, taking them from the bottom row up.
@@ -1001,6 +1130,54 @@ mod tests {
             game.bunker_blocks().count() < before,
             "the invader scraped cover away"
         );
+    }
+
+    #[test]
+    fn the_saucer_prize_tops_out_at_300_on_the_23rd_shot() {
+        // The 23rd shot, and every fifteenth after it, is worth the full 300.
+        assert_eq!(saucer_score(23), 300);
+        assert_eq!(saucer_score(38), 300);
+        assert_eq!(saucer_score(53), 300);
+        // Its neighbours are not.
+        assert_ne!(saucer_score(22), 300);
+        assert_ne!(saucer_score(24), 300);
+        // And every prize is one of the original's values.
+        for shots in 0..200 {
+            assert!(matches!(saucer_score(shots), 50 | 100 | 150 | 300));
+        }
+    }
+
+    #[test]
+    fn shooting_the_saucer_scores_its_prize() {
+        let mut game = Game::new(1);
+        // Pin the shot count on the 300-point shot, and stage a shot right under
+        // a crossing saucer, above the formation.
+        game.shots_fired = 23;
+        game.saucer = Some(SaucerState { x: 100.0, dir: 1.0 });
+        game.shot = Some(Pos {
+            x: 108.0,
+            y: SAUCER_TOP,
+        });
+        let before = game.score();
+
+        let events = interrupt_events(&mut game);
+
+        assert_eq!(events.saucer_hit, Some(300), "the hit scored the 300 prize");
+        assert_eq!(game.score(), before + 300);
+        assert!(game.saucer().is_none(), "the saucer is gone once shot");
+    }
+
+    #[test]
+    fn the_saucer_stops_appearing_once_few_invaders_remain() {
+        let mut game = Game::new(1);
+        thin_to(&mut game, (SAUCER_MIN_INVADERS - 1) as usize);
+        for _ in 0..4_000 {
+            interrupt(&mut game);
+            assert!(
+                game.saucer().is_none(),
+                "no saucer crosses while the formation is thin"
+            );
+        }
     }
 
     #[test]
