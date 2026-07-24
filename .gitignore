@@ -5,3 +5,4 @@ dist/
 # Local save files: written beside the binary when playing, and into the crate
 # directory when its tests run — ignore them wherever they land.
 rift-save.txt
+stepfall-save.txt

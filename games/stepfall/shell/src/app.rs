@@ -5,7 +5,7 @@
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 use stepfall_core::{Game, Phase, TIMESTEP};
-use stepfall_remix_core::{Game as RemixGame, Loadout, Mode as RunMode};
+use stepfall_remix_core::{Game as RemixGame, Loadout, Mode as RunMode, Phase as RemixPhase};
 
 use crate::{Audio, read_input, read_remix_input, render};
 
@@ -43,11 +43,21 @@ enum Screen {
         march_note: usize,
         saucer_sounding: bool,
     },
+    /// HAILFALL's mode picker — the Remix chooses Sortie, Onslaught or Daily.
+    RemixSelect { highlight: RunMode },
     /// A HAILFALL run in progress — the Remix. Boxed like the Faithful's game.
     RemixMatch {
         game: Box<RemixGame>,
         accumulator: Accumulator,
         paused: bool,
+        /// Which mode this run is.
+        mode: RunMode,
+        /// The calendar day a Daily run belongs to (its saved key; 0 otherwise).
+        day: u32,
+        /// The best score to beat and show for this mode (0 for Sortie).
+        best: u32,
+        /// Whether this run's result has been saved yet (saved once, on run-over).
+        saved: bool,
     },
 }
 
@@ -88,13 +98,28 @@ impl App {
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
                 if mode_select_input(highlight) {
-                    // Both takes are playable now.
                     match *highlight {
                         Mode::Faithful => self.start_match(),
-                        Mode::Remix => self.start_remix_match(),
+                        // The Remix picks its mode first.
+                        Mode::Remix => {
+                            self.screen = Screen::RemixSelect {
+                                highlight: RunMode::Sortie,
+                            };
+                        }
                     }
                 } else {
                     render::mode_select(*highlight);
+                }
+            }
+            Screen::RemixSelect { highlight } => {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                    return;
+                }
+                if let Some(mode) = remix_select_input(highlight) {
+                    self.start_remix_match(mode);
+                } else {
+                    render::remix_select(*highlight);
                 }
             }
             Screen::Match {
@@ -158,30 +183,58 @@ impl App {
                 game,
                 accumulator,
                 paused,
+                mode,
+                day,
+                best,
+                saved,
             } => {
                 if is_key_pressed(KeyCode::Escape) {
                     self.return_to_mode_select();
                     return;
                 }
-                if is_key_pressed(KeyCode::P) {
-                    *paused = !*paused;
-                }
+                // A fresh run of the same mode, from the summary or mid-run.
                 if is_key_pressed(KeyCode::R) {
-                    game.restart();
-                    *paused = false;
+                    let mode = *mode;
+                    self.start_remix_match(mode);
+                    return;
                 }
 
-                if !*paused {
-                    let input = read_remix_input();
-                    for _ in 0..accumulator.steps(get_frame_time()) {
-                        game.step(input);
+                let over = game.phase() == RemixPhase::Over;
+                if !over {
+                    if is_key_pressed(KeyCode::P) {
+                        *paused = !*paused;
                     }
-                } else {
-                    accumulator.reset();
+                    if !*paused {
+                        let input = read_remix_input();
+                        for _ in 0..accumulator.steps(get_frame_time()) {
+                            game.step(input);
+                        }
+                    } else {
+                        accumulator.reset();
+                    }
                 }
 
-                render::draw_remix(game);
-                if *paused {
+                // On run-over, save the mode's best once, then resolve with a summary.
+                if over && !*saved {
+                    *saved = true;
+                    let score = game.score();
+                    match mode {
+                        RunMode::Onslaught if score > *best => {
+                            *best = score;
+                            stepfall_storage::set_onslaught_best(score);
+                        }
+                        RunMode::Daily if score > *best => {
+                            *best = score;
+                            stepfall_storage::set_daily_best(*day, score);
+                        }
+                        _ => {}
+                    }
+                }
+
+                render::draw_remix(game, *best);
+                if over {
+                    render::remix_summary(game, *mode, *best);
+                } else if *paused {
                     render::paused_overlay();
                 }
             }
@@ -213,16 +266,27 @@ impl App {
         };
     }
 
-    fn start_remix_match(&mut self) {
-        let game = Box::new(RemixGame::new(
-            self.take_seed(),
-            RunMode::Sortie,
-            Loadout::default(),
-        ));
+    /// Starts a HAILFALL run in `mode`. A Sortie or Onslaught takes a fresh seed
+    /// from the clock; a Daily takes the day's shared seed so everyone plays the
+    /// same run, and both draw the best to beat from the save.
+    fn start_remix_match(&mut self, mode: RunMode) {
+        let (seed, day, best) = match mode {
+            RunMode::Sortie => (self.take_seed(), 0, 0),
+            RunMode::Onslaught => (self.take_seed(), 0, stepfall_storage::onslaught_best()),
+            RunMode::Daily => {
+                let day = today();
+                (u64::from(day), day, stepfall_storage::daily_best(day))
+            }
+        };
+        let game = Box::new(RemixGame::new(seed, mode, Loadout::default()));
         self.screen = Screen::RemixMatch {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
             paused: false,
+            mode,
+            day,
+            best,
+            saved: false,
         };
     }
 }
@@ -237,6 +301,42 @@ fn mode_select_input(highlight: &mut Mode) -> bool {
         };
     }
     is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
+}
+
+/// Reads HAILFALL's mode picker, cycling the highlight through the three modes.
+/// Returns the chosen mode once the player commits to it.
+fn remix_select_input(highlight: &mut RunMode) -> Option<RunMode> {
+    if pressed_menu_next() {
+        *highlight = match *highlight {
+            RunMode::Sortie => RunMode::Onslaught,
+            RunMode::Onslaught => RunMode::Daily,
+            RunMode::Daily => RunMode::Sortie,
+        };
+    } else if pressed_menu_prev() {
+        *highlight = match *highlight {
+            RunMode::Sortie => RunMode::Daily,
+            RunMode::Onslaught => RunMode::Sortie,
+            RunMode::Daily => RunMode::Onslaught,
+        };
+    }
+    (is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)).then_some(*highlight)
+}
+
+/// Whether the player nudged a menu highlight down/forward this frame.
+fn pressed_menu_next() -> bool {
+    is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S)
+}
+
+/// Whether the player nudged a menu highlight up/back this frame.
+fn pressed_menu_prev() -> bool {
+    is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W)
+}
+
+/// Today's calendar day, as whole days since the Unix epoch. The core stays
+/// clock-free; only the shell reads the clock, so a Daily's seed is shared by
+/// everyone playing on the same day.
+fn today() -> u32 {
+    (miniquad::date::now() / 86_400.0) as u32
 }
 
 /// Whether the player nudged a menu highlight this frame.
