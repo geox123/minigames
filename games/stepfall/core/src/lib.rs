@@ -132,6 +132,22 @@ const SAUCER_SCORE_PERIOD: u32 = 15;
 /// lesser prizes.
 const SAUCER_SCORE_TABLE: [u32; 8] = [50, 100, 50, 100, 100, 50, 100, 150];
 
+/// The cannon's row. If the formation ever grinds down this far, the game is
+/// over on the spot — however many lives remain. This is what makes the march a
+/// real threat and not just a timer.
+const INVASION_Y: f32 = CANNON_TOP;
+/// Where each wave's formation starts, top-down. The first wave stands highest;
+/// every wave after begins half a row lower, escalating until the sixth, past
+/// which each new wave shares the sixth's floor — the original's rising starts.
+const WAVE_START_Y: [f32; 6] = [
+    FORMATION_TOP,        // wave 1, highest
+    FORMATION_TOP + 8.0,  // wave 2
+    FORMATION_TOP + 16.0, // wave 3
+    FORMATION_TOP + 24.0, // wave 4
+    FORMATION_TOP + 32.0, // wave 5
+    FORMATION_TOP + 40.0, // wave 6 and after — the floor
+];
+
 /// Which way the player is pushing the cannon this step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Move {
@@ -243,6 +259,8 @@ pub struct Events {
     pub extra_life: bool,
     /// A shot struck the saucer this step, scoring this many points.
     pub saucer_hit: Option<u32>,
+    /// The formation was cleared this step and a fresh wave began.
+    pub wave_cleared: bool,
     /// The last life was spent this step — the game is over.
     pub game_over: bool,
 }
@@ -404,6 +422,8 @@ pub struct Game {
     edge_hit: bool,
     /// This pass steps the formation down instead of sideways.
     dropping: bool,
+    /// Which wave this is, from 1 — each fresh formation starts lower.
+    wave: u32,
     /// The player's shot, if one is in flight.
     shot: Option<Pos>,
     /// The bombs the formation has in the air.
@@ -438,34 +458,20 @@ pub struct Game {
 impl Game {
     /// Starts a new game. The same seed always produces the same game.
     pub fn new(seed: u64) -> Self {
-        let mut invaders = Vec::with_capacity(INVADERS);
-        let left = (LOGICAL_WIDTH - COLS as f32 * CELL_WIDTH) / 2.0;
-        for row in 0..ROWS {
-            for col in 0..COLS {
-                invaders.push(Some(Pos {
-                    x: left + col as f32 * CELL_WIDTH,
-                    y: FORMATION_TOP + row as f32 * CELL_HEIGHT,
-                }));
-            }
-        }
-        Self {
+        let mut game = Self {
             cannon_x: (LOGICAL_WIDTH - CANNON_WIDTH) / 2.0,
-            invaders,
-            alive: INVADERS as u32,
+            invaders: Vec::with_capacity(INVADERS),
+            alive: 0,
             cursor: 0,
             dir: 1.0,
             edge_hit: false,
             dropping: false,
+            wave: 1,
             shot: None,
             bombs: Vec::new(),
             bomb_spawn_tick: 0,
             spawns: 0,
-            bunkers: (0..BUNKERS)
-                .map(|i| {
-                    let centre = (i as f32 + 0.5) / BUNKERS as f32 * LOGICAL_WIDTH;
-                    Bunker::fresh(centre - BUNKER_WIDTH / 2.0)
-                })
-                .collect(),
+            bunkers: fresh_bunkers(),
             saucer: None,
             saucer_tick: 0,
             shots_fired: 0,
@@ -476,7 +482,43 @@ impl Game {
             steps: 0,
             phase: Phase::Playing,
             seed,
+        };
+        game.spawn_formation(wave_start_y(1));
+        game
+    }
+
+    /// Fills the formation for a wave whose top row stands at `top`, resetting
+    /// the march to its opening state.
+    fn spawn_formation(&mut self, top: f32) {
+        let left = (LOGICAL_WIDTH - COLS as f32 * CELL_WIDTH) / 2.0;
+        self.invaders.clear();
+        for row in 0..ROWS {
+            for col in 0..COLS {
+                self.invaders.push(Some(Pos {
+                    x: left + col as f32 * CELL_WIDTH,
+                    y: top + row as f32 * CELL_HEIGHT,
+                }));
+            }
         }
+        self.alive = INVADERS as u32;
+        self.cursor = 0;
+        self.dir = 1.0;
+        self.edge_hit = false;
+        self.dropping = false;
+    }
+
+    /// Clears the field and brings the next, lower wave — carrying the score,
+    /// lives and the extra-life award across, and rebuilding the bunkers.
+    fn next_wave(&mut self, events: &mut Events) {
+        self.wave += 1;
+        self.spawn_formation(wave_start_y(self.wave));
+        self.bunkers = fresh_bunkers();
+        self.bombs.clear();
+        self.shot = None;
+        self.saucer = None;
+        self.bomb_spawn_tick = 0;
+        self.saucer_tick = 0;
+        events.wave_cleared = true;
     }
 
     /// The invaders still standing, as the shell should draw them.
@@ -581,11 +623,14 @@ impl Game {
         // Everything but the cannon stirs only on a machine interrupt.
         if self.steps.is_multiple_of(STEPS_PER_INTERRUPT) {
             self.advance_march(&mut events);
-            self.advance_saucer();
-            self.advance_shot(&mut events);
-            self.advance_bombs(&mut events);
-            self.spawn_bomb();
-            self.spawn_saucer();
+            // The march may have ground down to the cannon's row and ended it.
+            if self.phase != Phase::GameOver {
+                self.advance_saucer();
+                self.advance_shot(&mut events);
+                self.advance_bombs(&mut events);
+                self.spawn_bomb();
+                self.spawn_saucer();
+            }
         }
         events
     }
@@ -639,13 +684,25 @@ impl Game {
             bunker.scrape(scraped);
         }
 
+        // Grinding down as far as the cannon's row ends the game on the spot,
+        // whatever the lives.
+        if moved.y + INVADER_HEIGHT >= INVASION_Y {
+            self.phase = Phase::GameOver;
+            events.game_over = true;
+        }
+
         if moved.x < EDGE_MARGIN || moved.x + INVADER_WIDTH > LOGICAL_WIDTH - EDGE_MARGIN {
             self.edge_hit = true;
         }
 
         // Move the cursor on; running off the end completes a pass.
+        // The pass ends once no standing invader remains ahead of the cursor —
+        // not only when the cursor runs off the end. Without this, clearing the
+        // highest-indexed cells (the bottom-right of the formation, the first a
+        // player tends to shoot away) would strand the cursor past every
+        // survivor and freeze the march.
         self.cursor = index + 1;
-        if self.cursor >= INVADERS {
+        if (self.cursor..INVADERS).all(|i| self.invaders[i].is_none()) {
             self.cursor = 0;
             events.turned = self.finish_pass();
         }
@@ -695,13 +752,17 @@ impl Game {
     }
 
     /// Destroys the invader at `index`, scoring its row and granting the extra
-    /// life if this is the score that earns it.
+    /// life if this is the score that earns it. Clearing the last invader brings
+    /// the next wave.
     fn destroy(&mut self, index: usize, events: &mut Events) {
         let row = index / COLS;
         self.invaders[index] = None;
         self.alive -= 1;
         self.add_score(row_score(row), events);
         events.invader_killed = Some(row as u8);
+        if self.alive == 0 {
+            self.next_wave(events);
+        }
     }
 
     /// Adds `points` to the score, granting the one extra life the moment the
@@ -906,6 +967,23 @@ impl Game {
         self.edge_hit = false;
         turned
     }
+}
+
+/// A fresh set of four bunkers, spaced across the field.
+fn fresh_bunkers() -> Vec<Bunker> {
+    (0..BUNKERS)
+        .map(|i| {
+            let centre = (i as f32 + 0.5) / BUNKERS as f32 * LOGICAL_WIDTH;
+            Bunker::fresh(centre - BUNKER_WIDTH / 2.0)
+        })
+        .collect()
+}
+
+/// Where wave `wave` (from 1) starts, top-down — lower each wave until the
+/// sixth, then holding at that floor.
+fn wave_start_y(wave: u32) -> f32 {
+    let step = (wave.max(1) as usize - 1).min(WAVE_START_Y.len() - 1);
+    WAVE_START_Y[step]
 }
 
 /// What an invader in `row` (0 the top) scores: the top row is worth 30, the
@@ -1178,6 +1256,88 @@ mod tests {
                 "no saucer crosses while the formation is thin"
             );
         }
+    }
+
+    #[test]
+    fn the_formation_reaching_the_cannons_row_ends_it_whatever_the_lives() {
+        let mut game = Game::new(1);
+        // A lone invader one drop above the cannon's row, lives to spare.
+        game.dropping = true;
+        game.cursor = 54;
+        game.invaders[54] = Some(Pos {
+            x: 100.0,
+            y: INVASION_Y - INVADER_HEIGHT - 1.0,
+        });
+        let lives = game.lives();
+
+        let events = interrupt_events(&mut game);
+
+        assert!(events.game_over, "the descent ended the game");
+        assert_eq!(game.phase(), Phase::GameOver);
+        assert_eq!(
+            game.lives(),
+            lives,
+            "ended by the descent, not a spent life"
+        );
+    }
+
+    #[test]
+    fn clearing_the_formation_brings_a_lower_wave() {
+        let mut game = Game::new(1);
+        let first_top = game.invaders().map(|i| i.y).fold(f32::INFINITY, f32::min);
+        let fresh_cover = game.bunker_blocks().count();
+
+        // Witnesses that score and lives carry across, and some cover damage to
+        // prove the bunkers are rebuilt.
+        game.score = 500;
+        game.lives = 2;
+        game.bunkers[0].bite(3, 5);
+        assert!(
+            game.bunker_blocks().count() < fresh_cover,
+            "cover was damaged"
+        );
+
+        // Down to the last invader; stage a shot on it and let the real path
+        // clear it and turn the wave.
+        thin_to(&mut game, 1);
+        let last = game.invaders().next().expect("one invader remains");
+        game.shot = Some(Pos {
+            x: last.x + INVADER_WIDTH / 2.0,
+            y: last.y + INVADER_HEIGHT + 1.0,
+        });
+
+        let events = interrupt_events(&mut game);
+
+        assert!(
+            events.wave_cleared,
+            "clearing the last invader turned the wave"
+        );
+        assert_eq!(
+            game.alive(),
+            INVADERS as u32,
+            "a fresh, full formation stands"
+        );
+        assert_eq!(game.phase(), Phase::Playing);
+        let second_top = game.invaders().map(|i| i.y).fold(f32::INFINITY, f32::min);
+        assert!(second_top > first_top, "the new wave starts lower");
+        assert_eq!(
+            game.bunker_blocks().count(),
+            fresh_cover,
+            "the bunkers are rebuilt"
+        );
+        assert_eq!(game.score(), 500 + row_score(4), "the score carried across");
+        assert_eq!(game.lives(), 2, "the lives carried across");
+    }
+
+    #[test]
+    fn each_wave_starts_lower_and_then_holds_at_a_floor() {
+        let ys: Vec<f32> = (1..=8).map(wave_start_y).collect();
+        for w in 1..ys.len() {
+            assert!(ys[w] >= ys[w - 1], "no wave starts higher than the last");
+        }
+        assert!(ys[1] > ys[0], "the second wave starts lower than the first");
+        assert_eq!(ys[5], ys[6], "the sixth wave's start is the floor");
+        assert_eq!(ys[6], ys[7], "and later waves hold at it");
     }
 
     #[test]
