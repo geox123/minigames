@@ -11,6 +11,7 @@ macroquad.workspace = true
 shell-kit = { path = "../../../shell-kit" }
 breakout-core = { path = "../core" }
 breakout-remix-core = { path = "../remix-core" }
+breakout-storage = { path = "../storage" }
 
 [lints]
 workspace = true

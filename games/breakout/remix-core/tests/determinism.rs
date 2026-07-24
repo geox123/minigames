@@ -17,14 +17,7 @@ fn replay(seed: u64) -> Vec<Snapshot> {
         if step % 250 == 0 {
             let ball = game.ball();
             let p = game.paddle();
-            samples.push((
-                ball.x,
-                ball.y,
-                ball.vx,
-                p.x,
-                game.score(),
-                game.walls_cleared(),
-            ));
+            samples.push((ball.x, ball.y, ball.vx, p.x, game.score(), game.depth()));
         }
     }
     samples
