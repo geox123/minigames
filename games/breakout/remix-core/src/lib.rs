@@ -4,12 +4,14 @@
 //! rendering, audio, windows or wall-clock time, and advances in fixed timesteps
 //! so a seed and a sequence of inputs always replay the same run.
 //!
-//! This is the **descent skeleton**: a paddle, a ball, and one wall of normal
-//! bricks. Deflect the ball off the paddle to break bricks; clear the wall and a
-//! fresh one comes up after a serve; drop the ball past the paddle and it is
-//! reported and a new ball is served. The depth structure, guardians, lives,
-//! boons and the brick zoo are layered on in later work — this establishes the
-//! run loop and its single [`Game::step`] seam.
+//! A run is a **finite, winnable descent** through [`DEPTHS`] depths. Each depth
+//! is a few ordinary walls capped by a **guardian** wall; clearing a guardian
+//! descends to the next depth and banks a life, and clearing the final depth's
+//! guardian **wins** the run. A run-long pool of [`LIVES_START`] lives replaces
+//! per-screen balls: dropping the ball spends a life, and running out ends the
+//! run. Deflect the ball off the paddle to break bricks; between walls the ball
+//! re-serves. Guardians are arranged from normal bricks for now; their set-piece
+//! layouts and the brick zoo, boons and juice are layered on in later work.
 //!
 //! The available [`Pool`] of brick and boon types is passed *in* at construction,
 //! so the core never knows the concept of "unlocks": it only ever draws on the
@@ -49,6 +51,17 @@ const WALL: f32 = 2.0;
 
 /// Points for each band, from the low band (index 0, bottom rows) up.
 const BAND_POINTS: [u32; 4] = [1, 3, 5, 7];
+
+/// A run descends this many depths; clearing the last one's guardian wins.
+pub const DEPTHS: u32 = 3;
+/// Ordinary walls in a depth, before the guardian that caps it.
+const ORDINARY_WALLS_PER_DEPTH: u32 = 2;
+/// Walls in a depth: the ordinary walls plus the guardian.
+pub const WALLS_PER_DEPTH: u32 = ORDINARY_WALLS_PER_DEPTH + 1;
+/// Lives a run begins with.
+pub const LIVES_START: u32 = 3;
+/// The most lives a run can bank; clearing a guardian restores one up to here.
+pub const LIVES_CAP: u32 = 5;
 
 /// How long the ball rests on the paddle before each serve.
 pub const SERVE_PAUSE: f32 = 0.6;
@@ -148,10 +161,16 @@ pub struct Events {
     pub paddle_hit: bool,
     /// A brick was broken this step, and its band (0 low to 3 high).
     pub brick_broken: Option<u8>,
-    /// The last brick of a wall fell this step, bringing up a fresh wall.
+    /// The last brick of an ordinary wall fell, bringing up the next wall.
     pub wall_cleared: bool,
-    /// The ball fell past the paddle this step and a new ball was served.
+    /// A guardian fell this step, completing a depth (and banking a life).
+    pub guardian_cleared: bool,
+    /// The ball fell past the paddle this step and a life was spent.
     pub lost_ball: bool,
+    /// The final guardian fell this step — the run was won.
+    pub won: bool,
+    /// The last life was spent this step — the run was lost.
+    pub lost: bool,
 }
 
 /// Where a run is.
@@ -161,6 +180,20 @@ pub enum Phase {
     Serving,
     /// The ball is in play.
     Playing,
+    /// The final guardian has fallen — the run is won.
+    Won,
+    /// Every life has been spent — the run is lost.
+    Lost,
+}
+
+/// What emptying a wall did, so [`Game::advance_ball`] reports the right event.
+enum WallOutcome {
+    /// An ordinary wall fell; the next wall of this depth comes up.
+    Ordinary,
+    /// A guardian fell; the run descends to the next depth.
+    Depth,
+    /// The final guardian fell; the run is won.
+    Won,
 }
 
 /// A run of RIFT.
@@ -174,8 +207,12 @@ pub struct Game {
     /// Standing bricks remaining.
     bricks_left: u32,
     score: u32,
-    /// Walls fully cleared so far this run.
-    walls_cleared: u32,
+    /// The depth being played, 0-based (0 to [`DEPTHS`] − 1).
+    depth: u32,
+    /// Which wall within the depth is up, 0-based; the guardian is the last.
+    wall_in_depth: u32,
+    /// Lives left this run; the run ends when this reaches zero.
+    lives: u32,
     phase: Phase,
     /// Seconds left of the pause before the serve.
     serve_countdown: f32,
@@ -197,7 +234,9 @@ impl Game {
             bricks: vec![true; BRICK_ROWS * BRICK_COLS],
             bricks_left: (BRICK_ROWS * BRICK_COLS) as u32,
             score: 0,
-            walls_cleared: 0,
+            depth: 0,
+            wall_in_depth: 0,
+            lives: LIVES_START,
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
             seed,
@@ -242,9 +281,20 @@ impl Game {
         self.bricks_left
     }
 
-    /// Walls fully cleared so far this run.
-    pub fn walls_cleared(&self) -> u32 {
-        self.walls_cleared
+    /// The depth reached, 1-based (1 to [`DEPTHS`]). On a won run this is
+    /// [`DEPTHS`]; it is also the run's "depth reached" for the summary.
+    pub fn depth(&self) -> u32 {
+        self.depth + 1
+    }
+
+    /// Lives left this run.
+    pub fn lives(&self) -> u32 {
+        self.lives
+    }
+
+    /// Whether the wall currently up is the depth's guardian.
+    pub fn on_guardian(&self) -> bool {
+        self.wall_in_depth == ORDINARY_WALLS_PER_DEPTH
     }
 
     /// Starts the run over from the beginning: the same seed and pool replay the
@@ -289,6 +339,8 @@ impl Game {
                 Events::default()
             }
             Phase::Playing => self.advance_ball(),
+            // The run is over; it rests until restarted.
+            Phase::Won | Phase::Lost => Events::default(),
         }
     }
 
@@ -320,20 +372,32 @@ impl Game {
 
         let brick_broken = self.collide_bricks(previous);
 
-        // The last brick of a wall brings up the next after a serve.
-        let mut wall_cleared = false;
+        // Emptying a wall completes it: an ordinary wall brings up the next, a
+        // guardian descends a depth (and re-parks), the final guardian wins.
+        let (mut wall_cleared, mut guardian_cleared, mut won) = (false, false, false);
         if brick_broken.is_some() && self.bricks_left == 0 {
-            wall_cleared = true;
-            self.finish_wall();
+            match self.finish_wall() {
+                WallOutcome::Ordinary => wall_cleared = true,
+                WallOutcome::Depth => guardian_cleared = true,
+                WallOutcome::Won => won = true,
+            }
         }
 
-        // A fresh wall re-parks the ball, so only strike and drop while in play.
+        // A completed wall re-parks the ball or ends the run, so only strike and
+        // drop while still in play.
         let paddle_hit = self.phase == Phase::Playing && self.strike_paddle(previous);
 
-        let mut lost_ball = false;
+        let (mut lost_ball, mut lost) = (false, false);
         if self.phase == Phase::Playing && self.ball.y - half > LOGICAL_HEIGHT {
             lost_ball = true;
-            self.begin_ball();
+            self.lives -= 1;
+            if self.lives == 0 {
+                lost = true;
+                self.phase = Phase::Lost;
+                self.ball = PARKED_BALL;
+            } else {
+                self.begin_ball();
+            }
         }
 
         Events {
@@ -341,18 +405,44 @@ impl Game {
             paddle_hit,
             brick_broken,
             wall_cleared,
+            guardian_cleared,
             lost_ball,
+            won,
+            lost,
         }
     }
 
-    /// Handles a wall being emptied: a fresh wall comes up and waits on a serve.
-    fn finish_wall(&mut self) {
-        self.walls_cleared += 1;
+    /// Handles a wall being emptied, returning what it did. An ordinary wall
+    /// brings up the next wall of the depth; a guardian descends to the next
+    /// depth and banks a life; the final depth's guardian wins the run.
+    fn finish_wall(&mut self) -> WallOutcome {
+        if self.on_guardian() {
+            if self.depth + 1 >= DEPTHS {
+                self.phase = Phase::Won;
+                self.ball = PARKED_BALL;
+                WallOutcome::Won
+            } else {
+                self.depth += 1;
+                self.wall_in_depth = 0;
+                self.lives = (self.lives + 1).min(LIVES_CAP);
+                self.refill_wall();
+                self.begin_ball();
+                WallOutcome::Depth
+            }
+        } else {
+            self.wall_in_depth += 1;
+            self.refill_wall();
+            self.begin_ball();
+            WallOutcome::Ordinary
+        }
+    }
+
+    /// Stands every brick back up for a fresh wall.
+    fn refill_wall(&mut self) {
         for standing in self.bricks.iter_mut() {
             *standing = true;
         }
         self.bricks_left = (BRICK_ROWS * BRICK_COLS) as u32;
-        self.begin_ball();
     }
 
     /// Breaks the first standing brick the ball is now overlapping, reflecting
@@ -537,12 +627,12 @@ impl Rng {
 
 #[cfg(test)]
 mod tests {
-    //! Clearing a wall by honest play is impractical — a perfect paddle digs a
-    //! channel and the ball then bounces in it forever — so this sets up the last
-    //! standing brick and lets the real `step` path break it and bring up the
-    //! next wall. Only the setup reaches inside; the transition itself runs
-    //! through the same code the run does. Everything else is tested through the
-    //! seam in `tests/`.
+    //! Wall, guardian and win transitions. Emptying a wall by honest play is
+    //! impractical — a perfect paddle digs a channel the ball bounces in forever
+    //! — so these set up the last standing brick (and the run's depth) and let
+    //! the real `step` path break it and make the transition. Only the setup
+    //! reaches inside; the transition itself runs through the same code the run
+    //! does. Lives and losing are reachable by honest play, tested in `tests/`.
     use super::*;
 
     /// Leaves a single standing brick and puts the ball on course to break it on
@@ -566,15 +656,17 @@ mod tests {
     }
 
     #[test]
-    fn clearing_the_wall_brings_up_a_fresh_one_after_a_serve() {
+    fn clearing_an_ordinary_wall_brings_up_the_next_after_a_serve() {
         let mut game = Game::new_run(1, &Pool::base());
         game.score = 40;
+        assert!(!game.on_guardian(), "a depth opens on an ordinary wall");
 
         one_brick_left(&mut game, 7, 7);
         let events = game.step(Input::default());
 
-        assert!(events.wall_cleared, "clearing the last brick is reported");
-        assert_eq!(game.walls_cleared(), 1);
+        assert!(events.wall_cleared, "an ordinary wall clearing is reported");
+        assert!(!events.guardian_cleared && !events.won);
+        assert_eq!(game.depth(), 1, "an ordinary wall keeps the same depth");
         assert_eq!(
             game.bricks_left(),
             (BRICK_ROWS * BRICK_COLS) as u32,
@@ -585,10 +677,57 @@ mod tests {
             Phase::Serving,
             "a fresh wall waits on a serve"
         );
-        assert_eq!(
-            game.score(),
-            41,
-            "the last brick still scores and score carries"
+        assert_eq!(game.score(), 41, "the last brick still scores");
+    }
+
+    #[test]
+    fn clearing_a_guardian_descends_a_depth_and_banks_a_life() {
+        let mut game = Game::new_run(1, &Pool::base());
+        // Advance to this depth's guardian, one life already spent.
+        game.wall_in_depth = ORDINARY_WALLS_PER_DEPTH;
+        game.lives = LIVES_START - 1;
+        assert!(game.on_guardian());
+
+        one_brick_left(&mut game, 7, 7);
+        let events = game.step(Input::default());
+
+        assert!(events.guardian_cleared, "a guardian clearing is reported");
+        assert!(!events.wall_cleared && !events.won);
+        assert_eq!(game.depth(), 2, "clearing a guardian descends a depth");
+        assert!(
+            !game.on_guardian(),
+            "the next depth opens on an ordinary wall"
         );
+        assert_eq!(game.lives(), LIVES_START, "a cleared guardian banks a life");
+        assert_eq!(game.phase(), Phase::Serving);
+    }
+
+    #[test]
+    fn a_banked_life_never_exceeds_the_cap() {
+        let mut game = Game::new_run(1, &Pool::base());
+        game.wall_in_depth = ORDINARY_WALLS_PER_DEPTH;
+        game.lives = LIVES_CAP;
+
+        one_brick_left(&mut game, 7, 7);
+        game.step(Input::default());
+
+        assert_eq!(game.lives(), LIVES_CAP, "banked lives never pass the cap");
+    }
+
+    #[test]
+    fn clearing_the_final_guardian_wins_the_run() {
+        let mut game = Game::new_run(1, &Pool::base());
+        // The last depth's guardian.
+        game.depth = DEPTHS - 1;
+        game.wall_in_depth = ORDINARY_WALLS_PER_DEPTH;
+        assert!(game.on_guardian());
+
+        one_brick_left(&mut game, 7, 7);
+        let events = game.step(Input::default());
+
+        assert!(events.won, "the final guardian wins the run");
+        assert!(!events.guardian_cleared);
+        assert_eq!(game.phase(), Phase::Won);
+        assert_eq!(game.depth(), DEPTHS, "a won run reached the final depth");
     }
 }

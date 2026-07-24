@@ -3,7 +3,9 @@
 //! around the pure core, which is why it lives in the shell, not `breakout_core`.
 
 use breakout_core::{Game, TIMESTEP};
-use breakout_remix_core::{Game as RiftGame, Pool as RiftPool, TIMESTEP as RIFT_TIMESTEP};
+use breakout_remix_core::{
+    Game as RiftGame, Phase as RiftPhase, Pool as RiftPool, TIMESTEP as RIFT_TIMESTEP,
+};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
@@ -54,6 +56,8 @@ pub struct App {
     next_seed: u64,
     audio: Audio,
     fullscreen: bool,
+    /// RIFT's best depth reached, loaded once and persisted when beaten.
+    rift_best_depth: u32,
 }
 
 impl App {
@@ -66,6 +70,7 @@ impl App {
             next_seed: seed_from_clock(),
             audio,
             fullscreen: false,
+            rift_best_depth: breakout_storage::best_depth(),
         }
     }
 
@@ -143,7 +148,16 @@ impl App {
                 if !*paused {
                     let input = rift::read_input();
                     for _ in 0..accumulator.steps(get_frame_time()) {
-                        self.audio.play_rift(game.step(input));
+                        let events = game.step(input);
+                        self.audio.play_rift(events);
+                        // A run that just ended may have set a new best depth.
+                        if events.won || events.lost {
+                            let depth = game.depth();
+                            if depth > self.rift_best_depth {
+                                self.rift_best_depth = depth;
+                                breakout_storage::set_best_depth(depth);
+                            }
+                        }
                     }
                 } else {
                     // Don't let paused wall-time pile up and fast-forward on resume.
@@ -151,6 +165,9 @@ impl App {
                 }
 
                 rift::draw(game);
+                if matches!(game.phase(), RiftPhase::Won | RiftPhase::Lost) {
+                    rift::run_summary(game, self.rift_best_depth);
+                }
                 if *paused {
                     render::paused_overlay();
                 }

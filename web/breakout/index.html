@@ -44,6 +44,9 @@
     <a id="back" href="../">&larr; Collection</a>
     <canvas id="glcanvas" tabindex="1"></canvas>
     <script src="../vendor/mq_js_bundle.js"></script>
+    <!-- Registers the localStorage plugin the WASM uses for RIFT's best depth;
+         must load before the wasm so the plugin is wired into it. -->
+    <script src="../vendor/rift-storage.js"></script>
     <script>
       // Hide the back-link the moment the player starts interacting.
       const back = document.getElementById("back");

@@ -1,0 +1,12 @@
+[package]
+name = "breakout-storage"
+version = "0.1.0"
+description = "Tiny cross-platform persistence for RIFT's best depth — a file natively, localStorage in the browser."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# This crate deliberately does NOT inherit the workspace's `unsafe_code = deny`:
+# it is the one place the project talks to the browser over FFI, and it exists
+# precisely so that unsafe stays confined here and out of the game and shell
+# crates. The unsafe surface is two number-in, number-out extern functions.

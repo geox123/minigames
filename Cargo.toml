@@ -8,6 +8,7 @@ members = [
     "games/pong/shell",
     "games/breakout/core",
     "games/breakout/remix-core",
+    "games/breakout/storage",
     "games/breakout/shell",
 ]
 
