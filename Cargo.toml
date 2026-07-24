@@ -11,6 +11,7 @@ members = [
     "games/breakout/storage",
     "games/breakout/shell",
     "games/stepfall/core",
+    "games/stepfall/remix-core",
     "games/stepfall/shell",
 ]
 

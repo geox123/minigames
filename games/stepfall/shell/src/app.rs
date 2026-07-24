@@ -5,8 +5,9 @@
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 use stepfall_core::{Game, Phase, TIMESTEP};
+use stepfall_remix_core::{Game as RemixGame, Loadout, Mode as RunMode};
 
-use crate::{Audio, read_input, render};
+use crate::{Audio, read_input, read_remix_input, render};
 
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make
@@ -41,6 +42,12 @@ enum Screen {
         march_frame: u8,
         march_note: usize,
         saucer_sounding: bool,
+    },
+    /// A HAILFALL run in progress — the Remix. Boxed like the Faithful's game.
+    RemixMatch {
+        game: Box<RemixGame>,
+        accumulator: Accumulator,
+        paused: bool,
     },
 }
 
@@ -81,10 +88,10 @@ impl App {
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
                 if mode_select_input(highlight) {
-                    // Only the Faithful is playable; committing to the locked
-                    // Remix does nothing.
-                    if *highlight == Mode::Faithful {
-                        self.start_match();
+                    // Both takes are playable now.
+                    match *highlight {
+                        Mode::Faithful => self.start_match(),
+                        Mode::Remix => self.start_remix_match(),
                     }
                 } else {
                     render::mode_select(*highlight);
@@ -147,6 +154,37 @@ impl App {
                     render::paused_overlay();
                 }
             }
+            Screen::RemixMatch {
+                game,
+                accumulator,
+                paused,
+            } => {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                    return;
+                }
+                if is_key_pressed(KeyCode::P) {
+                    *paused = !*paused;
+                }
+                if is_key_pressed(KeyCode::R) {
+                    game.restart();
+                    *paused = false;
+                }
+
+                if !*paused {
+                    let input = read_remix_input();
+                    for _ in 0..accumulator.steps(get_frame_time()) {
+                        game.step(input);
+                    }
+                } else {
+                    accumulator.reset();
+                }
+
+                render::draw_remix(game);
+                if *paused {
+                    render::paused_overlay();
+                }
+            }
         }
     }
 
@@ -169,6 +207,19 @@ impl App {
             march_frame: game.march_frame(),
             march_note: 0,
             saucer_sounding: false,
+            game,
+            accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
+            paused: false,
+        };
+    }
+
+    fn start_remix_match(&mut self) {
+        let game = Box::new(RemixGame::new(
+            self.take_seed(),
+            RunMode::Sortie,
+            Loadout::default(),
+        ));
+        self.screen = Screen::RemixMatch {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
             paused: false,

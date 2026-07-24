@@ -29,6 +29,22 @@ pub fn read_input() -> Input {
     }
 }
 
+/// Reads the HAILFALL ship off the keyboard: arrows or WASD to fly, Space/Z to
+/// fire, Shift to focus, X to dash, C to spend an overdrive. (Only movement
+/// matters until the later tickets wire the rest.)
+pub fn read_remix_input() -> stepfall_remix_core::Input {
+    stepfall_remix_core::Input {
+        left: is_key_down(KeyCode::Left) || is_key_down(KeyCode::A),
+        right: is_key_down(KeyCode::Right) || is_key_down(KeyCode::D),
+        up: is_key_down(KeyCode::Up) || is_key_down(KeyCode::W),
+        down: is_key_down(KeyCode::Down) || is_key_down(KeyCode::S),
+        fire: is_key_down(KeyCode::Space) || is_key_down(KeyCode::Z),
+        focus: is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift),
+        dash: is_key_pressed(KeyCode::X),
+        bomb: is_key_pressed(KeyCode::C),
+    }
+}
+
 /// The STEPFALL canvas, at the original's portrait logical resolution.
 pub fn logical_canvas() -> RenderTarget {
     shell_kit::screen::logical_canvas(LOGICAL_WIDTH as u32, LOGICAL_HEIGHT as u32)

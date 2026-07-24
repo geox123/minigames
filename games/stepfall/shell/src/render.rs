@@ -186,8 +186,37 @@ fn draw_game_over() {
     );
 }
 
-/// Draws the Collection's mode-select: the two takes STEPFALL ships. The
-/// Faithful is playable; the Remix shows as locked, coming later.
+/// HAILFALL's neon palette — the Remix's vivid look, against the Faithful's mono.
+const NEON_SHIP: Color = color_u8!(90, 220, 255, 255);
+const NEON_GLOW: Color = color_u8!(40, 120, 160, 255);
+
+/// Draws one frame of HAILFALL — the Remix — onto the logical canvas. The tracer
+/// bullet draws the field and the ship; the swarm, the fire and the HUD follow in
+/// later tickets.
+pub fn draw_remix(game: &stepfall_remix_core::Game) {
+    use stepfall_remix_core::{SHIP_HEIGHT, SHIP_WIDTH};
+    clear_background(color_u8!(4, 6, 14, 255));
+
+    let ship = game.ship();
+    // A little arrowhead cockpit: a glow behind a bright hull.
+    draw_rectangle(
+        ship.x - 1.0,
+        ship.y - 1.0,
+        SHIP_WIDTH + 2.0,
+        SHIP_HEIGHT + 2.0,
+        NEON_GLOW,
+    );
+    let cx = ship.x + SHIP_WIDTH / 2.0;
+    draw_triangle(
+        vec2(cx, ship.y),
+        vec2(ship.x, ship.y + SHIP_HEIGHT),
+        vec2(ship.x + SHIP_WIDTH, ship.y + SHIP_HEIGHT),
+        NEON_SHIP,
+    );
+}
+
+/// Draws the Collection's mode-select: the two takes STEPFALL ships. Both are now
+/// playable — the Faithful, and HAILFALL, the Remix.
 pub fn mode_select(highlight: Mode) {
     clear_background(BLACK);
 
@@ -200,9 +229,15 @@ pub fn mode_select(highlight: Mode) {
         GRAY,
     );
     option("FAITHFUL", 128.0, highlight == Mode::Faithful, false);
-    option("REMIX", 160.0, highlight == Mode::Remix, true);
+    option("HAILFALL", 160.0, highlight == Mode::Remix, false);
     if highlight == Mode::Remix {
-        font::draw_centred(LOGICAL_WIDTH, "COMING SOON", 182.0, HINT_SCALE, GRAY);
+        font::draw_centred(
+            LOGICAL_WIDTH,
+            "THE BULLET-HELL REMIX",
+            182.0,
+            HINT_SCALE,
+            GRAY,
+        );
     }
     font::draw_centred(
         LOGICAL_WIDTH,
