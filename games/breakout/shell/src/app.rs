@@ -41,21 +41,47 @@ pub enum RiftMode {
 }
 
 impl RiftMode {
-    /// The next mode in the menu (the menu wraps).
-    fn next(self) -> Self {
-        match self {
-            RiftMode::Run => RiftMode::Daily,
-            RiftMode::Daily => RiftMode::Ascension,
-            RiftMode::Ascension => RiftMode::Run,
-        }
-    }
-
     /// A short name for the summary card and the menu.
     pub fn label(self) -> &'static str {
         match self {
             RiftMode::Run => "RUN",
             RiftMode::Daily => "DAILY",
             RiftMode::Ascension => "ASCENSION",
+        }
+    }
+}
+
+/// A row on RIFT's menu: one of its modes to play, or the collection to browse.
+/// Keeping this separate from [`RiftMode`] means a mode is always something you
+/// can actually start a run in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MenuRow {
+    /// Start a run in this mode.
+    Mode(RiftMode),
+    /// Open the collection screen.
+    Collection,
+}
+
+impl MenuRow {
+    /// Every row, in the order the menu lists them.
+    pub const ROWS: [MenuRow; 4] = [
+        MenuRow::Mode(RiftMode::Run),
+        MenuRow::Mode(RiftMode::Daily),
+        MenuRow::Mode(RiftMode::Ascension),
+        MenuRow::Collection,
+    ];
+
+    /// The next row down (the menu wraps).
+    fn next(self) -> Self {
+        let at = Self::ROWS.iter().position(|row| *row == self).unwrap_or(0);
+        Self::ROWS[(at + 1) % Self::ROWS.len()]
+    }
+
+    /// The row's label.
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuRow::Mode(mode) => mode.label(),
+            MenuRow::Collection => "COLLECTION",
         }
     }
 }
@@ -72,8 +98,10 @@ enum Screen {
         /// Whether the match is paused.
         paused: bool,
     },
-    /// RIFT's mode menu: Run or Daily.
-    RiftMenu { highlight: RiftMode },
+    /// RIFT's own menu: its modes, and the collection.
+    RiftMenu { highlight: MenuRow },
+    /// The collection screen, browsing what has been unlocked.
+    Collection { unlocked: Unlocked },
     /// A RIFT run in progress. The run is boxed: it is much the largest thing a
     /// screen carries, and every other screen would otherwise pay for its size.
     Rift {
@@ -162,10 +190,20 @@ impl App {
                 // doesn't hold a borrow of `self.screen` across it.
                 let chosen = *highlight;
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-                    self.start_run(chosen);
+                    match chosen {
+                        MenuRow::Mode(mode) => self.start_run(mode),
+                        MenuRow::Collection => self.open_collection(),
+                    }
                 } else {
                     render::rift_menu(chosen, breakout_storage::ascension_tier());
                 }
+            }
+            Screen::Collection { unlocked } => {
+                if is_key_pressed(KeyCode::Escape) || is_key_pressed(KeyCode::Enter) {
+                    self.open_rift_menu();
+                    return;
+                }
+                rift::draw_collection(*unlocked);
             }
             Screen::Match {
                 game,
@@ -344,7 +382,14 @@ impl App {
 
     fn open_rift_menu(&mut self) {
         self.screen = Screen::RiftMenu {
-            highlight: RiftMode::Run,
+            highlight: MenuRow::Mode(RiftMode::Run),
+        };
+    }
+
+    /// Opens the collection on what this player has unlocked so far.
+    fn open_collection(&mut self) {
+        self.screen = Screen::Collection {
+            unlocked: Unlocked::from_bits(breakout_storage::unlocked_bits()),
         };
     }
 

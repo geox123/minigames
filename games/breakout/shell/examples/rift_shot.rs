@@ -9,10 +9,11 @@
 //! dodges every ball to end the run and show the run-over card; `menu` captures
 //! RIFT's mode menu.
 
-use breakout::app::RiftMode;
+use breakout::app::{MenuRow, RiftMode};
 use breakout::fx::Fx;
 use breakout::{blit_canvas, logical_camera, logical_canvas, render, rift};
-use breakout_remix_core::{BALL_SIZE, Game, Input, Move, Phase, Pool, TIMESTEP};
+use breakout_remix_core::meta::{Content, Unlocked};
+use breakout_remix_core::{BALL_SIZE, Boon, Game, Input, Kind, Move, Phase, Pool, TIMESTEP};
 use macroquad::prelude::*;
 
 #[macroquad::main("rift canvas shot")]
@@ -26,10 +27,20 @@ async fn main() {
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
 
-    if mode == "menu" {
+    if mode == "menu" || mode == "collection" {
+        // A part-earned collection, so both states show.
+        let mut unlocked = Unlocked::starting();
+        unlocked.unlock(Content::Brick(Kind::Explosive));
+        unlocked.unlock(Content::Boon(Boon::Swift));
+        let name = if mode == "menu" { "menu" } else { "collection" };
+
         for frame in 0..2 {
             set_camera(&camera);
-            render::rift_menu(RiftMode::Ascension, 3);
+            if mode == "menu" {
+                render::rift_menu(MenuRow::Mode(RiftMode::Ascension), 3);
+            } else {
+                rift::draw_collection(unlocked);
+            }
             set_default_camera();
             clear_background(DARKGRAY);
             blit_canvas(&canvas.texture, Vec2::ZERO);
@@ -37,11 +48,11 @@ async fn main() {
                 canvas
                     .texture
                     .get_texture_data()
-                    .export_png(&format!("{out_dir}/rift-menu.png"));
+                    .export_png(&format!("{out_dir}/rift-{name}.png"));
             }
             next_frame().await;
         }
-        println!("wrote {out_dir}/rift-menu.png");
+        println!("wrote {out_dir}/rift-{name}.png");
         return;
     }
     let mut game = Game::new_run(7, &Pool::base());

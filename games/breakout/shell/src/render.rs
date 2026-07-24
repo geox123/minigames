@@ -6,7 +6,7 @@
 use breakout_core::{BALL_SIZE, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, PADDLE_HEIGHT, Phase, WALLS};
 use macroquad::prelude::*;
 
-use crate::app::{Mode, RiftMode};
+use crate::app::{MenuRow, Mode, RiftMode};
 use shell_kit::font;
 
 /// Text sizes, as the pixel scale each is drawn at.
@@ -139,26 +139,31 @@ pub fn mode_select(highlight: Mode) {
     );
 }
 
-/// Draws RIFT's own mode menu: Run, Daily or Ascension, with a one-line blurb.
-/// `ascension_tier` is the highest tier unlocked, shown against Ascension.
-pub fn rift_menu(highlight: RiftMode, ascension_tier: u32) {
+/// Draws RIFT's own menu: its three modes and the collection, with a one-line
+/// blurb. `ascension_tier` is the highest tier unlocked, shown against Ascension.
+pub fn rift_menu(highlight: MenuRow, ascension_tier: u32) {
     clear_background(BLACK);
 
-    font::draw_centred(LOGICAL_WIDTH, "RIFT", 40.0, TITLE_SCALE, WHITE);
-    font::draw_centred(LOGICAL_WIDTH, "BREAKOUT REMIX", 84.0, HINT_SCALE, GRAY);
-    option("RUN", 128.0, highlight == RiftMode::Run, false);
-    option("DAILY", 160.0, highlight == RiftMode::Daily, false);
-    option("ASCENSION", 192.0, highlight == RiftMode::Ascension, false);
+    font::draw_centred(LOGICAL_WIDTH, "RIFT", 36.0, TITLE_SCALE, WHITE);
+    font::draw_centred(LOGICAL_WIDTH, "BREAKOUT REMIX", 76.0, HINT_SCALE, GRAY);
+
+    let mut y = 116.0;
+    for row in MenuRow::ROWS {
+        option(row.label(), y, highlight == row, false);
+        y += 28.0;
+    }
+
     let blurb = match highlight {
-        RiftMode::Run => "A FRESH DESCENT".to_string(),
-        RiftMode::Daily => "TODAYS SHARED SEED".to_string(),
-        RiftMode::Ascension => format!("TIER {ascension_tier}   WIN TO ASCEND"),
+        MenuRow::Mode(RiftMode::Run) => "A FRESH DESCENT".to_string(),
+        MenuRow::Mode(RiftMode::Daily) => "TODAYS SHARED SEED".to_string(),
+        MenuRow::Mode(RiftMode::Ascension) => format!("TIER {ascension_tier}   WIN TO ASCEND"),
+        MenuRow::Collection => "WHAT YOU HAVE UNLOCKED".to_string(),
     };
-    font::draw_centred(LOGICAL_WIDTH, &blurb, 216.0, HINT_SCALE, GRAY);
+    font::draw_centred(LOGICAL_WIDTH, &blurb, y + 4.0, HINT_SCALE, GRAY);
     font::draw_centred(
         LOGICAL_WIDTH,
         "ARROWS TO CHOOSE   ENTER TO SELECT",
-        264.0,
+        268.0,
         HINT_SCALE,
         GRAY,
     );
