@@ -20,13 +20,17 @@ async fn main() {
     let camera = logical_camera(&canvas);
     let mut game = Game::new(7);
     for i in 0..steps {
-        // Drift the cannon back and forth so the scene isn't static.
+        // Drift the cannon back and forth so the scene isn't static, and fire
+        // now and then so a shot and the return bombs show up in the capture.
         let cannon = if (i / 90) % 2 == 0 {
             Move::Right
         } else {
             Move::Left
         };
-        game.step(Input { cannon });
+        game.step(Input {
+            cannon,
+            fire: i % 30 == 0,
+        });
     }
 
     for frame in 0..2 {

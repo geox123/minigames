@@ -7,7 +7,8 @@
 
 use macroquad::prelude::*;
 use stepfall_core::{
-    CANNON_HEIGHT, CANNON_WIDTH, Game, INVADER_HEIGHT, INVADER_WIDTH, LOGICAL_HEIGHT, LOGICAL_WIDTH,
+    BOMB_HEIGHT, BOMB_WIDTH, CANNON_HEIGHT, CANNON_WIDTH, Game, INVADER_HEIGHT, INVADER_WIDTH,
+    LOGICAL_HEIGHT, LOGICAL_WIDTH, Phase, SHOT_HEIGHT, SHOT_WIDTH,
 };
 
 use crate::app::Mode;
@@ -20,6 +21,10 @@ const HINT_SCALE: f32 = 1.0;
 
 /// The line the cannon rides, and the field it defends.
 const GROUND: Color = color_u8!(60, 220, 90, 255);
+/// A little cannon icon per remaining life, along the top-right.
+const LIFE_ICON_W: f32 = 11.0;
+const LIFE_ICON_H: f32 = 4.0;
+const LIFE_ICON_GAP: f32 = 4.0;
 
 /// Draws one frame of the game onto the logical canvas.
 pub fn draw(game: &Game) {
@@ -30,6 +35,14 @@ pub fn draw(game: &Game) {
         draw_rectangle(invader.x, invader.y, INVADER_WIDTH, INVADER_HEIGHT, WHITE);
     }
 
+    // Bombs falling, and the player's shot climbing.
+    for bomb in game.bombs() {
+        draw_rectangle(bomb.x, bomb.y, BOMB_WIDTH, BOMB_HEIGHT, WHITE);
+    }
+    if let Some(shot) = game.shot() {
+        draw_rectangle(shot.x, shot.y, SHOT_WIDTH, SHOT_HEIGHT, WHITE);
+    }
+
     // The cannon, and the ground line it rides along.
     let cannon = game.cannon();
     draw_rectangle(cannon.x, cannon.y, CANNON_WIDTH, CANNON_HEIGHT, GROUND);
@@ -37,17 +50,37 @@ pub fn draw(game: &Game) {
     draw_rectangle(0.0, base, LOGICAL_WIDTH, 1.0, GROUND);
 
     draw_hud(game);
+    if game.phase() == Phase::GameOver {
+        draw_game_over();
+    }
 }
 
-/// A minimal top strip: how many invaders are still standing. Score, lives and
-/// the high score arrive with their own tickets.
+/// The top strip: the score, and the lives left as little cannon icons.
 fn draw_hud(game: &Game) {
-    font::draw(
-        &format!("INVADERS {:02}", game.alive()),
-        6.0,
-        6.0,
-        HINT_SCALE,
+    font::draw(&format!("{:04}", game.score()), 6.0, 6.0, HINT_SCALE, WHITE);
+
+    let mut x = LOGICAL_WIDTH - 6.0 - LIFE_ICON_W;
+    for _ in 0..game.lives() {
+        draw_rectangle(x, 6.0, LIFE_ICON_W, LIFE_ICON_H, GROUND);
+        x -= LIFE_ICON_W + LIFE_ICON_GAP;
+    }
+}
+
+/// The card shown once every life is spent.
+fn draw_game_over() {
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "GAME OVER",
+        LOGICAL_HEIGHT / 2.0 - 12.0,
+        OPTION_SCALE,
         WHITE,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "PRESS R TO PLAY AGAIN",
+        LOGICAL_HEIGHT / 2.0 + 12.0,
+        HINT_SCALE,
+        GROUND,
     );
 }
 

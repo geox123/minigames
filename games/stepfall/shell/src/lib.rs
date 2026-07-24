@@ -11,7 +11,8 @@ pub use app::App;
 use macroquad::prelude::*;
 use stepfall_core::{Input, LOGICAL_HEIGHT, LOGICAL_WIDTH, Move};
 
-/// Reads the cannon off the keyboard: the left/right arrows or A/D.
+/// Reads the cannon off the keyboard: the left/right arrows or A/D to move, and
+/// Space (or Up) to fire.
 pub fn read_input() -> Input {
     let left = is_key_down(KeyCode::Left) || is_key_down(KeyCode::A);
     let right = is_key_down(KeyCode::Right) || is_key_down(KeyCode::D);
@@ -21,6 +22,7 @@ pub fn read_input() -> Input {
             (false, true) => Move::Right,
             _ => Move::Hold,
         },
+        fire: is_key_down(KeyCode::Space) || is_key_down(KeyCode::Up),
     }
 }
 
