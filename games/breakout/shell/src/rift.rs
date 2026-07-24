@@ -53,6 +53,8 @@ const SPAWNER_MARK: Color = color_u8!(255, 235, 245, 255);
 const GUARDIAN: Color = color_u8!(230, 90, 200, 255);
 /// A dim scrim drawn over the frozen field behind the draft.
 const DRAFT_SCRIM: Color = color_u8!(12, 10, 26, 222);
+/// Warm gold, for content a run just added to the collection.
+const UNLOCK: Color = color_u8!(255, 214, 110, 255);
 
 /// The HUD lives in the strip above the wall.
 const HUD_SCALE: f32 = 2.0;
@@ -178,10 +180,11 @@ fn draw_hud(game: &Game) {
     }
 }
 
-/// The card shown once a run is won or lost: how deep it got, its score, and a
-/// mode-specific `best_line` (best depth, or the Ascension tier). Drawn over the
+/// The card shown once a run is won or lost: how deep it got, its score, a
+/// mode-specific `best_line` (best depth, or the Ascension tier), and — when the
+/// run earned any — an `earned_line` naming what it unlocked. Drawn over the
 /// frozen field.
-pub fn run_summary(game: &Game, best_line: &str) {
+pub fn run_summary(game: &Game, best_line: &str, earned_line: &str) {
     let (line, colour) = match game.phase() {
         Phase::Won => ("RUN CLEARED", HUD_ACCENT),
         Phase::Lost => ("RUN OVER", GUARDIAN),
@@ -208,10 +211,20 @@ pub fn run_summary(game: &Game, best_line: &str) {
         HINT_SCALE,
         HUD_ACCENT,
     );
+    // What the run added to the collection, when it added anything.
+    if !earned_line.is_empty() {
+        font::draw_centred(
+            LOGICAL_WIDTH,
+            earned_line,
+            LOGICAL_HEIGHT / 2.0 + 26.0,
+            HINT_SCALE,
+            UNLOCK,
+        );
+    }
     font::draw_centred(
         LOGICAL_WIDTH,
         "R TO DIVE AGAIN   ESC TO QUIT",
-        LOGICAL_HEIGHT / 2.0 + 32.0,
+        LOGICAL_HEIGHT / 2.0 + 44.0,
         HINT_SCALE,
         HUD_TEXT,
     );
