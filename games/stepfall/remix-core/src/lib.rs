@@ -10,10 +10,13 @@
 //!
 //! It shares the Faithful's portrait field so one shell canvas serves both takes.
 //!
-//! This slice is the tracer bullet: the seam, and a ship you can fly within the
-//! lower band. Fire, enemies, patterns, the tools and the modes arrive in later
-//! tickets. The ship's **loadout** is handed *in* at construction, so the core
-//! never knows the concept of "unlocks" — it only flies whatever it is given.
+//! The ship flies the lower band with its full toolkit — fire, dash, focus and a
+//! graze-fed overdrive — against a **zoo** of squadrons: darts and weavers, ring
+//! turrets and spiral spinners, wall gunners and bombers that drop the Faithful's
+//! three bombs, all quickening and speeding up as the run wears on. The modes and
+//! the meta arrive in later tickets. The ship's **loadout** is handed *in* at
+//! construction, so the core never knows the concept of "unlocks" — it only flies
+//! whatever it is given.
 
 /// Width of the portrait play field, in logical units — shared with the Faithful.
 pub const LOGICAL_WIDTH: f32 = 224.0;
@@ -58,13 +61,49 @@ const WAVE_GAP: u32 = 90;
 /// What downing one enemy scores.
 const ENEMY_SCORE: u32 = 100;
 
-/// Return fire: bullet size and speed, the interrupts between the squadron's
-/// shots, and the fan a spread fires.
+/// The pattern zoo rotates through this many squadron templates before it comes
+/// round again; each full turn thickens the field by one, up to a cap.
+const TEMPLATE_COUNT: u32 = 6;
+const MAX_EXTRA: u32 = 3;
+/// How the run escalates: fire tightens and speeds up with each wave until the
+/// pressure plateaus at this many waves in.
+const WAVE_CAP: u32 = 8;
+const CADENCE_PER_WAVE: u32 = 7;
+const SPEED_PER_WAVE: f32 = 7.0;
+
+/// Where emplacements (turrets, spinners, wall gunners) anchor, and the inset the
+/// row of them keeps from the field's sides.
+const TURRET_ROW: f32 = 46.0;
+const EMPLACE_MARGIN: f32 = 26.0;
+/// The low row bombers march along, close enough for their bombs to bite.
+const BOMBER_ROW: f32 = 96.0;
+
+/// Return fire: bullet size and base speed, and the fan a spread fires.
 pub const ENEMY_BULLET_SIZE: f32 = 3.0;
 const ENEMY_BULLET_SPEED: f32 = 95.0;
-const ENEMY_FIRE_INTERVAL: u32 = 22;
 const SPREAD_COUNT: u32 = 5;
 const SPREAD_STEP: f32 = 0.22;
+
+/// A turret's ring: how many bullets ring the circle, and how far the ring twists
+/// between shots so successive rings interleave.
+const RING_COUNT: u32 = 12;
+const RING_TWIST: f32 = 0.19;
+/// How far a spinner advances its arm each shot — the sweep that traces a spiral.
+const SPIN_STEP: f32 = 0.55;
+/// A wall of fire: how many slots span the field, the inset it keeps, and how much
+/// slower than ordinary fire it falls so it can be threaded.
+const WALL_SLOTS: usize = 11;
+const WALL_MARGIN: f32 = 12.0;
+const WALL_SPEED_MULT: f32 = 0.9;
+
+/// The Faithful's three bombs, reimagined as falling fire: the base fall speed, a
+/// plunger's committed drop, a rolling bomb's sideways drift, and the rate and
+/// reach of a squiggly bomb's weave.
+const BOMB_FALL_SPEED: f32 = 82.0;
+const PLUNGER_SPEED: f32 = 150.0;
+const ROLL_DRIFT: f32 = 52.0;
+const WIGGLE_RATE: f32 = 0.14;
+const WIGGLE_AMP: f32 = 9.0;
 
 /// The ship's true hitbox is far smaller than its hull — a bullet only bites if
 /// it strikes this tiny square at the ship's heart.
@@ -146,6 +185,59 @@ pub struct Bullet {
     pub y: f32,
 }
 
+/// The kind of an enemy — its entry, its idle motion, and above all the pattern
+/// it fires. This is the pattern zoo: each kind reads and threatens differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnemyKind {
+    /// Fires a single aimed dart straight at the ship.
+    Dart,
+    /// Fires an aimed fan — a spread that blooms toward the ship.
+    Weaver,
+    /// A stationary emplacement that fires rings in every direction.
+    Turret,
+    /// A stationary emplacement whose single stream sweeps around, tracing a spiral.
+    Spinner,
+    /// A stationary gunner that drops a wall of fire, leaving one gap to thread.
+    Wall,
+    /// Drops the Faithful's rolling, squiggly and plunger bombs as a callback.
+    Bomber,
+}
+
+impl EnemyKind {
+    /// The kind's baseline cadence, before the run's escalation tightens it. A
+    /// spinner fires often (few bullets, tracing an arc); a turret rarely (a whole
+    /// ring at once).
+    fn base_cadence(self) -> u32 {
+        match self {
+            EnemyKind::Dart => 132,
+            EnemyKind::Weaver => 156,
+            EnemyKind::Turret => 192,
+            EnemyKind::Spinner => 13,
+            EnemyKind::Wall => 168,
+            EnemyKind::Bomber => 96,
+        }
+    }
+
+    /// The tightest its cadence may reach as the run escalates, so heavy patterns
+    /// never overwhelm the field.
+    fn min_cadence(self) -> u32 {
+        match self {
+            EnemyKind::Spinner => 8,
+            EnemyKind::Turret => 132,
+            EnemyKind::Wall => 120,
+            _ => 66,
+        }
+    }
+
+    /// Whether it rides the formation's sway (a flyer) or holds still (an emplacement).
+    fn sways(self) -> bool {
+        matches!(
+            self,
+            EnemyKind::Dart | EnemyKind::Weaver | EnemyKind::Bomber
+        )
+    }
+}
+
 /// An enemy still flying, as the shell should draw it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Enemy {
@@ -153,6 +245,30 @@ pub struct Enemy {
     pub x: f32,
     /// Top edge.
     pub y: f32,
+    /// Which kind it is — its silhouette and the pattern it fires.
+    pub kind: EnemyKind,
+}
+
+/// Which of the Faithful's bombs an enemy dropped — a deliberate callback to
+/// STEPFALL's return fire, reimagined here as falling shots with their own motion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BombKind {
+    /// Drifts sideways as it falls, rolling across the field.
+    Rolling,
+    /// Weaves left and right on the way down.
+    Squiggly,
+    /// Commits straight down, and fast.
+    Plunger,
+}
+
+/// What an enemy bullet is: an ordinary pellet, or one of the Faithful's bombs.
+/// The shell draws them apart; the rules treat them the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShotKind {
+    /// A plain pellet, flying a straight heading.
+    Pellet,
+    /// One of the Faithful's bombs, falling with its own motion.
+    Bomb(BombKind),
 }
 
 /// An enemy bullet in flight, as the shell should draw it — a small square
@@ -163,6 +279,8 @@ pub struct EnemyBullet {
     pub x: f32,
     /// Centre y.
     pub y: f32,
+    /// Whether it is a plain pellet or one of the Faithful's bombs.
+    pub kind: ShotKind,
 }
 
 /// What happened during a single [`Game::step`], for the shell to react to. It
@@ -230,8 +348,9 @@ struct Pos {
     y: f32,
 }
 
-/// An enemy bullet's position and velocity (logical units per second), and
-/// whether it has already been grazed (so one bullet charges the meter once).
+/// An enemy bullet's position and velocity (logical units per second), whether it
+/// has already been grazed (so one bullet charges the meter once), and what kind
+/// it is — a pellet flies its velocity, a bomb follows its own motion.
 #[derive(Clone, Copy)]
 struct EnemyBulletState {
     x: f32,
@@ -239,16 +358,40 @@ struct EnemyBulletState {
     vx: f32,
     vy: f32,
     grazed: bool,
+    kind: ShotKind,
+    /// Steps lived, for a squiggly bomb's weave.
+    age: u32,
+    /// The column it fell from — the axis a squiggly bomb weaves about.
+    origin_x: f32,
 }
 
-/// One enemy of a squadron: its home column, its live position, and the row it
-/// settles at once it has flown in.
+/// How a squadron flies in: straight down from above, or in from the two sides.
+#[derive(Clone, Copy)]
+enum Entry {
+    Top,
+    Sides,
+}
+
+/// One enemy of a squadron: its kind, the home it flies to and holds, its live
+/// position, whether it has arrived and whether it rides the sway, and the
+/// per-enemy counters that pace and shape its fire.
 #[derive(Clone, Copy)]
 struct EnemyState {
+    kind: EnemyKind,
     home_x: f32,
+    home_y: f32,
     x: f32,
     y: f32,
-    hold_y: f32,
+    /// Whether it has reached its home and may fire.
+    entered: bool,
+    /// Whether it rides the formation's side-to-side sway.
+    sways: bool,
+    /// Interrupts since it last fired, phased at spawn so a squadron staggers.
+    fire_tick: u32,
+    /// A spinner's current arm angle; advanced each shot to sweep a spiral.
+    spin: f32,
+    /// Shots fired so far — cycles a bomber's bomb kind and a wall's gap.
+    salvo: u32,
 }
 
 /// A game of HAILFALL.
@@ -265,10 +408,11 @@ pub struct Game {
     enemies: Vec<EnemyState>,
     /// The enemy bullets in the air.
     enemy_bullets: Vec<EnemyBulletState>,
-    /// Interrupts since the squadron last fired.
-    enemy_fire_tick: u32,
     /// Interrupts until the next squadron flies in, once the field is clear.
     wave_gap: u32,
+    /// How many squadrons have flown in so far — drives the escalation and the
+    /// rotation through the pattern zoo.
+    waves_spawned: u32,
     /// Lives left; the run ends when this reaches zero.
     lives: u32,
     /// Interrupts of invulnerability left after a hit or during a dash.
@@ -305,8 +449,8 @@ impl Game {
             fire_cooldown: 0,
             enemies: Vec::new(),
             enemy_bullets: Vec::new(),
-            enemy_fire_tick: 0,
             wave_gap: WAVE_GAP,
+            waves_spawned: 0,
             lives: LIVES_START,
             invuln: 0,
             dash_ticks: 0,
@@ -322,7 +466,7 @@ impl Game {
             steps: 0,
             seed,
         };
-        game.spawn_squadron();
+        game.spawn_wave();
         game
     }
 
@@ -341,14 +485,20 @@ impl Game {
 
     /// The enemies flying, for the shell to draw.
     pub fn enemies(&self) -> impl Iterator<Item = Enemy> + '_ {
-        self.enemies.iter().map(|e| Enemy { x: e.x, y: e.y })
+        self.enemies.iter().map(|e| Enemy {
+            x: e.x,
+            y: e.y,
+            kind: e.kind,
+        })
     }
 
     /// The enemy bullets in the air, for the shell to draw.
     pub fn enemy_bullets(&self) -> impl Iterator<Item = EnemyBullet> + '_ {
-        self.enemy_bullets
-            .iter()
-            .map(|b| EnemyBullet { x: b.x, y: b.y })
+        self.enemy_bullets.iter().map(|b| EnemyBullet {
+            x: b.x,
+            y: b.y,
+            kind: b.kind,
+        })
     }
 
     /// Lives left.
@@ -486,14 +636,27 @@ impl Game {
         self.bullets.retain(|b| b.y + PLAYER_BULLET_HEIGHT > 0.0);
     }
 
-    /// Flies the squadron in from above until it settles, then sways it gently
-    /// side to side as one.
+    /// Flies each enemy along its entry path to its home, then holds it there —
+    /// swaying formations side to side as one, keeping emplacements still.
     fn advance_enemies(&mut self) {
         let sway = SWAY_AMP * (self.steps as f32 * TIMESTEP * SWAY_RATE).sin();
-        let dy = ENTRY_SPEED * TIMESTEP;
+        let step = ENTRY_SPEED * TIMESTEP;
         for e in &mut self.enemies {
-            e.y = (e.y + dy).min(e.hold_y);
-            e.x = e.home_x + sway;
+            if e.entered {
+                e.x = e.home_x + if e.sways { sway } else { 0.0 };
+                e.y = e.home_y;
+                continue;
+            }
+            let (dx, dy) = (e.home_x - e.x, e.home_y - e.y);
+            let dist = dx.hypot(dy);
+            if dist <= step {
+                e.x = e.home_x;
+                e.y = e.home_y;
+                e.entered = true;
+            } else {
+                e.x += dx / dist * step;
+                e.y += dy / dist * step;
+            }
         }
     }
 
@@ -523,49 +686,149 @@ impl Game {
         self.bullets = survivors;
     }
 
-    /// The squadron shoots back on a cadence: a settled enemy, chosen at random,
-    /// fires either an aimed dart at the ship or a fan spread toward it.
+    /// Every settled enemy fires its own pattern on its own cadence — the pattern
+    /// zoo. Aimed darts and blooming spreads, turret rings and spinner spirals,
+    /// wall gunners and bomb-dropping bombers, all quickening and speeding up as
+    /// the run climbs.
     fn enemy_fire(&mut self) {
-        self.enemy_fire_tick += 1;
-        if self.enemy_fire_tick < ENEMY_FIRE_INTERVAL {
-            return;
-        }
-        let shooters: Vec<usize> = self
-            .enemies
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.y >= e.hold_y - 0.5)
-            .map(|(i, _)| i)
-            .collect();
-        if shooters.is_empty() {
-            return;
-        }
-        self.enemy_fire_tick = 0;
-
-        let e = self.enemies[shooters[self.rng.below(shooters.len() as u32) as usize]];
-        let ex = e.x + ENEMY_WIDTH / 2.0;
-        let ey = e.y + ENEMY_HEIGHT;
-        let angle =
-            (self.ship_y + SHIP_HEIGHT / 2.0 - ey).atan2(self.ship_x + SHIP_WIDTH / 2.0 - ex);
-
-        if self.rng.below(2) == 0 {
-            self.spawn_enemy_bullet(ex, ey, angle);
-        } else {
-            let half = (SPREAD_COUNT as f32 - 1.0) / 2.0;
-            for i in 0..SPREAD_COUNT {
-                self.spawn_enemy_bullet(ex, ey, angle + (i as f32 - half) * SPREAD_STEP);
+        let speed = self.wave_bullet_speed();
+        let ship = (
+            self.ship_x + SHIP_WIDTH / 2.0,
+            self.ship_y + SHIP_HEIGHT / 2.0,
+        );
+        for i in 0..self.enemies.len() {
+            let kind = self.enemies[i].kind;
+            if !self.enemies[i].entered {
+                continue;
+            }
+            let cadence = self.enemy_cadence(kind);
+            let ready = {
+                let e = &mut self.enemies[i];
+                e.fire_tick += 1;
+                if e.fire_tick < cadence {
+                    false
+                } else {
+                    e.fire_tick = 0;
+                    true
+                }
+            };
+            if !ready {
+                continue;
+            }
+            let (mx, my, spin, salvo) = {
+                let e = &mut self.enemies[i];
+                let (spin, salvo) = (e.spin, e.salvo);
+                e.spin += SPIN_STEP;
+                e.salvo = e.salvo.wrapping_add(1);
+                (e.x + ENEMY_WIDTH / 2.0, e.y + ENEMY_HEIGHT, spin, salvo)
+            };
+            let aim = (ship.1 - my).atan2(ship.0 - mx);
+            match kind {
+                EnemyKind::Dart => self.spawn_pellet(mx, my, aim, speed),
+                EnemyKind::Weaver => {
+                    let half = (SPREAD_COUNT as f32 - 1.0) / 2.0;
+                    for k in 0..SPREAD_COUNT {
+                        self.spawn_pellet(mx, my, aim + (k as f32 - half) * SPREAD_STEP, speed);
+                    }
+                }
+                EnemyKind::Turret => {
+                    let twist = salvo as f32 * RING_TWIST;
+                    let step = std::f32::consts::TAU / RING_COUNT as f32;
+                    for k in 0..RING_COUNT {
+                        self.spawn_pellet(mx, my, twist + k as f32 * step, speed);
+                    }
+                }
+                EnemyKind::Spinner => self.spawn_pellet(mx, my, spin, speed),
+                EnemyKind::Wall => self.spawn_wall(my, salvo, speed),
+                EnemyKind::Bomber => {
+                    let bomb = [BombKind::Rolling, BombKind::Squiggly, BombKind::Plunger]
+                        [(salvo % 3) as usize];
+                    self.spawn_bomb(mx, my, bomb, salvo);
+                }
             }
         }
     }
 
-    /// Adds an enemy bullet at `(x, y)` travelling along `angle`.
-    fn spawn_enemy_bullet(&mut self, x: f32, y: f32, angle: f32) {
+    /// How often `kind` fires, tightening as the run escalates but never past its
+    /// own floor, so late waves rain fire without seizing up.
+    fn enemy_cadence(&self, kind: EnemyKind) -> u32 {
+        kind.base_cadence()
+            .saturating_sub(self.escalation() * CADENCE_PER_WAVE)
+            .max(kind.min_cadence())
+    }
+
+    /// How far the run has escalated — climbing with each wave, then holding at a
+    /// cap so the pressure plateaus rather than runs away.
+    fn escalation(&self) -> u32 {
+        self.waves_spawned.saturating_sub(1).min(WAVE_CAP)
+    }
+
+    /// How fast enemy fire flies this wave — faster the deeper the run.
+    fn wave_bullet_speed(&self) -> f32 {
+        ENEMY_BULLET_SPEED + self.escalation() as f32 * SPEED_PER_WAVE
+    }
+
+    /// Adds a pellet at `(x, y)` flying along `angle` at `speed`.
+    fn spawn_pellet(&mut self, x: f32, y: f32, angle: f32, speed: f32) {
         self.enemy_bullets.push(EnemyBulletState {
             x,
             y,
-            vx: angle.cos() * ENEMY_BULLET_SPEED,
-            vy: angle.sin() * ENEMY_BULLET_SPEED,
+            vx: angle.cos() * speed,
+            vy: angle.sin() * speed,
             grazed: false,
+            kind: ShotKind::Pellet,
+            age: 0,
+            origin_x: x,
+        });
+    }
+
+    /// Drops a full-width wall of fire from height `y`, leaving one slot open — the
+    /// gap sliding across as the gunner keeps firing, so it must be re-read.
+    fn spawn_wall(&mut self, y: f32, salvo: u32, speed: f32) {
+        let gap = salvo as usize % WALL_SLOTS;
+        let span = LOGICAL_WIDTH - 2.0 * WALL_MARGIN;
+        for slot in 0..WALL_SLOTS {
+            if slot == gap {
+                continue;
+            }
+            let x = WALL_MARGIN + slot as f32 * span / (WALL_SLOTS as f32 - 1.0);
+            self.enemy_bullets.push(EnemyBulletState {
+                x,
+                y,
+                vx: 0.0,
+                vy: speed * WALL_SPEED_MULT,
+                grazed: false,
+                kind: ShotKind::Pellet,
+                age: 0,
+                origin_x: x,
+            });
+        }
+    }
+
+    /// Drops one of the Faithful's bombs from `(x, y)` — a plunger straight and
+    /// fast, a rolling bomb drifting to a side, a squiggly bomb set to weave.
+    fn spawn_bomb(&mut self, x: f32, y: f32, kind: BombKind, salvo: u32) {
+        let (vx, vy) = match kind {
+            BombKind::Plunger => (0.0, PLUNGER_SPEED),
+            BombKind::Rolling => (
+                if salvo.is_multiple_of(2) {
+                    ROLL_DRIFT
+                } else {
+                    -ROLL_DRIFT
+                },
+                BOMB_FALL_SPEED,
+            ),
+            BombKind::Squiggly => (0.0, BOMB_FALL_SPEED),
+        };
+        self.enemy_bullets.push(EnemyBulletState {
+            x,
+            y,
+            vx,
+            vy,
+            grazed: false,
+            kind: ShotKind::Bomb(kind),
+            age: 0,
+            origin_x: x,
         });
     }
 
@@ -581,8 +844,14 @@ impl Game {
         let mut survivors = Vec::with_capacity(self.enemy_bullets.len());
         let mut struck = false;
         for mut b in std::mem::take(&mut self.enemy_bullets) {
-            b.x += b.vx * TIMESTEP;
-            b.y += b.vy * TIMESTEP;
+            b.age += 1;
+            if let ShotKind::Bomb(BombKind::Squiggly) = b.kind {
+                b.y += b.vy * TIMESTEP;
+                b.x = b.origin_x + (b.age as f32 * WIGGLE_RATE).sin() * WIGGLE_AMP;
+            } else {
+                b.x += b.vx * TIMESTEP;
+                b.y += b.vy * TIMESTEP;
+            }
             if b.x < -ENEMY_BULLET_SIZE
                 || b.x > LOGICAL_WIDTH + ENEMY_BULLET_SIZE
                 || b.y < -ENEMY_BULLET_SIZE
@@ -659,7 +928,7 @@ impl Game {
     fn manage_waves(&mut self) {
         if self.enemies.is_empty() {
             if self.wave_gap == 0 {
-                self.spawn_squadron();
+                self.spawn_wave();
             } else {
                 self.wave_gap -= 1;
             }
@@ -668,24 +937,95 @@ impl Game {
         }
     }
 
-    /// Sends a squadron flying in from above the top of the field.
-    fn spawn_squadron(&mut self) {
-        let span = (SQUAD_COLS as f32 - 1.0) * ENEMY_GAP_X;
+    /// Sends in the next squadron, rotating through the pattern zoo and thickening
+    /// each time the rotation comes round again — the run's steady escalation.
+    fn spawn_wave(&mut self) {
+        let wave = self.waves_spawned;
+        self.waves_spawned += 1;
+        let extra = (wave / TEMPLATE_COUNT).min(MAX_EXTRA) as usize;
+        match wave % TEMPLATE_COUNT {
+            0 => self.spawn_grid(
+                EnemyKind::Dart,
+                SQUAD_COLS,
+                SQUAD_ROWS + extra,
+                Entry::Top,
+                SQUAD_TOP,
+            ),
+            1 => self.spawn_grid(
+                EnemyKind::Weaver,
+                5 + extra,
+                2,
+                Entry::Sides,
+                SQUAD_TOP + 6.0,
+            ),
+            2 => self.spawn_emplacements(EnemyKind::Turret, 3 + extra),
+            3 => self.spawn_emplacements(EnemyKind::Spinner, 2 + extra),
+            4 => self.spawn_grid(EnemyKind::Bomber, 4 + extra, 1, Entry::Top, BOMBER_ROW),
+            _ => self.spawn_emplacements(EnemyKind::Wall, 1 + extra),
+        }
+    }
+
+    /// Lays out a rectangular formation of `kind`, flying in from `entry` to settle
+    /// with its top row at `top`. Formations ride the sway; emplacements hold still.
+    fn spawn_grid(&mut self, kind: EnemyKind, cols: usize, rows: usize, entry: Entry, top: f32) {
+        let span = cols.saturating_sub(1) as f32 * ENEMY_GAP_X;
         let first_centre = (LOGICAL_WIDTH - span) / 2.0;
-        for row in 0..SQUAD_ROWS {
-            for col in 0..SQUAD_COLS {
+        for row in 0..rows {
+            for col in 0..cols {
                 let centre = first_centre + col as f32 * ENEMY_GAP_X;
                 let home_x = centre - ENEMY_WIDTH / 2.0;
-                let hold_y = SQUAD_TOP + row as f32 * ENEMY_GAP_Y;
-                let y = hold_y - LOGICAL_HEIGHT * 0.6 - row as f32 * ENEMY_GAP_Y;
-                self.enemies.push(EnemyState {
-                    home_x,
-                    x: home_x,
-                    y,
-                    hold_y,
-                });
+                let home_y = top + row as f32 * ENEMY_GAP_Y;
+                let (sx, sy) = match entry {
+                    Entry::Top => (
+                        home_x,
+                        home_y - LOGICAL_HEIGHT * 0.6 - row as f32 * ENEMY_GAP_Y,
+                    ),
+                    Entry::Sides if col.is_multiple_of(2) => (-ENEMY_WIDTH - 8.0, home_y),
+                    Entry::Sides => (LOGICAL_WIDTH + 8.0, home_y),
+                };
+                self.push_enemy(kind, home_x, home_y, sx, sy);
             }
         }
+    }
+
+    /// Lays out a row of stationary emplacements of `kind`, spread across the upper
+    /// field and descending from above the top edge to their anchors.
+    fn spawn_emplacements(&mut self, kind: EnemyKind, count: usize) {
+        let count = count.max(1);
+        let usable = LOGICAL_WIDTH - 2.0 * EMPLACE_MARGIN;
+        for i in 0..count {
+            let home_x = if count == 1 {
+                (LOGICAL_WIDTH - ENEMY_WIDTH) / 2.0
+            } else {
+                EMPLACE_MARGIN + i as f32 * usable / (count as f32 - 1.0) - ENEMY_WIDTH / 2.0
+            };
+            self.push_enemy(
+                kind,
+                home_x,
+                TURRET_ROW,
+                home_x,
+                TURRET_ROW - LOGICAL_HEIGHT * 0.6,
+            );
+        }
+    }
+
+    /// Adds one enemy of `kind` bound for `(home_x, home_y)`, entering from
+    /// `(sx, sy)`, its fire phased and its spiral arm seeded so a squadron staggers.
+    fn push_enemy(&mut self, kind: EnemyKind, home_x: f32, home_y: f32, sx: f32, sy: f32) {
+        let fire_tick = self.rng.below(kind.base_cadence());
+        let spin = self.rng.below(628) as f32 / 100.0;
+        self.enemies.push(EnemyState {
+            kind,
+            home_x,
+            home_y,
+            x: sx,
+            y: sy,
+            entered: false,
+            sways: kind.sways(),
+            fire_tick,
+            spin,
+            salvo: 0,
+        });
     }
 }
 
@@ -885,6 +1225,9 @@ mod tests {
             vx: 0.0,
             vy: 0.0,
             grazed: false,
+            kind: ShotKind::Pellet,
+            age: 0,
+            origin_x: x,
         });
     }
 
@@ -1035,6 +1378,231 @@ mod tests {
         assert_eq!(game.enemy_bullets().count(), 0, "the nova clears the sky");
         assert_eq!(game.enemies().count(), 0, "the nova downs the field");
         assert_eq!(game.overdrive(), 0.0, "the nova spends the meter");
+    }
+
+    /// Clears the field and settles a lone enemy of `kind`, its fire primed to go
+    /// off on the very next step, so a pattern can be read in isolation.
+    fn only_enemy(game: &mut Game, kind: EnemyKind, x: f32, y: f32) {
+        game.enemies.clear();
+        game.enemy_bullets.clear();
+        game.enemies.push(EnemyState {
+            kind,
+            home_x: x,
+            home_y: y,
+            x,
+            y,
+            entered: true,
+            sways: false,
+            fire_tick: kind.base_cadence() - 1,
+            spin: 0.0,
+            salvo: 0,
+        });
+    }
+
+    #[test]
+    fn darts_aim_one_shot_and_weavers_fan_a_spread() {
+        let mut g = game();
+        only_enemy(&mut g, EnemyKind::Dart, 100.0, 40.0);
+        g.step(Input::default());
+        assert_eq!(
+            g.enemy_bullets().count(),
+            1,
+            "a dart is a single aimed shot"
+        );
+
+        let mut g = game();
+        only_enemy(&mut g, EnemyKind::Weaver, 100.0, 40.0);
+        g.step(Input::default());
+        assert_eq!(
+            g.enemy_bullets().count() as u32,
+            SPREAD_COUNT,
+            "a weaver fans a spread"
+        );
+    }
+
+    #[test]
+    fn a_turret_fires_a_ring_in_every_direction() {
+        let mut g = game();
+        only_enemy(&mut g, EnemyKind::Turret, 100.0, 40.0);
+        g.step(Input::default());
+
+        let (ox, oy) = (100.0 + ENEMY_WIDTH / 2.0, 40.0 + ENEMY_HEIGHT);
+        let shots: Vec<_> = g.enemy_bullets().collect();
+        assert!(shots.len() as u32 >= RING_COUNT, "a ring fills the circle");
+        assert!(shots.iter().any(|b| b.x < ox - 0.3), "fire to the left");
+        assert!(shots.iter().any(|b| b.x > ox + 0.3), "fire to the right");
+        assert!(shots.iter().any(|b| b.y < oy - 0.3), "fire upward");
+        assert!(shots.iter().any(|b| b.y > oy + 0.3), "fire downward");
+    }
+
+    #[test]
+    fn a_spinner_sweeps_its_stream_around() {
+        let mut g = game();
+        only_enemy(&mut g, EnemyKind::Spinner, 100.0, 40.0);
+        let (ox, oy) = (100.0 + ENEMY_WIDTH / 2.0, 40.0 + ENEMY_HEIGHT);
+
+        // Read the heading of successive shots; a spinner advances its arm each
+        // shot, so the headings rotate rather than repeat.
+        let mut headings = Vec::new();
+        let mut seen = 0;
+        for _ in 0..2_000 {
+            g.step(Input::default());
+            let bullets: Vec<_> = g.enemy_bullets().collect();
+            if bullets.len() > seen {
+                let b = bullets.last().unwrap();
+                headings.push((b.y - oy).atan2(b.x - ox));
+                seen = bullets.len();
+                if headings.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        assert!(headings.len() >= 4, "the spinner kept firing");
+        for pair in headings.windows(2) {
+            assert!(
+                (pair[0] - pair[1]).abs() > 0.1,
+                "the stream swept to a new heading"
+            );
+        }
+    }
+
+    #[test]
+    fn a_wall_spans_the_field_with_a_gap_to_thread() {
+        let mut g = game();
+        only_enemy(&mut g, EnemyKind::Wall, 112.0, 30.0);
+        g.step(Input::default());
+
+        let xs: Vec<f32> = g.enemy_bullets().map(|b| b.x).collect();
+        assert_eq!(
+            xs.len(),
+            WALL_SLOTS - 1,
+            "a wall drops every slot but one — the gap"
+        );
+        let min = xs.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        assert!(max - min > LOGICAL_WIDTH * 0.6, "the wall spans the field");
+    }
+
+    #[test]
+    fn bombers_drop_the_faithfuls_three_bombs() {
+        let mut g = game();
+        // Off to the side, so its bombs fall clear of the ship and it keeps dropping.
+        only_enemy(&mut g, EnemyKind::Bomber, 40.0, 40.0);
+
+        let mut kinds = std::collections::HashSet::new();
+        for _ in 0..3_000 {
+            g.step(Input::default());
+            for b in g.enemy_bullets() {
+                if let ShotKind::Bomb(k) = b.kind {
+                    kinds.insert(k);
+                }
+            }
+            if kinds.len() == 3 {
+                break;
+            }
+        }
+        assert!(kinds.contains(&BombKind::Rolling), "a rolling bomb dropped");
+        assert!(
+            kinds.contains(&BombKind::Squiggly),
+            "a squiggly bomb dropped"
+        );
+        assert!(kinds.contains(&BombKind::Plunger), "a plunger dropped");
+    }
+
+    #[test]
+    fn a_squiggly_bomb_weaves_where_a_plunger_falls_straight() {
+        // Squiggly: its x wanders off the column it fell from.
+        let mut g = game();
+        g.enemies.clear();
+        g.enemy_bullets.clear();
+        g.spawn_bomb(60.0, 20.0, BombKind::Squiggly, 0);
+        let mut weaved = false;
+        for _ in 0..200 {
+            g.step(Input::default());
+            if let Some(b) = g.enemy_bullets().next()
+                && (b.x - 60.0).abs() > 2.0
+            {
+                weaved = true;
+                break;
+            }
+        }
+        assert!(weaved, "a squiggly bomb weaves off its column");
+
+        // Plunger: straight down, its column held.
+        let mut g = game();
+        g.enemies.clear();
+        g.enemy_bullets.clear();
+        g.spawn_bomb(60.0, 20.0, BombKind::Plunger, 0);
+        let mut fell = false;
+        for _ in 0..120 {
+            g.step(Input::default());
+            if let Some(b) = g.enemy_bullets().next() {
+                assert!((b.x - 60.0).abs() < 0.001, "a plunger holds its column");
+                if b.y > 40.0 {
+                    fell = true;
+                }
+            }
+            if fell {
+                break;
+            }
+        }
+        assert!(fell, "a plunger falls");
+    }
+
+    #[test]
+    fn the_run_escalates_faster_fire_and_a_thicker_field() {
+        // Bullet speed climbs with the wave.
+        let speed_at = |waves: u32| {
+            let mut g = game();
+            only_enemy(&mut g, EnemyKind::Dart, 100.0, 40.0);
+            g.waves_spawned = waves;
+            g.step(Input::default());
+            let (mx, my) = (100.0 + ENEMY_WIDTH / 2.0, 40.0 + ENEMY_HEIGHT);
+            let b = g.enemy_bullets().next().expect("the dart fired");
+            (b.x - mx).hypot(b.y - my) / TIMESTEP
+        };
+        assert!(
+            speed_at(WAVE_CAP + 2) > speed_at(1),
+            "a later wave's fire flies faster"
+        );
+
+        // A later wave fields more enemies than the first.
+        let first = game().enemies().count();
+        let mut g = game();
+        g.enemies.clear();
+        g.waves_spawned = TEMPLATE_COUNT; // the next dart grid, a full cycle on
+        g.spawn_wave();
+        assert!(
+            g.enemies().count() > first,
+            "the field thickens as the run wears on"
+        );
+    }
+
+    #[test]
+    fn a_seed_and_inputs_replay_identically() {
+        let script = |i: usize| Input {
+            left: i.is_multiple_of(7),
+            right: i.is_multiple_of(3),
+            up: i.is_multiple_of(5),
+            down: i.is_multiple_of(11),
+            fire: i.is_multiple_of(2),
+            focus: i.is_multiple_of(13),
+            dash: i.is_multiple_of(37),
+            bomb: i.is_multiple_of(97),
+        };
+        let run = || {
+            let mut g = Game::new(0x00C0_FFEE, Mode::Daily, Loadout::default());
+            for i in 0..4_000 {
+                g.step(script(i));
+            }
+            let enemies: Vec<(f32, f32)> = g.enemies().map(|e| (e.x, e.y)).collect();
+            let bullets: Vec<(f32, f32)> = g.enemy_bullets().map(|b| (b.x, b.y)).collect();
+            (g.score(), g.lives(), enemies, bullets)
+        };
+        assert!(
+            run() == run(),
+            "the same seed and inputs replay the same run"
+        );
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.
