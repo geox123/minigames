@@ -27,6 +27,33 @@ pub enum Mode {
     Remix,
 }
 
+/// The modes RIFT itself offers, chosen from its own menu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RiftMode {
+    /// A fresh, randomly-seeded descent.
+    Run,
+    /// The day's shared seed — one fair attempt, the day's best kept.
+    Daily,
+}
+
+impl RiftMode {
+    /// The next mode in the menu (the menu wraps).
+    fn next(self) -> Self {
+        match self {
+            RiftMode::Run => RiftMode::Daily,
+            RiftMode::Daily => RiftMode::Run,
+        }
+    }
+
+    /// A short name for the summary card and the menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            RiftMode::Run => "RUN",
+            RiftMode::Daily => "DAILY",
+        }
+    }
+}
+
 /// Which screen the player is looking at.
 enum Screen {
     /// The Collection's two-takes screen: Faithful or RIFT.
@@ -39,6 +66,8 @@ enum Screen {
         /// Whether the match is paused.
         paused: bool,
     },
+    /// RIFT's mode menu: Run or Daily.
+    RiftMenu { highlight: RiftMode },
     /// A RIFT run in progress.
     Rift {
         game: RiftGame,
@@ -46,6 +75,12 @@ enum Screen {
         accumulator: Accumulator,
         /// Whether the run is paused.
         paused: bool,
+        /// Which mode this run is.
+        mode: RiftMode,
+        /// The calendar day this run belongs to (a Daily's key; 0 for a Run).
+        day: u32,
+        /// The best depth to beat and show for this mode, updated when beaten.
+        best: u32,
     },
 }
 
@@ -56,8 +91,6 @@ pub struct App {
     next_seed: u64,
     audio: Audio,
     fullscreen: bool,
-    /// RIFT's best depth reached, loaded once and persisted when beaten.
-    rift_best_depth: u32,
 }
 
 impl App {
@@ -70,7 +103,6 @@ impl App {
             next_seed: seed_from_clock(),
             audio,
             fullscreen: false,
-            rift_best_depth: breakout_storage::best_depth(),
         }
     }
 
@@ -88,10 +120,28 @@ impl App {
                 if mode_select_input(highlight) {
                     match *highlight {
                         Mode::Faithful => self.start_match(),
-                        Mode::Remix => self.start_rift(),
+                        Mode::Remix => self.open_rift_menu(),
                     }
                 } else {
                     render::mode_select(*highlight);
+                }
+            }
+            Screen::RiftMenu { highlight } => {
+                // Backing out returns to the Collection's two-takes screen.
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                    return;
+                }
+                if pressed_menu_move() {
+                    *highlight = highlight.next();
+                }
+                // Copy the choice out before the &mut self call, so the argument
+                // doesn't hold a borrow of `self.screen` across it.
+                let chosen = *highlight;
+                if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
+                    self.start_run(chosen);
+                } else {
+                    render::rift_menu(chosen);
                 }
             }
             Screen::Match {
@@ -131,10 +181,13 @@ impl App {
                 game,
                 accumulator,
                 paused,
+                mode,
+                day,
+                best,
             } => {
-                // Backing out of a run returns to the Collection's mode-select.
+                // Backing out of a run returns to RIFT's mode menu.
                 if is_key_pressed(KeyCode::Escape) {
-                    self.return_to_mode_select();
+                    self.open_rift_menu();
                     return;
                 }
                 if is_key_pressed(KeyCode::R) {
@@ -157,12 +210,18 @@ impl App {
                     for _ in 0..accumulator.steps(get_frame_time()) {
                         let events = game.step(input);
                         self.audio.play_rift(events);
-                        // A run that just ended may have set a new best depth.
+                        // A run that just ended may have set a new best for its
+                        // mode.
                         if events.won || events.lost {
                             let depth = game.depth();
-                            if depth > self.rift_best_depth {
-                                self.rift_best_depth = depth;
-                                breakout_storage::set_best_depth(depth);
+                            if depth > *best {
+                                *best = depth;
+                                match mode {
+                                    RiftMode::Run => breakout_storage::set_best_depth(depth),
+                                    RiftMode::Daily => {
+                                        breakout_storage::set_daily_best(*day, depth)
+                                    }
+                                }
                             }
                         }
                     }
@@ -175,7 +234,7 @@ impl App {
                 match game.phase() {
                     RiftPhase::Drafting => rift::draw_draft(game),
                     RiftPhase::Won | RiftPhase::Lost => {
-                        rift::run_summary(game, self.rift_best_depth)
+                        rift::run_summary(game, *best, mode.label())
                     }
                     _ => {}
                 }
@@ -208,14 +267,39 @@ impl App {
         };
     }
 
-    fn start_rift(&mut self) {
-        let game = RiftGame::new_run(self.take_seed(), &RiftPool::base());
+    fn open_rift_menu(&mut self) {
+        self.screen = Screen::RiftMenu {
+            highlight: RiftMode::Run,
+        };
+    }
+
+    /// Starts a RIFT run in the chosen mode. A Run takes a fresh seed and the
+    /// saved Run best; a Daily takes the day's shared seed and the day's best.
+    fn start_run(&mut self, mode: RiftMode) {
+        let (seed, day, best) = match mode {
+            RiftMode::Run => (self.take_seed(), 0, breakout_storage::best_depth()),
+            RiftMode::Daily => {
+                let day = today();
+                (u64::from(day), day, breakout_storage::daily_best(day))
+            }
+        };
+        let game = RiftGame::new_run(seed, &RiftPool::base());
         self.screen = Screen::Rift {
             game,
             accumulator: Accumulator::new(RIFT_TIMESTEP, MAX_FRAME_TIME),
             paused: false,
+            mode,
+            day,
+            best,
         };
     }
+}
+
+/// Today's calendar day, as whole days since the Unix epoch. The core stays
+/// clock-free; only the shell reads the clock, so a Daily's seed is shared by
+/// everyone playing on the same day.
+fn today() -> u32 {
+    (miniquad::date::now() / 86_400.0) as u32
 }
 
 /// Reads the mode-select screen, moving the highlight between the two takes.

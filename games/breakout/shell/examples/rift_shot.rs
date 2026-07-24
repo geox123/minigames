@@ -3,12 +3,14 @@
 //! It reads back macroquad's own framebuffer — it never captures the desktop.
 //!
 //! ```text
-//! cargo run -p breakout --example rift_shot -- <out-dir> [steps] [play|lose]
+//! cargo run -p breakout --example rift_shot -- <out-dir> [steps] [play|lose|menu]
 //! ```
 //! `play` (default) tracks the ball to show a live rally and the HUD; `lose`
-//! dodges every ball to end the run and show the run-over summary card.
+//! dodges every ball to end the run and show the run-over card; `menu` captures
+//! RIFT's mode menu.
 
-use breakout::{blit_canvas, logical_camera, logical_canvas, rift};
+use breakout::app::RiftMode;
+use breakout::{blit_canvas, logical_camera, logical_canvas, render, rift};
 use breakout_remix_core::{Game, Input, Move, Phase, Pool};
 use macroquad::prelude::*;
 
@@ -17,10 +19,30 @@ async fn main() {
     let mut args = std::env::args().skip(1);
     let out_dir = args.next().unwrap_or_else(|| ".".to_owned());
     let steps: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(240);
-    let dodge = args.next().as_deref() == Some("lose");
+    let mode = args.next().unwrap_or_default();
+    let dodge = mode == "lose";
 
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
+
+    if mode == "menu" {
+        for frame in 0..2 {
+            set_camera(&camera);
+            render::rift_menu(RiftMode::Daily);
+            set_default_camera();
+            clear_background(DARKGRAY);
+            blit_canvas(&canvas.texture);
+            if frame == 1 {
+                canvas
+                    .texture
+                    .get_texture_data()
+                    .export_png(&format!("{out_dir}/rift-menu.png"));
+            }
+            next_frame().await;
+        }
+        println!("wrote {out_dir}/rift-menu.png");
+        return;
+    }
     let mut game = Game::new_run(7, &Pool::base());
     for _ in 0..steps {
         let ball = game.ball();
@@ -52,7 +74,7 @@ async fn main() {
     for frame in 0..2 {
         set_camera(&camera);
         rift::draw(&game);
-        rift::run_summary(&game, 2);
+        rift::run_summary(&game, 2, "RUN");
         set_default_camera();
 
         clear_background(DARKGRAY);
