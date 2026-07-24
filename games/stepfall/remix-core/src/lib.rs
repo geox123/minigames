@@ -142,6 +142,31 @@ const DROP_CHANCE: u32 = 6;
 const PICKUP_SIZE: f32 = 6.0;
 const PICKUP_FALL_SPEED: f32 = 55.0;
 
+/// The mothership — a boss that caps a stage, a callback to the Faithful's saucer
+/// grown large. Its size, where it settles, how it flies in and sways, and the
+/// squadrons a stage runs before it arrives.
+pub const BOSS_WIDTH: f32 = 52.0;
+pub const BOSS_HEIGHT: f32 = 22.0;
+const BOSS_TOP: f32 = 40.0;
+const BOSS_ENTRY_SPEED: f32 = 60.0;
+const BOSS_SWAY_AMP: f32 = 46.0;
+const BOSS_SWAY_RATE: f32 = 0.7;
+const WAVES_PER_STAGE: u32 = 3;
+/// Its health, deepening each stage; the speed and sweep of its fire; and how big
+/// a bite a nova takes out of it.
+const BOSS_BASE_HP: u32 = 60;
+const BOSS_HP_PER_STAGE: u32 = 24;
+const BOSS_BULLET_SPEED: f32 = 90.0;
+const BOSS_SPIN_STEP: f32 = 0.42;
+const NOVA_BOSS_DAMAGE: u32 = 8;
+/// The weak points on the hull — only a shot that finds a core does damage; the
+/// rest of the hull is armour. Each is `(dx, dy, w, h)` from the boss's top-left.
+const BOSS_WEAK_POINTS: [(f32, f32, f32, f32); 3] = [
+    (9.0, 8.0, 8.0, 8.0),
+    (22.0, 5.0, 8.0, 11.0),
+    (35.0, 8.0, 8.0, 8.0),
+];
+
 /// Which run a game is playing. The behaviours differ from a later ticket; here
 /// the mode is only recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -320,6 +345,36 @@ pub struct Pickup {
     pub kind: PowerUp,
 }
 
+/// The mothership on the field, as the shell should draw it — its hull anchored at
+/// the top-left `(x, y)`, its health, and which phase it is running.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Boss {
+    /// Left edge of the hull.
+    pub x: f32,
+    /// Top edge of the hull.
+    pub y: f32,
+    /// Health left; the boss falls when it reaches zero.
+    pub hp: u32,
+    /// The health it entered with, for a health bar.
+    pub max_hp: u32,
+    /// The phase it is running, `0` (calm) to `2` (enraged).
+    pub phase: u8,
+}
+
+/// One of the mothership's weak points, in absolute field coordinates — only a
+/// shot that finds one does damage; the rest of the hull is armour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeakPoint {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub w: f32,
+    /// Height.
+    pub h: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It
 /// grows a field per ticket.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -340,6 +395,12 @@ pub struct Events {
     pub power_up_taken: bool,
     /// A shield soaked a hit this step, sparing a life.
     pub shield_broke: bool,
+    /// A shot found the mothership's weak point this step.
+    pub boss_hit: bool,
+    /// The mothership shifted into a new phase this step.
+    pub boss_phase_changed: bool,
+    /// The mothership was felled this step — the stage is cleared.
+    pub boss_cleared: bool,
     /// The last life was spent this step — the run is over.
     pub run_over: bool,
 }
@@ -448,6 +509,22 @@ struct EnemyState {
     salvo: u32,
 }
 
+/// The mothership: where its hull sits, whether it has flown in, its health, the
+/// phase it runs, and the counters that pace and sweep its fire.
+#[derive(Clone, Copy)]
+struct Mothership {
+    x: f32,
+    y: f32,
+    home_y: f32,
+    entered: bool,
+    hp: u32,
+    max_hp: u32,
+    phase: u8,
+    fire_tick: u32,
+    spin: f32,
+    salvo: u32,
+}
+
 /// A game of HAILFALL.
 pub struct Game {
     /// Left edge of the ship.
@@ -473,6 +550,13 @@ pub struct Game {
     /// How many squadrons have flown in so far — drives the escalation and the
     /// rotation through the pattern zoo.
     waves_spawned: u32,
+    /// Squadrons cleared in the current stage; at [`WAVES_PER_STAGE`] the
+    /// mothership arrives instead of another squadron.
+    waves_this_stage: u32,
+    /// The stage the run is on — deepens the mothership and its fire.
+    stage: u32,
+    /// The mothership, present only while a boss caps the stage.
+    boss: Option<Mothership>,
     /// Lives left; the run ends when this reaches zero.
     lives: u32,
     /// Interrupts of invulnerability left after a hit or during a dash.
@@ -514,6 +598,9 @@ impl Game {
             enemy_bullets: Vec::new(),
             wave_gap: WAVE_GAP,
             waves_spawned: 0,
+            waves_this_stage: 1,
+            stage: 0,
+            boss: None,
             lives: LIVES_START,
             invuln: 0,
             dash_ticks: 0,
@@ -598,6 +685,39 @@ impl Game {
         self.overdrive
     }
 
+    /// The mothership, if one is on the field, for the shell to draw.
+    pub fn boss(&self) -> Option<Boss> {
+        self.boss.as_ref().map(|b| Boss {
+            x: b.x,
+            y: b.y,
+            hp: b.hp,
+            max_hp: b.max_hp,
+            phase: b.phase,
+        })
+    }
+
+    /// The mothership's weak points in field coordinates, for the shell to mark —
+    /// empty when no boss is up.
+    pub fn boss_weak_points(&self) -> Vec<WeakPoint> {
+        match &self.boss {
+            Some(b) => BOSS_WEAK_POINTS
+                .iter()
+                .map(|&(dx, dy, w, h)| WeakPoint {
+                    x: b.x + dx,
+                    y: b.y + dy,
+                    w,
+                    h,
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// The stage the run is on, deepening as motherships fall.
+    pub fn stage(&self) -> u32 {
+        self.stage
+    }
+
     /// The score so far.
     pub fn score(&self) -> u32 {
         self.score
@@ -635,6 +755,7 @@ impl Game {
         self.advance_enemies();
         self.resolve_hits(&mut events);
         self.enemy_fire();
+        self.advance_boss(&mut events);
         self.advance_enemy_bullets(&mut events);
         self.advance_pickups(&mut events);
         self.try_overdrive(input, &mut events);
@@ -789,6 +910,13 @@ impl Game {
                 PLAYER_BULLET_WIDTH,
                 PLAYER_BULLET_HEIGHT,
             );
+            // The mothership's hull stops any shot; only one that finds a core bites.
+            if let Some(weak) = self.boss_bullet_hit(rect) {
+                if weak {
+                    self.damage_boss(1, events);
+                }
+                continue;
+            }
             if bullet.pierce {
                 let mut i = 0;
                 while i < self.enemies.len() {
@@ -1079,8 +1207,8 @@ impl Game {
         }
     }
 
-    /// Spends a full overdrive on a nova: clears the sky of enemy fire and downs
-    /// every enemy on the field.
+    /// Spends a full overdrive on a nova: clears the sky of enemy fire, downs every
+    /// enemy on the field, and takes a heavy bite out of the mothership.
     fn try_overdrive(&mut self, input: Input, events: &mut Events) {
         if !input.bomb || self.overdrive < OVERDRIVE_MAX {
             return;
@@ -1092,6 +1220,10 @@ impl Game {
             self.score += ENEMY_SCORE * downed;
             self.enemies.clear();
             events.enemy_killed = true;
+        }
+        if self.boss.is_some() {
+            self.damage_boss(NOVA_BOSS_DAMAGE, events);
+            self.fell_boss_if_dead(events);
         }
         events.overdrive_fired = true;
     }
@@ -1121,16 +1253,158 @@ impl Game {
         }
     }
 
-    /// Sends in a fresh squadron a short beat after the field is cleared.
+    /// Once the field is clear, a short beat later sends in the next thing: another
+    /// squadron, or — when the stage has run its squadrons — the mothership that
+    /// caps it.
     fn manage_waves(&mut self) {
-        if self.enemies.is_empty() {
-            if self.wave_gap == 0 {
-                self.spawn_wave();
-            } else {
-                self.wave_gap -= 1;
-            }
-        } else {
+        if self.boss.is_some() {
+            return;
+        }
+        if !self.enemies.is_empty() {
             self.wave_gap = WAVE_GAP;
+            return;
+        }
+        if self.wave_gap > 0 {
+            self.wave_gap -= 1;
+            return;
+        }
+        if self.waves_this_stage >= WAVES_PER_STAGE {
+            self.spawn_boss();
+            self.waves_this_stage = 0;
+        } else {
+            self.spawn_wave();
+            self.waves_this_stage += 1;
+        }
+    }
+
+    /// Sends the mothership flying in from above the top of the field, its health
+    /// deepening with the stage.
+    fn spawn_boss(&mut self) {
+        let max_hp = BOSS_BASE_HP + self.stage * BOSS_HP_PER_STAGE;
+        self.boss = Some(Mothership {
+            x: (LOGICAL_WIDTH - BOSS_WIDTH) / 2.0,
+            y: -BOSS_HEIGHT,
+            home_y: BOSS_TOP,
+            entered: false,
+            hp: max_hp,
+            max_hp,
+            phase: 0,
+            fire_tick: 0,
+            spin: 0.0,
+            salvo: 0,
+        });
+    }
+
+    /// Flies the mothership in, holds and sways it once settled, re-phases it as its
+    /// health falls, and runs its phase's fire pattern on a cadence.
+    fn advance_boss(&mut self, events: &mut Events) {
+        let (fire, phase, mx, my, spin, salvo) = {
+            let steps = self.steps;
+            let Some(boss) = self.boss.as_mut() else {
+                return;
+            };
+            if boss.entered {
+                boss.y = boss.home_y;
+                boss.x = (LOGICAL_WIDTH - BOSS_WIDTH) / 2.0
+                    + BOSS_SWAY_AMP * (steps as f32 * TIMESTEP * BOSS_SWAY_RATE).sin();
+            } else {
+                boss.x = (LOGICAL_WIDTH - BOSS_WIDTH) / 2.0;
+                boss.y += BOSS_ENTRY_SPEED * TIMESTEP;
+                if boss.y >= boss.home_y {
+                    boss.y = boss.home_y;
+                    boss.entered = true;
+                }
+            }
+            let new_phase = boss_phase_for(boss.hp, boss.max_hp);
+            if new_phase != boss.phase {
+                boss.phase = new_phase;
+                events.boss_phase_changed = true;
+            }
+            let mut fire = false;
+            if boss.entered {
+                boss.fire_tick += 1;
+                if boss.fire_tick >= boss_cadence(boss.phase) {
+                    boss.fire_tick = 0;
+                    fire = true;
+                }
+            }
+            let (spin, salvo) = (boss.spin, boss.salvo);
+            if fire {
+                boss.spin += BOSS_SPIN_STEP;
+                boss.salvo = boss.salvo.wrapping_add(1);
+            }
+            (
+                fire,
+                boss.phase,
+                boss.x + BOSS_WIDTH / 2.0,
+                boss.y + BOSS_HEIGHT,
+                spin,
+                salvo,
+            )
+        };
+        if fire {
+            self.boss_fire(phase, mx, my, spin, salvo);
+        }
+        self.fell_boss_if_dead(events);
+    }
+
+    /// Runs the mothership's fire for `phase`: an aimed spread while calm, a ring
+    /// and a spiral arm as it presses, twin spirals and a fast aimed shot enraged.
+    fn boss_fire(&mut self, phase: u8, mx: f32, my: f32, spin: f32, salvo: u32) {
+        let speed = BOSS_BULLET_SPEED + self.stage as f32 * SPEED_PER_WAVE;
+        let aim = (self.ship_y + SHIP_HEIGHT / 2.0 - my).atan2(self.ship_x + SHIP_WIDTH / 2.0 - mx);
+        match phase {
+            0 => {
+                let half = (SPREAD_COUNT as f32 - 1.0) / 2.0;
+                for k in 0..SPREAD_COUNT {
+                    self.spawn_pellet(mx, my, aim + (k as f32 - half) * SPREAD_STEP, speed);
+                }
+            }
+            1 => {
+                let twist = salvo as f32 * RING_TWIST;
+                let step = std::f32::consts::TAU / RING_COUNT as f32;
+                for k in 0..RING_COUNT {
+                    self.spawn_pellet(mx, my, twist + k as f32 * step, speed);
+                }
+                self.spawn_pellet(mx, my, spin, speed);
+            }
+            _ => {
+                self.spawn_pellet(mx, my, spin, speed);
+                self.spawn_pellet(mx, my, spin + std::f32::consts::PI, speed);
+                self.spawn_pellet(mx, my, aim, speed * 1.2);
+            }
+        }
+    }
+
+    /// Whether a shot's `rect` struck the mothership — `None` if it missed the hull,
+    /// `Some(true)` if it found a weak point, `Some(false)` if the armour stopped it.
+    fn boss_bullet_hit(&self, rect: (f32, f32, f32, f32)) -> Option<bool> {
+        let boss = self.boss.as_ref()?;
+        if !overlaps(rect, (boss.x, boss.y, BOSS_WIDTH, BOSS_HEIGHT)) {
+            return None;
+        }
+        let weak = BOSS_WEAK_POINTS
+            .iter()
+            .any(|&(dx, dy, w, h)| overlaps(rect, (boss.x + dx, boss.y + dy, w, h)));
+        Some(weak)
+    }
+
+    /// Takes `amount` of health off the mothership.
+    fn damage_boss(&mut self, amount: u32, events: &mut Events) {
+        if let Some(boss) = self.boss.as_mut() {
+            boss.hp = boss.hp.saturating_sub(amount);
+            events.boss_hit = true;
+        }
+    }
+
+    /// Fells the mothership once its health is gone: clears it, advances the stage,
+    /// and primes the beat before the next stage's first squadron.
+    fn fell_boss_if_dead(&mut self, events: &mut Events) {
+        if self.boss.as_ref().is_some_and(|b| b.hp == 0) {
+            self.boss = None;
+            self.stage += 1;
+            self.wave_gap = WAVE_GAP;
+            events.boss_cleared = true;
         }
     }
 
@@ -1229,6 +1503,27 @@ impl Game {
 /// Whether two rectangles, each `(x, y, width, height)`, overlap.
 fn overlaps(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
     a.0 < b.0 + b.2 && a.0 + a.2 > b.0 && a.1 < b.1 + b.3 && a.1 + a.3 > b.1
+}
+
+/// The mothership's phase for its remaining health: calm above two-thirds, pressing
+/// above a third, enraged below.
+fn boss_phase_for(hp: u32, max_hp: u32) -> u8 {
+    if hp * 3 > max_hp * 2 {
+        0
+    } else if hp * 3 > max_hp {
+        1
+    } else {
+        2
+    }
+}
+
+/// The mothership's fire cadence for a phase — quicker the more enraged it is.
+fn boss_cadence(phase: u8) -> u32 {
+    match phase {
+        0 => 40,
+        1 => 28,
+        _ => 18,
+    }
 }
 
 #[cfg(test)]
@@ -2005,6 +2300,140 @@ mod tests {
         }
         assert!(drops > 0, "some downed enemies drop a power-up");
         assert!(drops < 300, "but not every one does");
+    }
+
+    /// Places a still player shot centred on `(cx, cy)` — for reading it against a
+    /// weak point or the hull.
+    fn still_bullet(game: &mut Game, cx: f32, cy: f32) {
+        game.bullets.push(ShotState {
+            x: cx - PLAYER_BULLET_WIDTH / 2.0,
+            y: cy - PLAYER_BULLET_HEIGHT / 2.0,
+            vx: 0.0,
+            vy: 0.0,
+            pierce: false,
+        });
+    }
+
+    /// Spawns the mothership and flies it in, keeping the ship spared through the
+    /// setup, so a boss fight can be staged and its real step path exercised.
+    fn boss_in_play() -> Game {
+        let mut g = game();
+        g.enemies.clear();
+        g.spawn_boss();
+        for _ in 0..220 {
+            g.invuln = 10_000;
+            g.step(Input::default());
+        }
+        g
+    }
+
+    #[test]
+    fn a_stage_caps_with_a_mothership() {
+        let mut g = game();
+        g.enemies.clear();
+        g.waves_this_stage = WAVES_PER_STAGE;
+        g.wave_gap = 0;
+        g.step(Input::default());
+        assert!(
+            g.boss().is_some(),
+            "after its squadrons, the stage caps with the mothership"
+        );
+    }
+
+    #[test]
+    fn a_mothership_takes_damage_at_a_weak_point() {
+        let mut g = boss_in_play();
+        let boss = g.boss().expect("the mothership is in play");
+        let hp_before = boss.hp;
+        let (dx, dy, w, h) = BOSS_WEAK_POINTS[1];
+        still_bullet(&mut g, boss.x + dx + w / 2.0, boss.y + dy + h / 2.0);
+
+        g.invuln = 10_000;
+        let events = g.step(Input::default());
+        assert!(events.boss_hit, "a shot into a core wounds the mothership");
+        assert!(g.boss().unwrap().hp < hp_before, "and takes health off");
+    }
+
+    #[test]
+    fn the_hull_armours_off_the_weak_points() {
+        let mut g = boss_in_play();
+        let boss = g.boss().unwrap();
+        let hp_before = boss.hp;
+        // A corner of the hull, clear of every core.
+        still_bullet(&mut g, boss.x + 2.0, boss.y + 2.0);
+
+        g.invuln = 10_000;
+        let events = g.step(Input::default());
+        assert!(!events.boss_hit, "the armour takes no damage");
+        assert_eq!(g.boss().unwrap().hp, hp_before, "health holds");
+        assert_eq!(g.bullets().count(), 0, "but the hull still stops the shot");
+    }
+
+    #[test]
+    fn felling_the_mothership_clears_the_stage() {
+        let mut g = boss_in_play();
+        let stage_before = g.stage();
+        g.boss.as_mut().unwrap().hp = 1;
+        let boss = g.boss().unwrap();
+        let (dx, dy, w, h) = BOSS_WEAK_POINTS[1];
+        still_bullet(&mut g, boss.x + dx + w / 2.0, boss.y + dy + h / 2.0);
+
+        g.invuln = 10_000;
+        let events = g.step(Input::default());
+        assert!(
+            events.boss_cleared,
+            "the last core hit fells the mothership"
+        );
+        assert!(g.boss().is_none(), "the mothership is gone");
+        assert_eq!(g.stage(), stage_before + 1, "and the stage advances");
+    }
+
+    #[test]
+    fn a_nova_bites_the_mothership() {
+        let mut g = boss_in_play();
+        let hp_before = g.boss().unwrap().hp;
+        g.overdrive = OVERDRIVE_MAX;
+
+        g.invuln = 10_000;
+        g.step(Input {
+            bomb: true,
+            ..Default::default()
+        });
+        assert!(
+            g.boss().unwrap().hp <= hp_before - NOVA_BOSS_DAMAGE,
+            "a nova takes a heavy bite out of the mothership"
+        );
+    }
+
+    #[test]
+    fn the_mothership_runs_multi_phase_patterns() {
+        let mut g = boss_in_play();
+        assert_eq!(g.boss().unwrap().phase, 0, "it opens in its calm phase");
+
+        let max = g.boss().unwrap().max_hp;
+        let mut phases = std::collections::HashSet::new();
+        let mut changed = false;
+        let mut fired = false;
+        for _ in 0..(max * 2) {
+            if let Some(boss) = g.boss.as_mut()
+                && boss.hp > 0
+            {
+                boss.hp -= 1;
+            }
+            g.invuln = 10_000;
+            let events = g.step(Input::default());
+            changed |= events.boss_phase_changed;
+            fired |= g.enemy_bullets().next().is_some();
+            match g.boss() {
+                Some(boss) => {
+                    phases.insert(boss.phase);
+                }
+                None => break,
+            }
+        }
+        assert!(changed, "a phase change fires as it wears down");
+        assert!(phases.contains(&2), "it reaches its enraged phase");
+        assert!(fired, "it fills the field with fire");
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.
