@@ -198,8 +198,8 @@ const NEON_ENEMY_FIRE: Color = color_u8!(255, 130, 90, 255);
 /// tickets.
 pub fn draw_remix(game: &stepfall_remix_core::Game) {
     use stepfall_remix_core::{
-        ENEMY_BULLET_SIZE, ENEMY_HEIGHT, ENEMY_WIDTH, PLAYER_BULLET_HEIGHT, PLAYER_BULLET_WIDTH,
-        SHIP_HEIGHT, SHIP_WIDTH,
+        ENEMY_BULLET_SIZE, ENEMY_HEIGHT, ENEMY_WIDTH, OVERDRIVE_MAX, PLAYER_BULLET_HEIGHT,
+        PLAYER_BULLET_WIDTH, SHIP_HEIGHT, SHIP_WIDTH,
     };
     clear_background(color_u8!(4, 6, 14, 255));
 
@@ -257,6 +257,17 @@ pub fn draw_remix(game: &stepfall_remix_core::Game) {
         vec2(ship.x, ship.y + SHIP_HEIGHT),
         vec2(ship.x + SHIP_WIDTH, ship.y + SHIP_HEIGHT),
         hull,
+    );
+
+    // The overdrive meter along the foot — bright when a nova is ready.
+    let fill = (game.overdrive() / OVERDRIVE_MAX).clamp(0.0, 1.0);
+    let ready = fill >= 1.0;
+    draw_rectangle(
+        6.0,
+        LOGICAL_HEIGHT - 4.0,
+        (LOGICAL_WIDTH - 12.0) * fill,
+        2.0,
+        if ready { NEON_BULLET } else { NEON_GLOW },
     );
 }
 

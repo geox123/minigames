@@ -74,6 +74,22 @@ const HITBOX_SIZE: f32 = 3.0;
 pub const LIVES_START: u32 = 3;
 const HIT_INVULN: u32 = 90;
 
+/// The dash: how fast it bursts, how long it lasts and covers the ship, and how
+/// long before it can be used again.
+const DASH_SPEED: f32 = 420.0;
+const DASH_TICKS: u32 = 16;
+const DASH_COOLDOWN: u32 = 48;
+
+/// Focus: how much it slows the ship, and the tighter hitbox it flies on.
+const FOCUS_SPEED_MULT: f32 = 0.45;
+const FOCUS_HITBOX: f32 = 1.5;
+
+/// Grazing: how near an enemy bullet must pass the ship's heart to count, how
+/// much each graze charges the overdrive, and a full meter.
+const GRAZE_RADIUS: f32 = 11.0;
+const GRAZE_CHARGE: f32 = 0.06;
+pub const OVERDRIVE_MAX: f32 = 1.0;
+
 /// Which run a game is playing. The behaviours differ from a later ticket; here
 /// the mode is only recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -159,6 +175,12 @@ pub struct Events {
     pub enemy_killed: bool,
     /// A bullet struck the ship this step and cost a life.
     pub player_hit: bool,
+    /// The ship dashed this step.
+    pub dashed: bool,
+    /// A bullet was grazed this step, charging the overdrive.
+    pub grazed: bool,
+    /// A full overdrive was spent on a nova this step.
+    pub overdrive_fired: bool,
     /// The last life was spent this step — the run is over.
     pub run_over: bool,
 }
@@ -208,13 +230,15 @@ struct Pos {
     y: f32,
 }
 
-/// An enemy bullet's position and velocity (logical units per second).
+/// An enemy bullet's position and velocity (logical units per second), and
+/// whether it has already been grazed (so one bullet charges the meter once).
 #[derive(Clone, Copy)]
 struct EnemyBulletState {
     x: f32,
     y: f32,
     vx: f32,
     vy: f32,
+    grazed: bool,
 }
 
 /// One enemy of a squadron: its home column, its live position, and the row it
@@ -247,8 +271,16 @@ pub struct Game {
     wave_gap: u32,
     /// Lives left; the run ends when this reaches zero.
     lives: u32,
-    /// Interrupts of invulnerability left after a hit.
+    /// Interrupts of invulnerability left after a hit or during a dash.
     invuln: u32,
+    /// Interrupts of dash left, the heading it bursts along, and its cooldown.
+    dash_ticks: u32,
+    dash_dir: (f32, f32),
+    dash_cooldown: u32,
+    /// Whether focus is held this step (a tighter hitbox).
+    focusing: bool,
+    /// The overdrive meter, `0.0..=OVERDRIVE_MAX`, charged by grazing.
+    overdrive: f32,
     score: u32,
     /// The run's randomness.
     rng: Rng,
@@ -274,9 +306,14 @@ impl Game {
             enemies: Vec::new(),
             enemy_bullets: Vec::new(),
             enemy_fire_tick: 0,
-            wave_gap: 0,
+            wave_gap: WAVE_GAP,
             lives: LIVES_START,
             invuln: 0,
+            dash_ticks: 0,
+            dash_dir: (0.0, 0.0),
+            dash_cooldown: 0,
+            focusing: false,
+            overdrive: 0.0,
             score: 0,
             rng: Rng::new(seed),
             mode,
@@ -319,9 +356,14 @@ impl Game {
         self.lives
     }
 
-    /// Whether the ship is currently spared after a hit (for the shell to flash).
+    /// Whether the ship is currently spared after a hit or during a dash.
     pub fn invulnerable(&self) -> bool {
         self.invuln > 0
+    }
+
+    /// The overdrive meter, from `0.0` (empty) to `OVERDRIVE_MAX` (a nova ready).
+    pub fn overdrive(&self) -> f32 {
+        self.overdrive
     }
 
     /// The score so far.
@@ -352,6 +394,9 @@ impl Game {
             return events;
         }
         self.invuln = self.invuln.saturating_sub(1);
+        self.dash_cooldown = self.dash_cooldown.saturating_sub(1);
+        self.focusing = input.focus;
+        self.try_dash(input, &mut events);
         self.fly(input);
         self.fire(input, &mut events);
         self.advance_bullets();
@@ -359,17 +404,52 @@ impl Game {
         self.resolve_hits(&mut events);
         self.enemy_fire();
         self.advance_enemy_bullets(&mut events);
+        self.try_overdrive(input, &mut events);
         self.manage_waves();
         events
     }
 
-    /// Flies the ship on the player's input, kept within the lower band.
-    fn fly(&mut self, input: Input) {
-        let travel = SHIP_SPEED * TIMESTEP;
+    /// Begins a dash on the tap, if it is off cooldown and not already dashing:
+    /// a fast burst along the held heading (up, if none), covering the ship in
+    /// invulnerability for its duration.
+    fn try_dash(&mut self, input: Input, events: &mut Events) {
+        if !input.dash || self.dash_cooldown > 0 || self.dash_ticks > 0 {
+            return;
+        }
         let dx = f32::from(input.right) - f32::from(input.left);
         let dy = f32::from(input.down) - f32::from(input.up);
-        self.ship_x += dx * travel;
-        self.ship_y += dy * travel;
+        let len = (dx * dx + dy * dy).sqrt();
+        self.dash_dir = if len > 0.0 {
+            (dx / len, dy / len)
+        } else {
+            (0.0, -1.0)
+        };
+        self.dash_ticks = DASH_TICKS;
+        self.dash_cooldown = DASH_COOLDOWN;
+        self.invuln = self.invuln.max(DASH_TICKS);
+        events.dashed = true;
+    }
+
+    /// Flies the ship, kept within the lower band. A dash bursts along its
+    /// heading; otherwise the ship moves on the input, slowed while focusing.
+    fn fly(&mut self, input: Input) {
+        if self.dash_ticks > 0 {
+            self.dash_ticks -= 1;
+            let travel = DASH_SPEED * TIMESTEP;
+            self.ship_x += self.dash_dir.0 * travel;
+            self.ship_y += self.dash_dir.1 * travel;
+        } else {
+            let speed = if input.focus {
+                SHIP_SPEED * FOCUS_SPEED_MULT
+            } else {
+                SHIP_SPEED
+            };
+            let travel = speed * TIMESTEP;
+            let dx = f32::from(input.right) - f32::from(input.left);
+            let dy = f32::from(input.down) - f32::from(input.up);
+            self.ship_x += dx * travel;
+            self.ship_y += dy * travel;
+        }
         self.ship_x = self
             .ship_x
             .clamp(MARGIN, LOGICAL_WIDTH - MARGIN - SHIP_WIDTH);
@@ -378,18 +458,23 @@ impl Game {
             .clamp(BAND_TOP, LOGICAL_HEIGHT - MARGIN - SHIP_HEIGHT);
     }
 
-    /// Fires a shot on its cadence while fire is held — one every [`FIRE_INTERVAL`]
-    /// interrupts, from the ship's nose.
+    /// Fires on its cadence while fire is held — from the ship's nose, or a
+    /// concentrated twin stream while focusing.
     fn fire(&mut self, input: Input, events: &mut Events) {
         self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
-        if input.fire && self.fire_cooldown == 0 {
-            self.bullets.push(Pos {
-                x: self.ship_x + SHIP_WIDTH / 2.0 - PLAYER_BULLET_WIDTH / 2.0,
-                y: self.ship_y - PLAYER_BULLET_HEIGHT,
-            });
-            self.fire_cooldown = FIRE_INTERVAL;
-            events.shot_fired = true;
+        if !input.fire || self.fire_cooldown != 0 {
+            return;
         }
+        let cx = self.ship_x + SHIP_WIDTH / 2.0 - PLAYER_BULLET_WIDTH / 2.0;
+        let y = self.ship_y - PLAYER_BULLET_HEIGHT;
+        if input.focus {
+            self.bullets.push(Pos { x: cx - 2.0, y });
+            self.bullets.push(Pos { x: cx + 2.0, y });
+        } else {
+            self.bullets.push(Pos { x: cx, y });
+        }
+        self.fire_cooldown = FIRE_INTERVAL;
+        events.shot_fired = true;
     }
 
     /// Climbs every shot, retiring the ones that leave the top of the field.
@@ -480,14 +565,19 @@ impl Game {
             y,
             vx: angle.cos() * ENEMY_BULLET_SPEED,
             vy: angle.sin() * ENEMY_BULLET_SPEED,
+            grazed: false,
         });
     }
 
     /// Flies every enemy bullet, retiring the ones that leave the field. A bullet
-    /// that strikes the ship's tiny hitbox — unless it is spared after a hit —
-    /// costs a life.
+    /// that strikes the ship's tiny hitbox — unless it is spared — costs a life;
+    /// one that skims close without hitting is grazed, charging the overdrive.
     fn advance_enemy_bullets(&mut self, events: &mut Events) {
         let hitbox = self.hitbox();
+        let (cx, cy) = (
+            self.ship_x + SHIP_WIDTH / 2.0,
+            self.ship_y + SHIP_HEIGHT / 2.0,
+        );
         let mut survivors = Vec::with_capacity(self.enemy_bullets.len());
         let mut struck = false;
         for mut b in std::mem::take(&mut self.enemy_bullets) {
@@ -508,9 +598,14 @@ impl Game {
             );
             if !struck && self.invuln == 0 && overlaps(rect, hitbox) {
                 struck = true;
-            } else {
-                survivors.push(b);
+                continue;
             }
+            if !b.grazed && (b.x - cx).hypot(b.y - cy) < GRAZE_RADIUS {
+                b.grazed = true;
+                self.overdrive = (self.overdrive + GRAZE_CHARGE).min(OVERDRIVE_MAX);
+                events.grazed = true;
+            }
+            survivors.push(b);
         }
         self.enemy_bullets = survivors;
         if struck {
@@ -518,16 +613,34 @@ impl Game {
         }
     }
 
-    /// The ship's true hitbox — the tiny square at its heart.
+    /// Spends a full overdrive on a nova: clears the sky of enemy fire and downs
+    /// every enemy on the field.
+    fn try_overdrive(&mut self, input: Input, events: &mut Events) {
+        if !input.bomb || self.overdrive < OVERDRIVE_MAX {
+            return;
+        }
+        self.overdrive = 0.0;
+        self.enemy_bullets.clear();
+        let downed = self.enemies.len() as u32;
+        if downed > 0 {
+            self.score += ENEMY_SCORE * downed;
+            self.enemies.clear();
+            events.enemy_killed = true;
+        }
+        events.overdrive_fired = true;
+    }
+
+    /// The ship's true hitbox — the tiny square at its heart, tighter still while
+    /// focusing.
     fn hitbox(&self) -> (f32, f32, f32, f32) {
+        let size = if self.focusing {
+            FOCUS_HITBOX
+        } else {
+            HITBOX_SIZE
+        };
         let cx = self.ship_x + SHIP_WIDTH / 2.0;
         let cy = self.ship_y + SHIP_HEIGHT / 2.0;
-        (
-            cx - HITBOX_SIZE / 2.0,
-            cy - HITBOX_SIZE / 2.0,
-            HITBOX_SIZE,
-            HITBOX_SIZE,
-        )
+        (cx - size / 2.0, cy - size / 2.0, size, size)
     }
 
     /// Spends a life to a hit: spares the ship for a beat, and ends the run if
@@ -771,6 +884,7 @@ mod tests {
             y,
             vx: 0.0,
             vy: 0.0,
+            grazed: false,
         });
     }
 
@@ -814,6 +928,113 @@ mod tests {
 
         assert!(events.run_over, "the last life ends the run");
         assert_eq!(game.phase(), Phase::Over);
+    }
+
+    #[test]
+    fn a_dash_bursts_far_and_spares_the_ship() {
+        // A dash covers far more ground than ordinary flight over the same steps,
+        // and the ship is invulnerable while it dashes.
+        let dash = {
+            let mut g = game();
+            let start = g.ship().x;
+            for _ in 0..DASH_TICKS {
+                g.step(Input {
+                    right: true,
+                    dash: true,
+                    ..Default::default()
+                });
+            }
+            assert!(g.invulnerable(), "the ship is spared while dashing");
+            g.ship().x - start
+        };
+        let flight = {
+            let mut g = game();
+            let start = g.ship().x;
+            for _ in 0..DASH_TICKS {
+                g.step(Input {
+                    right: true,
+                    ..Default::default()
+                });
+            }
+            g.ship().x - start
+        };
+        assert!(
+            dash > flight * 2.0,
+            "a dash bursts far past ordinary flight"
+        );
+    }
+
+    #[test]
+    fn focus_slows_the_ship_and_twins_its_fire() {
+        // Slower under focus.
+        let normal = press(
+            Input {
+                right: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .ship()
+        .x;
+        let focused = press(
+            Input {
+                right: true,
+                focus: true,
+                ..Default::default()
+            },
+            30,
+        )
+        .ship()
+        .x;
+        let start = game().ship().x;
+        assert!(focused - start < normal - start, "focus slows the ship");
+
+        // A focused shot is a concentrated twin.
+        let mut g = game();
+        g.step(Input {
+            fire: true,
+            focus: true,
+            ..Default::default()
+        });
+        assert_eq!(
+            g.bullets().count(),
+            2,
+            "focus concentrates fire into a twin"
+        );
+    }
+
+    #[test]
+    fn grazing_a_bullet_charges_the_overdrive() {
+        let mut game = game();
+        let (cx, cy) = ship_centre(&game);
+        // Close enough to graze, clear of the tiny hitbox.
+        bullet_at(&mut game, cx, cy - (GRAZE_RADIUS - 1.0));
+        assert_eq!(game.overdrive(), 0.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.grazed, "skimming a bullet grazes it");
+        assert!(game.overdrive() > 0.0, "a graze charges the overdrive");
+        assert_eq!(game.lives(), LIVES_START, "a graze is not a hit");
+    }
+
+    #[test]
+    fn a_full_overdrive_spends_on_a_nova() {
+        let mut game = game();
+        game.overdrive = OVERDRIVE_MAX;
+        bullet_at(&mut game, 60.0, 60.0);
+        bullet_at(&mut game, 160.0, 90.0);
+        assert!(game.enemies().count() > 0, "a squadron is on the field");
+
+        let events = game.step(Input {
+            bomb: true,
+            ..Default::default()
+        });
+
+        assert!(events.overdrive_fired, "a full overdrive fires the nova");
+        assert_eq!(game.enemy_bullets().count(), 0, "the nova clears the sky");
+        assert_eq!(game.enemies().count(), 0, "the nova downs the field");
+        assert_eq!(game.overdrive(), 0.0, "the nova spends the meter");
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.
