@@ -1,0 +1,15 @@
+[package]
+name = "stepfall"
+version = "0.1.0"
+description = "STEPFALL — a faithful recreation of the 1978 arcade invasion game, wrapped in a modern shell."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+macroquad.workspace = true
+shell-kit = { path = "../../../shell-kit" }
+stepfall-core = { path = "../core" }
+
+[lints]
+workspace = true
