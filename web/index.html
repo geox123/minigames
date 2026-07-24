@@ -163,6 +163,52 @@
         width: 4px;
         height: 4px;
       }
+      /* STEPFALL's mark: a formation of invaders over a cannon, a saucer above. */
+      .swarm {
+        flex: none;
+        width: 96px;
+        height: 72px;
+        border: 1px solid #3a3a40;
+        border-radius: 4px;
+        position: relative;
+        background: #000;
+        overflow: hidden;
+      }
+      .swarm::before {
+        content: "";
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        top: 18px;
+        height: 30px;
+        background: radial-gradient(circle, #f4f4f5 1.5px, transparent 2px) 0 0 /
+          15px 11px;
+      }
+      .swarm i {
+        position: absolute;
+      }
+      .swarm .saucer {
+        left: 30px;
+        top: 8px;
+        width: 8px;
+        height: 3px;
+        border-radius: 3px 3px 0 0;
+        background: #dc463c;
+      }
+      .swarm .cannon {
+        left: 43px;
+        bottom: 9px;
+        width: 10px;
+        height: 5px;
+        background: #5ac85a;
+      }
+      .swarm .shot {
+        left: 47px;
+        bottom: 16px;
+        width: 2px;
+        height: 6px;
+        background: #f4f4f5;
+      }
       .game-body {
         flex: 1 1 auto;
         min-width: 0;
@@ -297,6 +343,31 @@
           <div class="takes">
             <a class="play" href="./breakout/">▶ Play the Faithful</a>
             <a class="play" href="./breakout/">▶ Play RIFT</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="game">
+        <div class="swarm" aria-hidden="true">
+          <i class="saucer"></i>
+          <i class="shot"></i>
+          <i class="cannon"></i>
+        </div>
+        <div class="game-body">
+          <p class="game-title">
+            STEPFALL <span style="color: var(--muted)">· 1978 · Faithful live</span>
+          </p>
+          <p class="game-note">
+            The arcade invasion game that defined the era, the Collection's third
+            Game — shipped under a name of its own. The <b>Faithful</b> keeps the
+            lock-step formation whose march speeds up as you thin it (and turns
+            frantic for the last invader), the eroding bunkers, the mystery saucer,
+            and the four-note march that winds tighter with the pressure. Its
+            <b>Remix</b> is still to come.
+          </p>
+          <div class="takes">
+            <a class="play" href="./stepfall/">▶ Play the Faithful</a>
+            <span class="locked">Remix · coming</span>
           </div>
         </div>
       </article>

@@ -23,5 +23,6 @@ build_game() {
 
 build_game pong pong
 build_game breakout breakout
+build_game stepfall stepfall
 
 echo "done: $dist/"
