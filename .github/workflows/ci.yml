@@ -64,8 +64,14 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      # Build the library, binaries and tests — not the dev-tool examples. The
+      # examples are code-drawn frame-shot utilities, already compiled and
+      # clippy-checked on the Linux quality-gate; linking their .exes here is
+      # what trips an intermittent Windows linker file-lock (LNK1104 on a
+      # freshly-produced example .exe). Skipping them keeps this job's promise —
+      # the native Windows build and tests pass — without that flake.
       - name: Build and test (native Windows)
-        run: cargo test --workspace
+        run: cargo test --workspace --lib --bins --tests
 
   deploy-pages:
     # Publish the site only from main, and only once the quality bar is green.
