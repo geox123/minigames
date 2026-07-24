@@ -111,8 +111,8 @@ fn draw_endgame(game: &Game) {
     );
 }
 
-/// Draws the Collection's mode-select: the two takes Breakout ships. The
-/// Faithful is playable; the Remix shows as locked, coming later.
+/// Draws the Collection's mode-select: the two takes Breakout ships, both now
+/// playable — the Faithful, and RIFT, its Remix.
 pub fn mode_select(highlight: Mode) {
     clear_background(BLACK);
 
@@ -125,9 +125,10 @@ pub fn mode_select(highlight: Mode) {
         GRAY,
     );
     option("FAITHFUL", 140.0, highlight == Mode::Faithful, false);
-    option("REMIX", 176.0, highlight == Mode::Remix, true);
+    option("REMIX", 176.0, highlight == Mode::Remix, false);
+    // The Remix carries its own invented name; show it under the highlight.
     if highlight == Mode::Remix {
-        font::draw_centred(LOGICAL_WIDTH, "COMING SOON", 200.0, HINT_SCALE, GRAY);
+        font::draw_centred(LOGICAL_WIDTH, "RIFT", 200.0, HINT_SCALE, GRAY);
     }
     font::draw_centred(
         LOGICAL_WIDTH,

@@ -9,7 +9,7 @@ use macroquad::prelude::*;
 
 fn window_conf() -> Conf {
     let mut conf = Conf {
-        window_title: "Breakout — Faithful".to_owned(),
+        window_title: "Breakout".to_owned(),
         window_width: LOGICAL_WIDTH as i32 * 2,
         window_height: LOGICAL_HEIGHT as i32 * 2,
         window_resizable: true,
