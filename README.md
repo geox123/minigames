@@ -30,11 +30,12 @@ in [`docs/adr/`](docs/adr).
 | Game | Year | Faithful | Remix | Status |
 | ---- | ---- | -------- | ----- | ------ |
 | [Pong](games/pong) | 1972 | ✅ playable | ✅ [PULSE](games/pong/PULSE.md) | **Done** |
-| [Breakout](games/breakout) | 1976 | ✅ playable | 🔜 coming | Faithful live |
+| [Breakout](games/breakout) | 1976 | ✅ playable | ✅ [RIFT](games/breakout/RIFT.md) | **Done** |
 
-**Pong is Done** — the Collection's first: both its Faithful and its Remix,
-[PULSE](games/pong/PULSE.md), have shipped. **Breakout's Faithful is now live**
-too; its Remix is next, and Breakout becomes Done once that ships.
+**Both Pong and Breakout are Done** — each has shipped both takes. Pong pairs its
+Faithful with [PULSE](games/pong/PULSE.md); Breakout pairs its Faithful with
+[RIFT](games/breakout/RIFT.md), a roguelike descent with a brick zoo, a boon
+draft and three modes. Next, the Collection moves on to the third Game.
 
 ## How it's built
 
