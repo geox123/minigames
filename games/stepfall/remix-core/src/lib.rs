@@ -18,6 +18,8 @@
 //! construction, so the core never knows the concept of "unlocks" — it only flies
 //! whatever it is given.
 
+pub mod meta;
+
 /// Width of the portrait play field, in logical units — shared with the Faithful.
 pub const LOGICAL_WIDTH: f32 = 224.0;
 /// Height of the portrait play field, in logical units — shared with the Faithful.
@@ -183,10 +185,20 @@ pub enum Mode {
 }
 
 /// The ship's starting kit — the weapons and options a run flies with. Handed in
-/// at construction so the core never knows "unlocks"; empty for now, filled as
-/// the weapon and power-up tickets land.
+/// at construction so the core never knows "unlocks": the [`meta`] module builds
+/// one from what a player has earned, and the run simply flies whatever it is
+/// given. A default `Loadout` is the base ship, always fully playable.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Loadout {}
+pub struct Loadout {
+    /// The weapon tier the ship starts on (`0` base, up to [`WEAPON_MAX`]).
+    pub start_weapon: u32,
+    /// Whether the ship starts with a shield up.
+    pub shield: bool,
+    /// Extra lives beyond the base pool.
+    pub bonus_lives: u32,
+    /// Whether the ship starts with a half overdrive already charged.
+    pub start_overdrive: bool,
+}
 
 /// What the player is doing this step. Movement is two-dimensional within the
 /// band; the action buttons are wired up by later tickets but named now so the
@@ -588,7 +600,7 @@ pub struct Game {
     /// The run's randomness.
     rng: Rng,
     mode: Mode,
-    #[allow(dead_code)]
+    /// The kit this run was handed, kept so a restart replays it.
     loadout: Loadout,
     phase: Phase,
     /// How the run ended, once it is over.
@@ -608,8 +620,9 @@ impl Game {
             ship_y: LOGICAL_HEIGHT - SHIP_HEIGHT - MARGIN * 3.0,
             bullets: Vec::new(),
             fire_cooldown: 0,
-            weapon_level: 0,
-            shield: false,
+            // The loadout seeds the ship's starting kit; a default is the base ship.
+            weapon_level: loadout.start_weapon.min(WEAPON_MAX),
+            shield: loadout.shield,
             pickups: Vec::new(),
             enemies: Vec::new(),
             enemy_bullets: Vec::new(),
@@ -618,13 +631,17 @@ impl Game {
             waves_this_stage: 1,
             stage: 0,
             boss: None,
-            lives: LIVES_START,
+            lives: LIVES_START + loadout.bonus_lives,
             invuln: 0,
             dash_ticks: 0,
             dash_dir: (0.0, 0.0),
             dash_cooldown: 0,
             focusing: false,
-            overdrive: 0.0,
+            overdrive: if loadout.start_overdrive {
+                OVERDRIVE_MAX * 0.5
+            } else {
+                0.0
+            },
             score: 0,
             rng: Rng::new(seed),
             mode,
@@ -2558,6 +2575,31 @@ mod tests {
         let events = g.step(Input::default());
         assert!(events.run_over, "the last life ends the run");
         assert_eq!(g.outcome(), Some(Outcome::Lost), "as a loss");
+    }
+
+    #[test]
+    fn a_loadout_seeds_the_ship_and_runs_the_real_step_path() {
+        use crate::meta::{Content, Unlocked};
+        let mut unlocked = Unlocked::default();
+        unlocked.unlock(Content::Spread); // weapon tier 1
+        unlocked.unlock(Content::Shield);
+        unlocked.unlock(Content::Reserve); // +1 life
+        unlocked.unlock(Content::Charged); // half overdrive
+
+        let mut g = Game::new(1, Mode::Sortie, unlocked.loadout());
+        assert_eq!(
+            g.weapon_level(),
+            1,
+            "the loadout starts the weapon at spread"
+        );
+        assert!(g.has_shield(), "the loadout starts a shield");
+        assert_eq!(g.lives(), LIVES_START + 1, "reserve adds a life");
+        assert!(g.overdrive() > 0.0, "charged primes the overdrive");
+
+        // The real step path runs unchanged on a seeded loadout.
+        g.step(Input::default());
+        assert_eq!(g.weapon_level(), 1);
+        assert!(g.lives() >= LIVES_START, "no rule broke on a seeded run");
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.
