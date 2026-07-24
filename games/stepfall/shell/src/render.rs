@@ -1,18 +1,18 @@
-//! Drawing the core's state onto the logical canvas, in the era's stark look.
+//! Drawing the core's state onto the logical canvas, in the era's stark look:
+//! a monochrome game of hand-authored sprites (see [`crate::sprites`]) under the
+//! cabinet's colour-overlay bands — red high, green low.
 //!
 //! Everything here works in the core's logical units; scaling to the real
-//! window happens once, when the canvas is blitted to the screen. The invaders
-//! are plain blocks for now — the authored sprites and the cabinet's colour
-//! bands are their own ticket.
+//! window happens once, when the canvas is blitted to the screen.
 
 use macroquad::prelude::*;
 use stepfall_core::{
-    BOMB_HEIGHT, BOMB_WIDTH, BUNKER_CELL, CANNON_HEIGHT, CANNON_WIDTH, Game, INVADER_HEIGHT,
-    INVADER_WIDTH, LOGICAL_HEIGHT, LOGICAL_WIDTH, Phase, SAUCER_HEIGHT, SAUCER_WIDTH, SHOT_HEIGHT,
-    SHOT_WIDTH,
+    BUNKER_CELL, CANNON_HEIGHT, CANNON_WIDTH, Game, INVADER_HEIGHT, INVADER_WIDTH, LOGICAL_HEIGHT,
+    LOGICAL_WIDTH, Phase, SHOT_HEIGHT, SHOT_WIDTH,
 };
 
 use crate::app::Mode;
+use crate::sprites;
 use shell_kit::font;
 
 /// Text sizes, as the pixel scale each is drawn at.
@@ -20,28 +20,83 @@ const TITLE_SCALE: f32 = 4.0;
 const OPTION_SCALE: f32 = 2.0;
 const HINT_SCALE: f32 = 1.0;
 
-/// The line the cannon rides, and the field it defends.
+/// The cabinet's two colour-overlay strips: green low, red high, over an
+/// otherwise white (monochrome) game.
 const GROUND: Color = color_u8!(60, 220, 90, 255);
-/// The mystery saucer — red, the one splash of colour in the era's palette.
-const SAUCER: Color = color_u8!(220, 70, 70, 255);
+const RED_BAND: Color = color_u8!(220, 70, 70, 255);
+/// Where the bands fall: red above this line, green below the other.
+const RED_BAND_BELOW: f32 = 56.0;
+const GREEN_BAND_ABOVE: f32 = 172.0;
 /// A little cannon icon per remaining life, along the top-right.
 const LIFE_ICON_W: f32 = 11.0;
 const LIFE_ICON_H: f32 = 4.0;
 const LIFE_ICON_GAP: f32 = 4.0;
 
+/// The overlay colour at height `y`: red up top, green down low, white between.
+fn band_tint(y: f32) -> Color {
+    if y < RED_BAND_BELOW {
+        RED_BAND
+    } else if y >= GREEN_BAND_ABOVE {
+        GROUND
+    } else {
+        WHITE
+    }
+}
+
+/// Lays the two colour strips over the field as faint tints, the way the
+/// cellophane overlays coloured the arcade's monochrome tube.
+fn draw_bands() {
+    draw_rectangle(
+        0.0,
+        0.0,
+        LOGICAL_WIDTH,
+        RED_BAND_BELOW,
+        color_u8!(220, 70, 70, 24),
+    );
+    draw_rectangle(
+        0.0,
+        GREEN_BAND_ABOVE,
+        LOGICAL_WIDTH,
+        LOGICAL_HEIGHT - GREEN_BAND_ABOVE,
+        color_u8!(60, 220, 90, 24),
+    );
+}
+
 /// Draws one frame of the game onto the logical canvas. `best` is the session's
 /// high score, shown in the HUD.
 pub fn draw(game: &Game, best: u32) {
     clear_background(BLACK);
+    draw_bands();
 
     // The mystery saucer, when it's crossing.
     if let Some(saucer) = game.saucer() {
-        draw_rectangle(saucer.x, saucer.y, SAUCER_WIDTH, SAUCER_HEIGHT, SAUCER);
+        sprites::blit(sprites::SAUCER, saucer.x, saucer.y, band_tint(saucer.y));
     }
 
-    // The invaders — plain white blocks until the sprites ticket.
+    // The invaders — each row's sprite, its two frames alternating with the march.
+    let frame = game.march_frame() as usize;
     for invader in game.invaders() {
-        draw_rectangle(invader.x, invader.y, INVADER_WIDTH, INVADER_HEIGHT, WHITE);
+        let sprite = sprites::invader_frames(invader.row)[frame];
+        sprites::blit_centred(
+            sprite,
+            invader.x,
+            invader.y,
+            INVADER_WIDTH,
+            INVADER_HEIGHT,
+            band_tint(invader.y),
+        );
+    }
+
+    // Explosions where invaders were destroyed.
+    for blast in game.blasts() {
+        sprites::blit_centred(
+            sprites::BLAST,
+            blast.x,
+            blast.y,
+            INVADER_WIDTH,
+            INVADER_HEIGHT,
+            band_tint(blast.y),
+        );
     }
 
     // The bunkers — green cover, wearing holes as it is eaten from both sides.
@@ -51,15 +106,33 @@ pub fn draw(game: &Game, best: u32) {
 
     // Bombs falling, and the player's shot climbing.
     for bomb in game.bombs() {
-        draw_rectangle(bomb.x, bomb.y, BOMB_WIDTH, BOMB_HEIGHT, WHITE);
+        sprites::blit(
+            sprites::bomb_sprite(bomb.kind),
+            bomb.x,
+            bomb.y,
+            band_tint(bomb.y),
+        );
     }
     if let Some(shot) = game.shot() {
-        draw_rectangle(shot.x, shot.y, SHOT_WIDTH, SHOT_HEIGHT, WHITE);
+        draw_rectangle(shot.x, shot.y, SHOT_WIDTH, SHOT_HEIGHT, band_tint(shot.y));
     }
 
-    // The cannon, and the ground line it rides along.
+    // The cannon — its explosion while it dies, otherwise the cannon itself.
     let cannon = game.cannon();
-    draw_rectangle(cannon.x, cannon.y, CANNON_WIDTH, CANNON_HEIGHT, GROUND);
+    if game.cannon_dying() {
+        sprites::blit_centred(
+            sprites::CANNON_BLAST,
+            cannon.x,
+            cannon.y,
+            CANNON_WIDTH,
+            CANNON_HEIGHT,
+            GROUND,
+        );
+    } else {
+        sprites::blit(sprites::CANNON, cannon.x, cannon.y, GROUND);
+    }
+
+    // The ground line the cannon rides along.
     let base = cannon.y + CANNON_HEIGHT + 2.0;
     draw_rectangle(0.0, base, LOGICAL_WIDTH, 1.0, GROUND);
 
@@ -72,7 +145,13 @@ pub fn draw(game: &Game, best: u32) {
 /// The top strip: the score at the left, the session's best in the middle, and
 /// the lives left as little cannon icons at the right.
 fn draw_hud(game: &Game, best: u32) {
-    font::draw(&format!("{:04}", game.score()), 6.0, 6.0, HINT_SCALE, WHITE);
+    font::draw(
+        &format!("{:04}", game.score()),
+        6.0,
+        6.0,
+        HINT_SCALE,
+        RED_BAND,
+    );
 
     font::draw_centred(
         LOGICAL_WIDTH,

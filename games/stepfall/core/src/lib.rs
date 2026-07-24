@@ -132,6 +132,9 @@ const SAUCER_SCORE_PERIOD: u32 = 15;
 /// lesser prizes.
 const SAUCER_SCORE_TABLE: [u32; 8] = [50, 100, 50, 100, 100, 50, 100, 150];
 
+/// How many interrupts a destroyed invader's explosion lingers before it clears.
+const BLAST_TICKS: u32 = 12;
+
 /// The cannon's row. If the formation ever grinds down this far, the game is
 /// over on the spot — however many lives remain. This is what makes the march a
 /// real threat and not just a timer.
@@ -232,6 +235,15 @@ pub struct Saucer {
     pub y: f32,
 }
 
+/// A destroyed invader's explosion, for the shell to draw for a few frames.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blast {
+    /// Left edge of where the invader stood.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+}
+
 /// A single intact block of a bunker, as the shell should draw it — a
 /// [`BUNKER_CELL`]-sized square.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -295,6 +307,14 @@ struct BombState {
 struct SaucerState {
     x: f32,
     dir: f32,
+}
+
+/// An explosion in progress, with the interrupts it has left to burn.
+#[derive(Clone, Copy)]
+struct BlastState {
+    x: f32,
+    y: f32,
+    timer: u32,
 }
 
 /// One bunker: a grid of blocks, each intact or eaten away. Indexed
@@ -422,10 +442,15 @@ pub struct Game {
     edge_hit: bool,
     /// This pass steps the formation down instead of sideways.
     dropping: bool,
+    /// The formation's animation frame, 0 or 1, flipping each step so the
+    /// invaders shuffle — and, like the march, quickening as they thin.
+    march_frame: u8,
     /// Which wave this is, from 1 — each fresh formation starts lower.
     wave: u32,
     /// The player's shot, if one is in flight.
     shot: Option<Pos>,
+    /// Explosions still burning where invaders were destroyed.
+    blasts: Vec<BlastState>,
     /// The bombs the formation has in the air.
     bombs: Vec<BombState>,
     /// Interrupts since the last bomb was dropped.
@@ -466,8 +491,10 @@ impl Game {
             dir: 1.0,
             edge_hit: false,
             dropping: false,
+            march_frame: 0,
             wave: 1,
             shot: None,
+            blasts: Vec::new(),
             bombs: Vec::new(),
             bomb_spawn_tick: 0,
             spawns: 0,
@@ -516,9 +543,18 @@ impl Game {
         self.bombs.clear();
         self.shot = None;
         self.saucer = None;
+        self.blasts.clear();
         self.bomb_spawn_tick = 0;
         self.saucer_tick = 0;
         events.wave_cleared = true;
+    }
+
+    /// Burns down every explosion, clearing the ones that have finished.
+    fn advance_blasts(&mut self) {
+        self.blasts.retain_mut(|blast| {
+            blast.timer -= 1;
+            blast.timer > 0
+        });
     }
 
     /// The invaders still standing, as the shell should draw them.
@@ -573,6 +609,23 @@ impl Game {
         })
     }
 
+    /// The explosions still burning where invaders were destroyed.
+    pub fn blasts(&self) -> impl Iterator<Item = Blast> + '_ {
+        self.blasts.iter().map(|b| Blast { x: b.x, y: b.y })
+    }
+
+    /// The formation's animation frame, 0 or 1 — the shell alternates each
+    /// invader's two sprites on it to give the shuffle.
+    pub fn march_frame(&self) -> u8 {
+        self.march_frame
+    }
+
+    /// Whether the cannon is mid-death — the beat after it is hit, before it
+    /// returns. The shell draws its explosion through this.
+    pub fn cannon_dying(&self) -> bool {
+        self.dead > 0.0
+    }
+
     /// The score so far.
     pub fn score(&self) -> u32 {
         self.score
@@ -623,6 +676,7 @@ impl Game {
         // Everything but the cannon stirs only on a machine interrupt.
         if self.steps.is_multiple_of(STEPS_PER_INTERRUPT) {
             self.advance_march(&mut events);
+            self.advance_blasts();
             // The march may have ground down to the cannon's row and ended it.
             if self.phase != Phase::GameOver {
                 self.advance_saucer();
@@ -756,6 +810,12 @@ impl Game {
     /// the next wave.
     fn destroy(&mut self, index: usize, events: &mut Events) {
         let row = index / COLS;
+        let pos = self.invaders[index].expect("destroying a standing invader");
+        self.blasts.push(BlastState {
+            x: pos.x,
+            y: pos.y,
+            timer: BLAST_TICKS,
+        });
         self.invaders[index] = None;
         self.alive -= 1;
         self.add_score(row_score(row), events);
@@ -955,6 +1015,10 @@ impl Game {
     /// formation round and sends the next one downward. Reports whether the
     /// formation just turned.
     fn finish_pass(&mut self) -> bool {
+        // Each completed step flips the formation's animation frame, so the
+        // invaders shuffle in time with the march.
+        self.march_frame ^= 1;
+
         let mut turned = false;
         if self.dropping {
             // The downward pass is done; carry on sideways the new way.
@@ -1327,6 +1391,37 @@ mod tests {
         );
         assert_eq!(game.score(), 500 + row_score(4), "the score carried across");
         assert_eq!(game.lives(), 2, "the lives carried across");
+    }
+
+    #[test]
+    fn the_formation_shuffles_as_it_marches() {
+        let mut game = Game::new(1);
+        let before = game.march_frame();
+        interrupts_per_pass(&mut game);
+        assert_ne!(
+            game.march_frame(),
+            before,
+            "the animation frame flips each formation step"
+        );
+    }
+
+    #[test]
+    fn a_destroyed_invader_leaves_a_brief_explosion() {
+        let mut game = Game::new(1);
+        // Stage a shot right under the bottom-right invader.
+        let target = game.invaders[INVADERS - 1].expect("a full formation");
+        game.shot = Some(Pos {
+            x: target.x + INVADER_WIDTH / 2.0,
+            y: target.y + INVADER_HEIGHT + 1.0,
+        });
+
+        interrupt(&mut game);
+        assert_eq!(game.blasts().count(), 1, "the kill left an explosion");
+
+        for _ in 0..BLAST_TICKS + 1 {
+            interrupt(&mut game);
+        }
+        assert_eq!(game.blasts().count(), 0, "the explosion burned out");
     }
 
     #[test]
