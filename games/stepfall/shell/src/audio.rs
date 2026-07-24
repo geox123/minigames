@@ -10,6 +10,7 @@
 
 use macroquad::audio::{PlaySoundParams, Sound, play_sound, play_sound_once, stop_sound};
 use stepfall_core::Events;
+use stepfall_remix_core::Events as RemixEvents;
 
 use shell_kit::synth::{blip, chirp, warble};
 
@@ -32,6 +33,30 @@ pub struct Audio {
     cannon_die: Sound,
     /// The tone for an earned extra life.
     extra_life: Sound,
+
+    // HAILFALL's voices — the Remix's own synth palette.
+    /// The ship's rapid pew.
+    remix_fire: Sound,
+    /// An enemy downed.
+    remix_kill: Sound,
+    /// A bullet grazed — a bright skim.
+    remix_graze: Sound,
+    /// A power-up caught.
+    remix_power: Sound,
+    /// The screen-clearing nova.
+    remix_nova: Sound,
+    /// A shot into the mothership's core.
+    remix_boss_hit: Sound,
+    /// The mothership shifting phase.
+    remix_boss_phase: Sound,
+    /// The mothership felled.
+    remix_boss_clear: Sound,
+    /// The ship taking a hit.
+    remix_hit: Sound,
+    /// A run won.
+    remix_win: Sound,
+    /// A shield soaking a hit.
+    remix_shield: Sound,
 }
 
 impl Audio {
@@ -51,6 +76,46 @@ impl Audio {
             saucer_hit: chirp(500.0, 1150.0, 0.28).await,
             cannon_die: chirp(300.0, 55.0, 0.45).await,
             extra_life: chirp(520.0, 1040.0, 0.3).await,
+
+            remix_fire: chirp(620.0, 1180.0, 0.05).await,
+            remix_kill: chirp(520.0, 180.0, 0.10).await,
+            remix_graze: chirp(1500.0, 2100.0, 0.05).await,
+            remix_power: chirp(500.0, 1200.0, 0.18).await,
+            remix_nova: chirp(1300.0, 70.0, 0.5).await,
+            remix_boss_hit: blip(240.0, 0.04).await,
+            remix_boss_phase: chirp(200.0, 520.0, 0.28).await,
+            remix_boss_clear: chirp(420.0, 60.0, 0.5).await,
+            remix_hit: chirp(300.0, 50.0, 0.4).await,
+            remix_win: chirp(400.0, 1200.0, 0.5).await,
+            remix_shield: chirp(820.0, 320.0, 0.12).await,
+        }
+    }
+
+    /// Plays HAILFALL's voice for what a step produced — one beat per step, most
+    /// urgent first, so a single step never stacks two.
+    pub fn play_remix(&self, events: &RemixEvents) {
+        if events.run_won {
+            play_sound_once(&self.remix_win);
+        } else if events.player_hit || events.run_over {
+            play_sound_once(&self.remix_hit);
+        } else if events.boss_cleared {
+            play_sound_once(&self.remix_boss_clear);
+        } else if events.overdrive_fired {
+            play_sound_once(&self.remix_nova);
+        } else if events.boss_phase_changed {
+            play_sound_once(&self.remix_boss_phase);
+        } else if events.shield_broke {
+            play_sound_once(&self.remix_shield);
+        } else if events.power_up_taken {
+            play_sound_once(&self.remix_power);
+        } else if events.enemy_killed {
+            play_sound_once(&self.remix_kill);
+        } else if events.boss_hit {
+            play_sound_once(&self.remix_boss_hit);
+        } else if events.grazed {
+            play_sound_once(&self.remix_graze);
+        } else if events.shot_fired {
+            play_sound_once(&self.remix_fire);
         }
     }
 

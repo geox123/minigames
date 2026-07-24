@@ -698,6 +698,11 @@ impl Game {
         self.invuln > 0
     }
 
+    /// Whether focus is held this step — the shell reveals the true hitbox while it is.
+    pub fn focusing(&self) -> bool {
+        self.focusing
+    }
+
     /// The overdrive meter, from `0.0` (empty) to `OVERDRIVE_MAX` (a nova ready).
     pub fn overdrive(&self) -> f32 {
         self.overdrive
