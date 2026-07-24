@@ -6,7 +6,7 @@
 use breakout_core::{BALL_SIZE, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, PADDLE_HEIGHT, Phase, WALLS};
 use macroquad::prelude::*;
 
-use crate::app::Mode;
+use crate::app::{Mode, RiftMode};
 use shell_kit::font;
 
 /// Text sizes, as the pixel scale each is drawn at.
@@ -130,6 +130,28 @@ pub fn mode_select(highlight: Mode) {
     if highlight == Mode::Remix {
         font::draw_centred(LOGICAL_WIDTH, "RIFT", 200.0, HINT_SCALE, GRAY);
     }
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "ARROWS TO CHOOSE   ENTER TO SELECT",
+        260.0,
+        HINT_SCALE,
+        GRAY,
+    );
+}
+
+/// Draws RIFT's own mode menu: Run or Daily, with a one-line blurb.
+pub fn rift_menu(highlight: RiftMode) {
+    clear_background(BLACK);
+
+    font::draw_centred(LOGICAL_WIDTH, "RIFT", 48.0, TITLE_SCALE, WHITE);
+    font::draw_centred(LOGICAL_WIDTH, "BREAKOUT REMIX", 96.0, HINT_SCALE, GRAY);
+    option("RUN", 140.0, highlight == RiftMode::Run, false);
+    option("DAILY", 176.0, highlight == RiftMode::Daily, false);
+    let blurb = match highlight {
+        RiftMode::Run => "A FRESH DESCENT",
+        RiftMode::Daily => "TODAYS SHARED SEED",
+    };
+    font::draw_centred(LOGICAL_WIDTH, blurb, 200.0, HINT_SCALE, GRAY);
     font::draw_centred(
         LOGICAL_WIDTH,
         "ARROWS TO CHOOSE   ENTER TO SELECT",
