@@ -468,8 +468,13 @@ fn draw_remix_hud(game: &stepfall_remix_core::Game, best: u32) {
 }
 
 /// The card that resolves a HAILFALL run: won or lost, the score and stage
-/// reached, the mode's best, and the way on.
-pub fn remix_summary(game: &stepfall_remix_core::Game, mode: stepfall_remix_core::Mode, best: u32) {
+/// reached, the mode's best, anything newly unlocked, and the way on.
+pub fn remix_summary(
+    game: &stepfall_remix_core::Game,
+    mode: stepfall_remix_core::Mode,
+    best: u32,
+    earned: &[stepfall_remix_core::meta::Content],
+) {
     use stepfall_remix_core::{Mode as RunMode, Outcome};
 
     // Dim the frozen field behind the card.
@@ -511,10 +516,27 @@ pub fn remix_summary(game: &stepfall_remix_core::Game, mode: stepfall_remix_core
         RunMode::Sortie => "SORTIE FAILED".to_string(),
     };
     font::draw_centred(LOGICAL_WIDTH, &best_line, mid + 12.0, HINT_SCALE, NEON_GLOW);
+
+    // Call out anything this run newly unlocked, in gold.
+    if !earned.is_empty() {
+        let names = earned
+            .iter()
+            .map(|c| c.label())
+            .collect::<Vec<_>>()
+            .join(" ");
+        font::draw_centred(
+            LOGICAL_WIDTH,
+            &format!("UNLOCKED {names}"),
+            mid + 28.0,
+            HINT_SCALE,
+            NEON_BULLET,
+        );
+    }
+
     font::draw_centred(
         LOGICAL_WIDTH,
         "R PLAY AGAIN   ESC MENU",
-        mid + 30.0,
+        mid + 46.0,
         HINT_SCALE,
         NEON_GLOW,
     );

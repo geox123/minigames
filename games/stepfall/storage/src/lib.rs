@@ -15,8 +15,10 @@ const ONSLAUGHT_BEST: usize = 0;
 const DAILY_DAY: usize = 1;
 /// Slot for the best score reached on that day.
 const DAILY_BEST: usize = 2;
+/// Slot for the bitset of unlocked ship options (Phase B's meta).
+const UNLOCKED: usize = 3;
 
-/// How many slots the store holds — room to spare for Phase B's unlocks.
+/// How many slots the store holds — room to spare.
 const SLOTS: usize = 8;
 
 /// Reads the best Onslaught score, or 0 if none is saved.
@@ -43,6 +45,18 @@ pub fn daily_best(day: u32) -> u32 {
 pub fn set_daily_best(day: u32, score: u32) {
     backend::set(DAILY_DAY, day as f64);
     backend::set(DAILY_BEST, score as f64);
+}
+
+/// The saved bitset of unlocked ship options, or 0 if nothing is saved. The
+/// meaning of the bits belongs to the game's `meta`, which reads 0 as a fresh
+/// player — this crate only keeps the number.
+pub fn unlocked_bits() -> u32 {
+    backend::get(UNLOCKED) as u32
+}
+
+/// Saves the bitset of unlocked ship options.
+pub fn set_unlocked_bits(bits: u32) {
+    backend::set(UNLOCKED, f64::from(bits));
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -97,10 +111,20 @@ mod tests {
             "a different day starts from nothing"
         );
 
+        // The unlocked bitset round-trips.
+        let original_unlocked = unlocked_bits();
+        set_unlocked_bits(0b101_1010);
+        assert_eq!(
+            unlocked_bits(),
+            0b101_1010,
+            "the unlock bits read back exactly"
+        );
+
         // Put the real save back exactly as it was.
         set_onslaught_best(original_onslaught);
         backend::set(DAILY_DAY, f64::from(original_day));
         backend::set(DAILY_BEST, f64::from(original_daily));
+        set_unlocked_bits(original_unlocked);
         assert_eq!(
             onslaught_best(),
             original_onslaught,

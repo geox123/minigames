@@ -6,8 +6,8 @@ use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 use stepfall_core::{Game, Phase, TIMESTEP};
 use stepfall_remix_core::{
-    BOSS_HEIGHT, BOSS_WIDTH, Game as RemixGame, Loadout, Mode as RunMode, Phase as RemixPhase,
-    SHIP_HEIGHT, SHIP_WIDTH,
+    BOSS_HEIGHT, BOSS_WIDTH, Game as RemixGame, Mode as RunMode, Outcome as RunOutcome,
+    Phase as RemixPhase, SHIP_HEIGHT, SHIP_WIDTH, meta,
 };
 
 use crate::fx::Fx;
@@ -62,6 +62,11 @@ enum Screen {
         day: u32,
         /// The best score to beat and show for this mode (0 for Sortie).
         best: u32,
+        /// The options unlocked so far — this run's loadout was built from it, and
+        /// its outcome is recorded back into it.
+        unlocked: meta::Unlocked,
+        /// Options newly unlocked by this run, for the summary to call out.
+        earned: Vec<meta::Content>,
         /// Whether this run's result has been saved yet (saved once, on run-over).
         saved: bool,
     },
@@ -204,6 +209,8 @@ impl App {
                 mode,
                 day,
                 best,
+                unlocked,
+                earned,
                 saved,
             } => {
                 if is_key_pressed(KeyCode::Escape) {
@@ -249,7 +256,8 @@ impl App {
                     }
                 }
 
-                // On run-over, save the mode's best once, then resolve with a summary.
+                // On run-over, save the mode's best and record what the run earned
+                // — both once — then resolve with a summary.
                 if over && !*saved {
                     *saved = true;
                     let score = game.score();
@@ -264,13 +272,27 @@ impl App {
                         }
                         _ => {}
                     }
+
+                    // Record the run's outcome into the unlock set; save and call
+                    // out anything newly earned. (Ascension tier lands in B3.)
+                    let outcome = meta::Outcome {
+                        won: game.outcome() == Some(RunOutcome::Won),
+                        stages_cleared: game.stage(),
+                        score,
+                        tier: 0,
+                    };
+                    let newly = unlocked.record(outcome);
+                    if !newly.is_empty() {
+                        stepfall_storage::set_unlocked_bits(unlocked.bits());
+                        *earned = newly;
+                    }
                 }
 
                 self.blit_shake = Vec2::from(fx.shake_offset());
                 render::draw_remix(game, *best);
                 fx.draw();
                 if over {
-                    render::remix_summary(game, *mode, *best);
+                    render::remix_summary(game, *mode, *best, earned);
                 } else if *paused {
                     render::paused_overlay();
                 }
@@ -315,7 +337,10 @@ impl App {
                 (u64::from(day), day, stepfall_storage::daily_best(day))
             }
         };
-        let game = Box::new(RemixGame::new(seed, mode, Loadout::default()));
+        // The run flies whatever the player has earned — the core only ever sees
+        // the loadout the meta builds; it never knows the word "unlock".
+        let unlocked = meta::Unlocked::from_bits(stepfall_storage::unlocked_bits());
+        let game = Box::new(RemixGame::new(seed, mode, unlocked.loadout()));
         self.screen = Screen::RemixMatch {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
@@ -324,6 +349,8 @@ impl App {
             mode,
             day,
             best,
+            unlocked,
+            earned: Vec::new(),
             saved: false,
         };
     }
