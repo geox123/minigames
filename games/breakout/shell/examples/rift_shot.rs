@@ -80,7 +80,7 @@ async fn main() {
         set_camera(&camera);
         rift::draw(&game);
         fx.draw(BALL_SIZE, ball.vx.hypot(ball.vy));
-        rift::run_summary(&game, "RUN BEST DEPTH 2");
+        rift::run_summary(&game, "RUN BEST DEPTH 2", "UNLOCKED  EXPLOSIVE  SWIFT");
         set_default_camera();
 
         clear_background(DARKGRAY);

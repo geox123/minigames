@@ -3,9 +3,9 @@
 //! around the pure core, which is why it lives in the shell, not `breakout_core`.
 
 use breakout_core::{Game, TIMESTEP};
+use breakout_remix_core::meta::{Content, Outcome, Unlocked};
 use breakout_remix_core::{
-    BALL_SIZE as RIFT_BALL_SIZE, Game as RiftGame, Phase as RiftPhase, Pool as RiftPool,
-    TIMESTEP as RIFT_TIMESTEP,
+    BALL_SIZE as RIFT_BALL_SIZE, Game as RiftGame, Phase as RiftPhase, TIMESTEP as RIFT_TIMESTEP,
 };
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
@@ -74,9 +74,10 @@ enum Screen {
     },
     /// RIFT's mode menu: Run or Daily.
     RiftMenu { highlight: RiftMode },
-    /// A RIFT run in progress.
+    /// A RIFT run in progress. The run is boxed: it is much the largest thing a
+    /// screen carries, and every other screen would otherwise pay for its size.
     Rift {
-        game: RiftGame,
+        game: Box<RiftGame>,
         /// Left-over real time not yet folded into a fixed step.
         accumulator: Accumulator,
         /// Whether the run is paused.
@@ -87,6 +88,10 @@ enum Screen {
         day: u32,
         /// The best depth to beat and show for this mode, updated when beaten.
         best: u32,
+        /// The content this player has unlocked; the run draws its pool from it.
+        unlocked: Unlocked,
+        /// What this run newly unlocked, announced on the summary card.
+        earned: Vec<Content>,
         /// The run's feel — trail, particles, shake, hit-stop.
         fx: Fx,
     },
@@ -202,6 +207,8 @@ impl App {
                 mode,
                 day,
                 best,
+                unlocked,
+                earned,
                 fx,
             } => {
                 // Backing out of a run returns to RIFT's mode menu.
@@ -267,6 +274,19 @@ impl App {
                                     }
                                 }
                             }
+
+                            // What the run achieved may earn new content, shared
+                            // across every mode — one collection per player.
+                            let newly = unlocked.record(Outcome {
+                                won: events.won,
+                                depth: game.depth(),
+                                score: game.score(),
+                                tier: game.tier(),
+                            });
+                            if !newly.is_empty() {
+                                breakout_storage::set_unlocked_bits(unlocked.bits());
+                                earned.extend(newly);
+                            }
                         }
                     }
                 } else {
@@ -289,7 +309,7 @@ impl App {
                                 format!("ASCENSION TIER {}   BEST {best}", game.tier())
                             }
                         };
-                        rift::run_summary(game, &best_line);
+                        rift::run_summary(game, &best_line, &earned_line(earned));
                     }
                     _ => {}
                 }
@@ -332,7 +352,10 @@ impl App {
     /// saved Run best; a Daily takes the day's shared seed and the day's best; an
     /// Ascension takes a fresh seed at the highest unlocked tier.
     fn start_run(&mut self, mode: RiftMode) {
-        let pool = RiftPool::base();
+        // A run draws only on what this player has earned, so the game opens up
+        // as it is played. The core just receives a pool; it knows no more.
+        let unlocked = Unlocked::from_bits(breakout_storage::unlocked_bits());
+        let pool = unlocked.pool();
         let (game, day, best) = match mode {
             RiftMode::Run => (
                 RiftGame::new_run(self.take_seed(), &pool),
@@ -357,15 +380,32 @@ impl App {
             }
         };
         self.screen = Screen::Rift {
-            game,
+            game: Box::new(game),
             accumulator: Accumulator::new(RIFT_TIMESTEP, MAX_FRAME_TIME),
             paused: false,
             mode,
             day,
             best,
+            unlocked,
+            earned: Vec::new(),
             fx: Fx::default(),
         };
     }
+}
+
+/// The run-summary line announcing what a run unlocked, or empty if it unlocked
+/// nothing. A big haul is trimmed so the line stays on the card.
+fn earned_line(earned: &[Content]) -> String {
+    const SHOWN: usize = 3;
+    if earned.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = earned.iter().take(SHOWN).map(|c| c.label()).collect();
+    let mut line = format!("UNLOCKED  {}", names.join("  "));
+    if earned.len() > SHOWN {
+        line.push_str(&format!("  +{} MORE", earned.len() - SHOWN));
+    }
+    line
 }
 
 /// Today's calendar day, as whole days since the Unix epoch. The core stays
