@@ -58,6 +58,19 @@ across the run:
   difficulty modifiers (a faster ball, fewer lives, denser walls). Your highest
   tier is saved and resumes.
 
+## The collection
+
+RIFT opens up as it is played. A new player starts with a small kit — armoured
+bricks, and the Widen, Extra Life and Fortune boons — and **earns the rest by
+playing**: reaching depth 2 and 3, scoring 300 and 600 in a run, winning, and
+winning at Ascension tiers 1 and 2. A run only ever draws on what has been
+earned, so the walls and the drafts grow richer the further you get.
+
+What a run unlocks is announced on its summary card, and the **collection**
+screen — from RIFT's menu — lists everything: earned content in gold, and what is
+still out there with the condition that unlocks it. One collection is shared
+across all three modes.
+
 ## The feel
 
 RIFT wears cool violets and cyans on a deep indigo field, deliberately apart from
@@ -73,14 +86,17 @@ boon is drafted. All art and audio are original and synthesized — nothing ripp
 - The **core is pure and deterministic**, advancing in fixed 120 Hz steps: the
   same seed and inputs always replay the same run. The available **pool** of
   brick and boon types is passed *in* at construction, so the core never knows
-  the concept of "unlocks" — deliberate groundwork for a cross-run unlock phase.
+  the concept of "unlocks" — it only ever draws on the pool it is handed. The
+  cross-run meta (which content is earned, and what a run's outcome unlocks)
+  lives in a pure `meta` module beside the rules and simply builds that pool, so
+  the whole unlock layer was added without moving a single rule.
 - Every rule is unit-tested through the core's single `step` seam. The
   wall/guardian/win transitions can't be reached by an auto-paddle (a perfect
   paddle digs a channel the ball bounces in forever), so those use white-box
   tests; everything else is driven through the seam.
-- Best depth, the Daily result and the Ascension tier persist via the tiny
-  [`breakout-storage`](storage/src/lib.rs) crate — a file natively, `localStorage`
-  in the browser — the one place the game uses `unsafe`.
+- Best depth, the Daily result, the Ascension tier and the unlocked-content set
+  persist via the tiny [`breakout-storage`](storage/src/lib.rs) crate — a file
+  natively, `localStorage` in the browser — the one place the game uses `unsafe`.
 
 ```sh
 cargo run  -p breakout               # play it natively (choose RIFT)
