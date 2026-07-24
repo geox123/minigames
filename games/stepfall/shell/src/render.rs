@@ -32,6 +32,10 @@ const LIFE_ICON_W: f32 = 11.0;
 const LIFE_ICON_H: f32 = 4.0;
 const LIFE_ICON_GAP: f32 = 4.0;
 
+/// A small ship pip per remaining life in HAILFALL's HUD.
+const LIFE_PIP_W: f32 = 6.0;
+const LIFE_PIP_H: f32 = 5.0;
+
 /// The overlay colour at height `y`: red up top, green down low, white between.
 fn band_tint(y: f32) -> Color {
     if y < RED_BAND_BELOW {
@@ -196,7 +200,7 @@ const NEON_ENEMY_FIRE: Color = color_u8!(255, 130, 90, 255);
 /// Draws one frame of HAILFALL — the Remix — onto the logical canvas. The swarm,
 /// the ship and its fire; the enemy fire, the tools and the HUD follow in later
 /// tickets.
-pub fn draw_remix(game: &stepfall_remix_core::Game) {
+pub fn draw_remix(game: &stepfall_remix_core::Game, best: u32) {
     use stepfall_remix_core::{
         ENEMY_BULLET_SIZE, ENEMY_HEIGHT, ENEMY_WIDTH, OVERDRIVE_MAX, PLAYER_BULLET_HEIGHT,
         PLAYER_BULLET_WIDTH, SHIP_HEIGHT, SHIP_WIDTH,
@@ -269,6 +273,144 @@ pub fn draw_remix(game: &stepfall_remix_core::Game) {
         2.0,
         if ready { NEON_BULLET } else { NEON_GLOW },
     );
+
+    draw_remix_hud(game, best);
+}
+
+/// HAILFALL's HUD: score, the best to beat, the stage, and the lives left.
+fn draw_remix_hud(game: &stepfall_remix_core::Game, best: u32) {
+    font::draw(
+        &format!("{:06}", game.score()),
+        6.0,
+        6.0,
+        HINT_SCALE,
+        NEON_BULLET,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("BEST {best:06}"),
+        6.0,
+        HINT_SCALE,
+        NEON_SHIP,
+    );
+    let stage = format!("STAGE {}", game.stage() + 1);
+    let stage_w = font::text_width(&stage, HINT_SCALE);
+    font::draw(
+        &stage,
+        LOGICAL_WIDTH - 6.0 - stage_w,
+        6.0,
+        HINT_SCALE,
+        NEON_ENEMY,
+    );
+
+    // Lives as small ship pips under the stage label, right-aligned.
+    let mut x = LOGICAL_WIDTH - 6.0 - LIFE_PIP_W;
+    for _ in 0..game.lives() {
+        draw_triangle(
+            vec2(x + LIFE_PIP_W / 2.0, 14.0),
+            vec2(x, 14.0 + LIFE_PIP_H),
+            vec2(x + LIFE_PIP_W, 14.0 + LIFE_PIP_H),
+            NEON_SHIP,
+        );
+        x -= LIFE_PIP_W + 3.0;
+    }
+}
+
+/// The card that resolves a HAILFALL run: won or lost, the score and stage
+/// reached, the mode's best, and the way on.
+pub fn remix_summary(game: &stepfall_remix_core::Game, mode: stepfall_remix_core::Mode, best: u32) {
+    use stepfall_remix_core::{Mode as RunMode, Outcome};
+
+    // Dim the frozen field behind the card.
+    draw_rectangle(
+        0.0,
+        0.0,
+        LOGICAL_WIDTH,
+        LOGICAL_HEIGHT,
+        color_u8!(4, 6, 14, 200),
+    );
+
+    let won = game.outcome() == Some(Outcome::Won);
+    let mid = LOGICAL_HEIGHT / 2.0;
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        if won { "VICTORY" } else { "RUN OVER" },
+        mid - 44.0,
+        OPTION_SCALE,
+        if won { NEON_BULLET } else { NEON_ENEMY },
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("SCORE {:06}", game.score()),
+        mid - 12.0,
+        HINT_SCALE,
+        NEON_SHIP,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("STAGE {}", game.stage() + 1),
+        mid,
+        HINT_SCALE,
+        NEON_SHIP,
+    );
+    let best_line = match mode {
+        RunMode::Onslaught => format!("ONSLAUGHT BEST {best:06}"),
+        RunMode::Daily => format!("DAILY BEST {best:06}"),
+        RunMode::Sortie if won => "SORTIE CLEARED".to_string(),
+        RunMode::Sortie => "SORTIE FAILED".to_string(),
+    };
+    font::draw_centred(LOGICAL_WIDTH, &best_line, mid + 12.0, HINT_SCALE, NEON_GLOW);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "R PLAY AGAIN   ESC MENU",
+        mid + 30.0,
+        HINT_SCALE,
+        NEON_GLOW,
+    );
+}
+
+/// HAILFALL's mode picker — the three runs the Remix offers.
+pub fn remix_select(highlight: stepfall_remix_core::Mode) {
+    use stepfall_remix_core::Mode as RunMode;
+    clear_background(color_u8!(4, 6, 14, 255));
+
+    font::draw_centred(LOGICAL_WIDTH, "HAILFALL", 44.0, TITLE_SCALE, NEON_ENEMY);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "CHOOSE YOUR RUN",
+        86.0,
+        HINT_SCALE,
+        NEON_GLOW,
+    );
+
+    remix_option("SORTIE", 120.0, highlight == RunMode::Sortie);
+    remix_option("ONSLAUGHT", 150.0, highlight == RunMode::Onslaught);
+    remix_option("DAILY", 180.0, highlight == RunMode::Daily);
+
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "ENTER PLAY    ESC BACK",
+        224.0,
+        HINT_SCALE,
+        NEON_GLOW,
+    );
+}
+
+/// One line of the mode picker, marked when highlighted.
+fn remix_option(label: &str, y: f32, highlighted: bool) {
+    let width = font::text_width(label, OPTION_SCALE);
+    let x = (LOGICAL_WIDTH - width) / 2.0;
+    let colour = if highlighted { NEON_SHIP } else { NEON_GLOW };
+    font::draw(label, x, y, OPTION_SCALE, colour);
+    if highlighted {
+        font::draw(
+            ">",
+            x - font::text_width("> ", OPTION_SCALE),
+            y,
+            OPTION_SCALE,
+            NEON_BULLET,
+        );
+    }
 }
 
 /// Draws the Collection's mode-select: the two takes STEPFALL ships. Both are now

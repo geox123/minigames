@@ -24,3 +24,13 @@ fall out of step with the bundle above. The native build persists the same value
 to a file instead. Both sides are driven by the `pong-storage` crate, which is
 the only place in the project that uses `unsafe` (the two FFI calls). Loaded
 after `mq_js_bundle.js` and before the `.wasm` in each Game's page.
+
+## `rift-storage.js` and `stepfall-storage.js`
+
+The same pattern, one per Remix that persists: numbered slots read and written
+as plain numbers in `localStorage`. `rift-storage.js` keeps RIFT's saved numbers
+(best depth, the Daily day and best, the Ascension tier), driven by the
+`breakout-storage` crate; `stepfall-storage.js` keeps HAILFALL's (best Onslaught
+score, the Daily day and best), driven by the `stepfall-storage` crate. Each is
+the only place its Game talks to the browser over FFI, so `unsafe` stays confined
+there. Loaded after `mq_js_bundle.js` and before the `.wasm`.
