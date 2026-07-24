@@ -2,8 +2,8 @@
 
 mod common;
 
-use common::{MAX_STEPS, formation_top, game, still};
-use stepfall_core::{COLS, INVADERS, ROWS};
+use common::{MAX_STEPS, formation_top, game, push, still};
+use stepfall_core::{COLS, INVADERS, Move, ROWS};
 
 #[test]
 fn a_fresh_formation_is_five_rows_of_eleven() {
@@ -62,10 +62,15 @@ fn the_formation_turns_at_an_edge_and_steps_down() {
     let mut game = game(1);
     let start_top = formation_top(&game);
 
+    // These runs are long enough for return fire to matter, so the cannon hugs
+    // the left wall — out of reach of bombs, which fall from the formation as it
+    // marches to the *right* edge — leaving the march to be measured cleanly.
+    let dodge = || push(Move::Left);
+
     // March until the formation reaches a wall and turns.
     let mut turned = false;
     for _ in 0..MAX_STEPS {
-        if game.step(still()).turned {
+        if game.step(dodge()).turned {
             turned = true;
             break;
         }
@@ -79,7 +84,7 @@ fn the_formation_turns_at_an_edge_and_steps_down() {
 
     // The pass after the turn steps the whole formation down.
     for _ in 0..(INVADERS * 2) {
-        game.step(still());
+        game.step(dodge());
     }
     assert_eq!(
         formation_top(&game) - start_top,
@@ -91,21 +96,22 @@ fn the_formation_turns_at_an_edge_and_steps_down() {
 #[test]
 fn the_formation_marches_back_the_other_way_after_turning() {
     let mut game = game(1);
+    let dodge = || push(Move::Left);
 
     // Reach the first turn, then let the downward pass finish.
     for _ in 0..MAX_STEPS {
-        if game.step(still()).turned {
+        if game.step(dodge()).turned {
             break;
         }
     }
     for _ in 0..(INVADERS * 2) {
-        game.step(still());
+        game.step(dodge());
     }
 
     // Now it should be heading the other way.
     let before: Vec<f32> = game.invaders().map(|i| i.x).collect();
     for _ in 0..(INVADERS * 2) {
-        game.step(still());
+        game.step(dodge());
     }
     let after: Vec<f32> = game.invaders().map(|i| i.x).collect();
     for (from, to) in before.iter().zip(&after) {

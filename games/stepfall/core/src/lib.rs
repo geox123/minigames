@@ -65,6 +65,35 @@ const CANNON_SPEED: f32 = 120.0;
 /// How far from the side walls the cannon may travel.
 const CANNON_MARGIN: f32 = 8.0;
 
+/// The player's shot: its size, and how far it climbs per interrupt.
+pub const SHOT_WIDTH: f32 = 1.0;
+pub const SHOT_HEIGHT: f32 = 6.0;
+const SHOT_SPEED: f32 = 4.0;
+
+/// Invader bombs: their size, and how far they fall per interrupt — a touch
+/// faster once the formation has thinned to a few.
+pub const BOMB_WIDTH: f32 = 3.0;
+pub const BOMB_HEIGHT: f32 = 7.0;
+const BOMB_SPEED: f32 = 4.0 / 3.0;
+const BOMB_SPEED_FAST: f32 = 5.0 / 3.0;
+/// At or below this many invaders, the bombs speed up.
+const FEW_INVADERS: u32 = 8;
+/// The most bombs falling at once, and the interrupts between drops.
+const MAX_BOMBS: usize = 3;
+const BOMB_SPAWN_INTERVAL: u32 = 40;
+/// The columns the two patterned bombs cycle through (0-based).
+const SQUIGGLY_COLS: [usize; 4] = [10, 0, 5, 3];
+const PLUNGER_COLS: [usize; 5] = [1, 7, 2, 8, 4];
+
+/// The line along the bottom the cannon rides and bombs expire at.
+const GROUND_Y: f32 = CANNON_TOP + CANNON_HEIGHT;
+
+/// Lives a game starts with, the score that earns an extra, and how long the
+/// game holds after the cannon is hit.
+pub const LIVES_START: u32 = 3;
+const EXTRA_LIFE_AT: u32 = 1500;
+const DEATH_PAUSE: f32 = 1.0;
+
 /// Which way the player is pushing the cannon this step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Move {
@@ -82,6 +111,10 @@ pub enum Move {
 pub struct Input {
     /// The cannon's direction.
     pub cannon: Move,
+    /// Whether the fire button is held. The cannon fires only when it has no
+    /// shot in flight, so holding fire simply shoots again the moment the last
+    /// shot clears — one shot on screen at a time, as the original allowed.
+    pub fire: bool,
 }
 
 /// An invader still standing, as the shell should draw it.
@@ -105,6 +138,37 @@ pub struct Cannon {
     pub y: f32,
 }
 
+/// Which behaviour a bomb follows on the way down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BombKind {
+    /// Dropped from the column above the cannon — it comes for you.
+    Rolling,
+    /// Dropped from a rotating pattern of columns.
+    Squiggly,
+    /// Dropped from another fixed pattern; held back once one invader remains.
+    Plunger,
+}
+
+/// The player's shot in flight, as the shell should draw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shot {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+}
+
+/// A falling invader bomb, as the shell should draw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bomb {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Which behaviour it follows.
+    pub kind: BombKind,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Events {
@@ -112,6 +176,16 @@ pub struct Events {
     pub marched: bool,
     /// The formation reversed and began stepping down.
     pub turned: bool,
+    /// The cannon fired a shot this step.
+    pub shot_fired: bool,
+    /// A shot destroyed an invader this step, and which row it was in.
+    pub invader_killed: Option<u8>,
+    /// A bomb reached the cannon this step and cost a life.
+    pub player_hit: bool,
+    /// An extra life was earned this step.
+    pub extra_life: bool,
+    /// The last life was spent this step — the game is over.
+    pub game_over: bool,
 }
 
 /// Where a game is.
@@ -119,6 +193,8 @@ pub struct Events {
 pub enum Phase {
     /// The game is being played.
     Playing,
+    /// Every life has been spent.
+    GameOver,
 }
 
 /// One invader's position. Each keeps its own, because the march moves them one
@@ -127,6 +203,14 @@ pub enum Phase {
 struct Pos {
     x: f32,
     y: f32,
+}
+
+/// A bomb's position and behaviour.
+#[derive(Clone, Copy)]
+struct BombState {
+    x: f32,
+    y: f32,
+    kind: BombKind,
 }
 
 /// A game of Space Invaders.
@@ -147,11 +231,25 @@ pub struct Game {
     edge_hit: bool,
     /// This pass steps the formation down instead of sideways.
     dropping: bool,
+    /// The player's shot, if one is in flight.
+    shot: Option<Pos>,
+    /// The bombs the formation has in the air.
+    bombs: Vec<BombState>,
+    /// Interrupts since the last bomb was dropped.
+    bomb_spawn_tick: u32,
+    /// Bombs dropped so far, driving the kind and column rotation.
+    spawns: u32,
+    score: u32,
+    /// Lives left; the game ends when this reaches zero.
+    lives: u32,
+    /// Whether the extra life has been awarded yet.
+    extra_awarded: bool,
+    /// Seconds the game holds after a hit, before the cannon returns.
+    dead: f32,
     /// Steps taken, to derive the machine interrupt from the timestep.
     steps: u64,
     phase: Phase,
-    /// The seed the game began on, so a restart replays it exactly. Nothing is
-    /// random yet — return fire brings the first of it.
+    /// The seed the game began on, so a restart replays it exactly.
     seed: u64,
 }
 
@@ -176,6 +274,14 @@ impl Game {
             dir: 1.0,
             edge_hit: false,
             dropping: false,
+            shot: None,
+            bombs: Vec::new(),
+            bomb_spawn_tick: 0,
+            spawns: 0,
+            score: 0,
+            lives: LIVES_START,
+            extra_awarded: false,
+            dead: 0.0,
             steps: 0,
             phase: Phase::Playing,
             seed,
@@ -207,6 +313,30 @@ impl Game {
         }
     }
 
+    /// The player's shot in flight, if any.
+    pub fn shot(&self) -> Option<Shot> {
+        self.shot.map(|p| Shot { x: p.x, y: p.y })
+    }
+
+    /// The bombs the formation has in the air.
+    pub fn bombs(&self) -> impl Iterator<Item = Bomb> + '_ {
+        self.bombs.iter().map(|b| Bomb {
+            x: b.x,
+            y: b.y,
+            kind: b.kind,
+        })
+    }
+
+    /// The score so far.
+    pub fn score(&self) -> u32 {
+        self.score
+    }
+
+    /// Lives left.
+    pub fn lives(&self) -> u32 {
+        self.lives
+    }
+
     /// Where the game is.
     pub fn phase(&self) -> Phase {
         self.phase
@@ -220,14 +350,45 @@ impl Game {
     /// Advances the game by exactly one [`TIMESTEP`].
     pub fn step(&mut self, input: Input) -> Events {
         self.steps += 1;
-        self.move_cannon(input.cannon);
+        let mut events = Events::default();
 
-        // The formation only stirs on a machine interrupt.
-        if self.steps.is_multiple_of(STEPS_PER_INTERRUPT) {
-            self.advance_march()
-        } else {
-            Events::default()
+        if self.phase == Phase::GameOver {
+            return events;
         }
+        // After a hit the game holds for a beat before the cannon returns.
+        if self.dead > 0.0 {
+            self.dead -= TIMESTEP;
+            if self.dead <= 0.0 {
+                self.respawn();
+            }
+            return events;
+        }
+
+        self.move_cannon(input.cannon);
+        if input.fire && self.shot.is_none() {
+            self.shot = Some(Pos {
+                x: self.cannon_x + CANNON_WIDTH / 2.0 - SHOT_WIDTH / 2.0,
+                y: CANNON_TOP,
+            });
+            events.shot_fired = true;
+        }
+
+        // Everything but the cannon stirs only on a machine interrupt.
+        if self.steps.is_multiple_of(STEPS_PER_INTERRUPT) {
+            self.advance_march(&mut events);
+            self.advance_shot(&mut events);
+            self.advance_bombs(&mut events);
+            self.spawn_bomb();
+        }
+        events
+    }
+
+    /// Returns the cannon to the middle and clears the sky after a hit.
+    fn respawn(&mut self) {
+        self.cannon_x = (LOGICAL_WIDTH - CANNON_WIDTH) / 2.0;
+        self.bombs.clear();
+        self.shot = None;
+        self.dead = 0.0;
     }
 
     fn move_cannon(&mut self, mv: Move) {
@@ -245,9 +406,9 @@ impl Game {
     /// Advances exactly one invader — the whole trick. A pass over the formation
     /// therefore costs one interrupt per surviving invader, so the fewer are
     /// left, the sooner the formation steps again.
-    fn advance_march(&mut self) -> Events {
+    fn advance_march(&mut self, events: &mut Events) {
         let Some(index) = self.next_standing() else {
-            return Events::default();
+            return;
         };
 
         let pos = self.invaders[index].expect("next_standing yields a standing invader");
@@ -263,6 +424,7 @@ impl Game {
             }
         };
         self.invaders[index] = Some(moved);
+        events.marched = true;
 
         if moved.x < EDGE_MARGIN || moved.x + INVADER_WIDTH > LOGICAL_WIDTH - EDGE_MARGIN {
             self.edge_hit = true;
@@ -270,17 +432,158 @@ impl Game {
 
         // Move the cursor on; running off the end completes a pass.
         self.cursor = index + 1;
-        let turned = if self.cursor >= INVADERS {
+        if self.cursor >= INVADERS {
             self.cursor = 0;
-            self.finish_pass()
-        } else {
-            false
-        };
-
-        Events {
-            marched: true,
-            turned,
+            events.turned = self.finish_pass();
         }
+    }
+
+    /// Climbs the player's shot, and destroys the first invader it reaches.
+    fn advance_shot(&mut self, events: &mut Events) {
+        let Some(mut shot) = self.shot else {
+            return;
+        };
+        shot.y -= SHOT_SPEED;
+        if shot.y + SHOT_HEIGHT < 0.0 {
+            self.shot = None;
+            return;
+        }
+        self.shot = Some(shot);
+
+        let shot_rect = (shot.x, shot.y, SHOT_WIDTH, SHOT_HEIGHT);
+        for i in 0..INVADERS {
+            if let Some(pos) = self.invaders[i]
+                && overlaps(shot_rect, (pos.x, pos.y, INVADER_WIDTH, INVADER_HEIGHT))
+            {
+                self.destroy(i, events);
+                self.shot = None;
+                break;
+            }
+        }
+    }
+
+    /// Destroys the invader at `index`, scoring its row and granting the extra
+    /// life if this is the score that earns it.
+    fn destroy(&mut self, index: usize, events: &mut Events) {
+        let row = index / COLS;
+        self.invaders[index] = None;
+        self.alive -= 1;
+        self.score += row_score(row);
+        events.invader_killed = Some(row as u8);
+        if !self.extra_awarded && self.score >= EXTRA_LIFE_AT {
+            self.extra_awarded = true;
+            self.lives += 1;
+            events.extra_life = true;
+        }
+    }
+
+    /// Falls every bomb; a bomb that reaches the cannon costs a life, and one
+    /// that reaches the ground simply expires.
+    fn advance_bombs(&mut self, events: &mut Events) {
+        let speed = if self.alive <= FEW_INVADERS {
+            BOMB_SPEED_FAST
+        } else {
+            BOMB_SPEED
+        };
+        let cannon = self.cannon();
+        let cannon_rect = (cannon.x, cannon.y, CANNON_WIDTH, CANNON_HEIGHT);
+
+        let mut survivors = Vec::with_capacity(self.bombs.len());
+        let mut hit = false;
+        for mut bomb in std::mem::take(&mut self.bombs) {
+            bomb.y += speed;
+            if overlaps((bomb.x, bomb.y, BOMB_WIDTH, BOMB_HEIGHT), cannon_rect) {
+                hit = true;
+                break;
+            }
+            if bomb.y <= GROUND_Y {
+                survivors.push(bomb);
+            }
+        }
+        if hit {
+            self.lose_life(events);
+        } else {
+            self.bombs = survivors;
+        }
+    }
+
+    /// Spends a life to a bomb: clears the sky, and either holds for the cannon
+    /// to return or ends the game if that was the last life.
+    fn lose_life(&mut self, events: &mut Events) {
+        events.player_hit = true;
+        self.bombs.clear();
+        self.shot = None;
+        self.lives -= 1;
+        if self.lives == 0 {
+            self.phase = Phase::GameOver;
+            events.game_over = true;
+        } else {
+            self.dead = DEATH_PAUSE;
+        }
+    }
+
+    /// Drops a new bomb on its cadence, from one of the three column rules — the
+    /// rolling bomb from the column above the cannon, the other two from fixed
+    /// patterns (the plunger held back once a single invader remains).
+    fn spawn_bomb(&mut self) {
+        if self.bombs.len() >= MAX_BOMBS {
+            return;
+        }
+        self.bomb_spawn_tick += 1;
+        if self.bomb_spawn_tick < BOMB_SPAWN_INTERVAL {
+            return;
+        }
+
+        let n = self.spawns as usize;
+        let mut kind = [BombKind::Rolling, BombKind::Squiggly, BombKind::Plunger][n % 3];
+        if kind == BombKind::Plunger && self.alive <= 1 {
+            kind = BombKind::Rolling;
+        }
+        let column = match kind {
+            BombKind::Rolling => self.column_nearest_cannon(),
+            BombKind::Squiggly => Some(SQUIGGLY_COLS[n % SQUIGGLY_COLS.len()]),
+            BombKind::Plunger => Some(PLUNGER_COLS[n % PLUNGER_COLS.len()]),
+        };
+        let source = column
+            .and_then(|c| self.bottom_of_column(c))
+            .or_else(|| self.lowest_invader());
+        if let Some(pos) = source {
+            self.bombs.push(BombState {
+                x: pos.x + INVADER_WIDTH / 2.0 - BOMB_WIDTH / 2.0,
+                y: pos.y + INVADER_HEIGHT,
+                kind,
+            });
+            self.spawns += 1;
+            self.bomb_spawn_tick = 0;
+        }
+    }
+
+    /// The column whose bottom invader sits nearest the cannon.
+    fn column_nearest_cannon(&self) -> Option<usize> {
+        let centre = self.cannon_x + CANNON_WIDTH / 2.0;
+        (0..COLS)
+            .filter_map(|c| {
+                self.bottom_of_column(c)
+                    .map(|p| (c, (p.x + INVADER_WIDTH / 2.0 - centre).abs()))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(c, _)| c)
+    }
+
+    /// The lowest standing invader in column `col`, if any.
+    fn bottom_of_column(&self, col: usize) -> Option<Pos> {
+        (0..ROWS)
+            .filter_map(|r| self.invaders[r * COLS + col])
+            .max_by(|a, b| a.y.total_cmp(&b.y))
+    }
+
+    /// The lowest standing invader anywhere, if any.
+    fn lowest_invader(&self) -> Option<Pos> {
+        self.invaders
+            .iter()
+            .flatten()
+            .copied()
+            .max_by(|a, b| a.y.total_cmp(&b.y))
     }
 
     /// The next standing invader at or after the cursor, if any.
@@ -317,14 +620,46 @@ impl Game {
     }
 }
 
+/// What an invader in `row` (0 the top) scores: the top row is worth 30, the
+/// next two 20, the bottom two 10 — the original's values.
+fn row_score(row: usize) -> u32 {
+    match row {
+        0 => 30,
+        1 | 2 => 20,
+        _ => 10,
+    }
+}
+
+/// Whether two rectangles, each `(x, y, width, height)`, overlap.
+fn overlaps(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 < b.0 + b.2 && a.0 + a.2 > b.0 && a.1 < b.1 + b.3 && a.1 + a.3 > b.1
+}
+
 #[cfg(test)]
 mod tests {
-    //! The march's acceleration is the one thing that cannot be driven honestly
-    //! yet: it only shows once invaders are destroyed, and shooting arrives in
-    //! the next ticket. These tests remove invaders directly and then let the
-    //! real `step` path do the marching, so what is measured is the genuine
-    //! article. Everything else is driven through the seam in `tests/`.
+    //! White-box tests for the things honest play cannot cleanly stage: the
+    //! march's acceleration (which needs invaders removed), and the lives and
+    //! deaths (which need a bomb placed on the cannon). Each sets state up
+    //! directly and then lets the real `step` path do the work, so what is
+    //! measured is the genuine article. Firing, and everything reachable by
+    //! playing, is driven through the seam in `tests/`.
     use super::*;
+
+    /// A bomb about to land on the cannon's head this interrupt.
+    fn bomb_on_cannon(game: &mut Game) {
+        let cannon = game.cannon();
+        game.bombs.push(BombState {
+            x: cannon.x + CANNON_WIDTH / 2.0,
+            y: cannon.y - 1.0,
+            kind: BombKind::Rolling,
+        });
+    }
+
+    /// Steps one whole machine interrupt (two simulation steps).
+    fn interrupt(game: &mut Game) {
+        game.step(Input::default());
+        game.step(Input::default());
+    }
 
     /// Leaves only `keep` invaders standing, taking them from the bottom row up.
     fn thin_to(game: &mut Game, keep: usize) {
@@ -341,10 +676,13 @@ mod tests {
     }
 
     /// Interrupts taken for the formation to advance every standing invader once.
+    /// Bombs are swept each step so return fire can't kill the static cannon and
+    /// stall the march we're measuring.
     fn interrupts_per_pass(game: &mut Game) -> u32 {
         let mut interrupts = 0;
         loop {
             let events = game.step(Input::default());
+            game.bombs.clear();
             if events.marched {
                 interrupts += 1;
             }
@@ -398,5 +736,88 @@ mod tests {
         assert_eq!(right_stride, LAST_INVADER_RIGHT_STEP);
         assert_eq!(left_stride, MARCH_STEP);
         assert!(right_stride > left_stride);
+    }
+
+    #[test]
+    fn a_bomb_that_reaches_the_cannon_costs_a_life() {
+        let mut game = Game::new(1);
+        let lives = game.lives();
+        bomb_on_cannon(&mut game);
+        interrupt(&mut game);
+
+        assert_eq!(game.lives(), lives - 1, "the bomb cost a life");
+        assert_eq!(game.bombs().count(), 0, "the hit clears the sky");
+    }
+
+    #[test]
+    fn spending_the_last_life_ends_the_game() {
+        let mut game = Game::new(1);
+        game.lives = 1;
+        bomb_on_cannon(&mut game);
+        interrupt(&mut game);
+
+        assert_eq!(game.lives(), 0);
+        assert_eq!(game.phase(), Phase::GameOver, "the last life ends the game");
+    }
+
+    #[test]
+    fn crossing_the_threshold_grants_an_extra_life() {
+        let mut game = Game::new(1);
+        game.score = EXTRA_LIFE_AT - 5;
+        let lives = game.lives();
+
+        // A shot just under the top-left invader (worth 30) will cross 1500.
+        let target = game.invaders[0].unwrap();
+        game.shot = Some(Pos {
+            x: target.x + INVADER_WIDTH / 2.0,
+            y: target.y + INVADER_HEIGHT + 1.0,
+        });
+        interrupt(&mut game);
+
+        assert!(
+            game.score() >= EXTRA_LIFE_AT,
+            "the kill crossed the threshold"
+        );
+        assert_eq!(game.lives(), lives + 1, "crossing it grants a life");
+    }
+
+    #[test]
+    fn bombs_fall_faster_once_few_invaders_remain() {
+        // The same bomb, dropped a step, with a full formation and with a thin
+        // one — the thin one falls further.
+        let drop = |alive: u32| -> f32 {
+            let mut game = Game::new(1);
+            game.alive = alive;
+            game.bombs.push(BombState {
+                x: 100.0,
+                y: 100.0,
+                kind: BombKind::Rolling,
+            });
+            let before = game.bombs().next().unwrap().y;
+            interrupt(&mut game);
+            game.bombs().next().unwrap().y - before
+        };
+        assert!(
+            drop(FEW_INVADERS) > drop(INVADERS as u32),
+            "a thinned formation drops faster bombs"
+        );
+    }
+
+    #[test]
+    fn return_fire_uses_all_three_bomb_kinds() {
+        use std::collections::HashSet;
+        let mut game = Game::new(1);
+        let mut seen = HashSet::new();
+        for _ in 0..2_000 {
+            interrupt(&mut game);
+            seen.extend(game.bombs().map(|b| b.kind));
+            // Sweep the sky each round so fresh bombs keep dropping and the
+            // static cannon is never hit.
+            game.bombs.clear();
+            if seen.len() == 3 {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 3, "all three bomb kinds are dropped");
     }
 }

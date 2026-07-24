@@ -1,5 +1,5 @@
-//! Helpers shared by the Space Invaders core's tests. Everything drives the game
-//! the way a player does — through the public seam.
+//! Helpers shared by STEPFALL's core tests. Everything drives the game the way a
+//! player does — through the public seam.
 
 #![allow(dead_code)]
 
@@ -13,14 +13,22 @@ pub fn game(seed: u64) -> Game {
     Game::new(seed)
 }
 
-/// Input holding the cannon still.
+/// Input holding the cannon still, not firing.
 pub fn still() -> Input {
     Input::default()
 }
 
-/// Input pushing the cannon one way.
+/// Input pushing the cannon one way, not firing.
 pub fn push(cannon: Move) -> Input {
-    Input { cannon }
+    Input {
+        cannon,
+        ..Default::default()
+    }
+}
+
+/// Input holding fire, the cannon `cannon`.
+pub fn shooting(cannon: Move) -> Input {
+    Input { cannon, fire: true }
 }
 
 /// The topmost edge of the formation.
