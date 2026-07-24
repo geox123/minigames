@@ -27,9 +27,10 @@ pub enum Mode {
 enum Screen {
     /// The Collection's two-takes screen: Faithful or the locked Remix.
     ModeSelect { highlight: Mode },
-    /// A Faithful game in progress.
+    /// A Faithful game in progress. The game is boxed: it dwarfs the
+    /// mode-select variant, so keeping it behind a pointer keeps `Screen` small.
     Match {
-        game: Game,
+        game: Box<Game>,
         /// Left-over real time not yet folded into a fixed step.
         accumulator: Accumulator,
         /// Whether the game is paused.
@@ -138,7 +139,7 @@ impl App {
     }
 
     fn start_match(&mut self) {
-        let game = Game::new(self.take_seed());
+        let game = Box::new(Game::new(self.take_seed()));
         self.screen = Screen::Match {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
