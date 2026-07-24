@@ -23,6 +23,8 @@ pub struct Audio {
     lost: Sound,
     /// A hard tick when a brick is struck but not broken (armoured, mirror).
     clink: Sound,
+    /// A low boom when an explosive brick chains.
+    boom: Sound,
 }
 
 impl Audio {
@@ -41,6 +43,7 @@ impl Audio {
             cleared: chirp(300.0, 820.0, 0.25).await,
             lost: chirp(300.0, 90.0, 0.35).await,
             clink: blip(540.0, 0.022).await,
+            boom: chirp(220.0, 60.0, 0.18).await,
         }
     }
 
@@ -74,6 +77,8 @@ impl Audio {
             play_sound_once(&self.cleared);
         } else if events.lost_ball {
             play_sound_once(&self.lost);
+        } else if events.exploded {
+            play_sound_once(&self.boom);
         } else if let Some(band) = events.brick_broken {
             play_sound_once(&self.brick[(band as usize).min(BANDS - 1)]);
         } else if events.brick_hit {

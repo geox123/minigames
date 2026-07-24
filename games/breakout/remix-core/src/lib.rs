@@ -10,8 +10,9 @@
 //! guardian **wins** the run. A run-long pool of [`LIVES_START`] lives replaces
 //! per-screen balls: dropping the ball spends a life, and running out ends the
 //! run. Deflect the ball off the paddle to break bricks; between walls the ball
-//! re-serves. Guardians are arranged from normal bricks for now; their set-piece
-//! layouts and the brick zoo, boons and juice are layered on in later work.
+//! re-serves. Walls draw a zoo of brick kinds from the pool ([`Kind`]). Guardians
+//! are arranged from ordinary walls for now; their set-piece layouts, the boons
+//! and the juice are layered on in later work.
 //!
 //! The available [`Pool`] of brick and boon types is passed *in* at construction,
 //! so the core never knows the concept of "unlocks": it only ever draws on the
@@ -63,6 +64,11 @@ pub const LIVES_START: u32 = 3;
 /// The most lives a run can bank; clearing a guardian restores one up to here.
 pub const LIVES_CAP: u32 = 5;
 
+/// Steps between a mover sliding one cell along its row (half a second).
+const MOVER_PERIOD: u32 = 60;
+/// Steps between a spawner refilling an adjacent empty cell.
+const SPAWN_PERIOD: u32 = 150;
+
 /// How long the ball rests on the paddle before each serve.
 pub const SERVE_PAUSE: f32 = 0.6;
 
@@ -97,7 +103,7 @@ pub struct Input {
 
 /// A kind of brick. Normal bricks break in one hit; the zoo adds bricks that
 /// behave.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// Breaks in one hit and scores its band.
     Normal,
@@ -106,15 +112,21 @@ pub enum Kind {
     /// Indestructible: sends the ball straight back and never breaks, so it does
     /// not count toward clearing the wall — an obstacle to play around.
     Mirror,
+    /// Breaks in one hit and blows up, chaining the break to its neighbours.
+    Explosive,
+    /// Breaks in one hit; while it stands, it slides along its row.
+    Mover,
+    /// Breaks in one hit; while it stands, it refills an adjacent empty cell.
+    Spawner,
 }
 
 impl Kind {
     /// Hits this kind takes before breaking (0 for the indestructible mirror).
     fn hits(self) -> u8 {
         match self {
-            Kind::Normal => 1,
-            Kind::Armoured => 2,
             Kind::Mirror => 0,
+            Kind::Armoured => 2,
+            _ => 1,
         }
     }
 
@@ -126,8 +138,11 @@ impl Kind {
     /// How often a cell rolls this special kind when it is in the pool.
     fn chance(self) -> f32 {
         match self {
-            Kind::Armoured => 0.12,
-            Kind::Mirror => 0.05,
+            Kind::Armoured => 0.10,
+            Kind::Explosive => 0.05,
+            Kind::Mirror => 0.04,
+            Kind::Mover => 0.04,
+            Kind::Spawner => 0.03,
             Kind::Normal => 0.0,
         }
     }
@@ -150,7 +165,13 @@ impl Pool {
     /// The base pool: every special brick kind built so far.
     pub fn base() -> Self {
         Self {
-            specials: vec![Kind::Armoured, Kind::Mirror],
+            specials: vec![
+                Kind::Armoured,
+                Kind::Explosive,
+                Kind::Mirror,
+                Kind::Mover,
+                Kind::Spawner,
+            ],
         }
     }
 }
@@ -212,6 +233,8 @@ pub struct Events {
     /// A brick was struck but not broken this step — an armoured brick's first
     /// hit, or a mirror's bounce.
     pub brick_hit: bool,
+    /// An explosive brick blew up this step, chaining to its neighbours.
+    pub exploded: bool,
     /// The last brick of an ordinary wall fell, bringing up the next wall.
     pub wall_cleared: bool,
     /// A guardian fell this step, completing a depth (and banking a life).
@@ -247,12 +270,25 @@ enum WallOutcome {
     Won,
 }
 
-/// One standing brick: its kind and the hits it has left (unused for the
-/// indestructible mirror).
+/// One standing brick: its kind, the hits it has left (unused for the
+/// indestructible mirror), and — for a mover — which way it slides (−1 left,
+/// +1 right; 0 for everything else).
 #[derive(Clone, Copy)]
 struct Cell {
     kind: Kind,
     hits: u8,
+    dir: i8,
+}
+
+impl Cell {
+    /// A fresh brick of `kind`, at full hits and not moving.
+    fn of(kind: Kind) -> Self {
+        Self {
+            kind,
+            hits: kind.hits(),
+            dir: 0,
+        }
+    }
 }
 
 /// What a ball's contact with the wall did this step.
@@ -263,6 +299,8 @@ enum Hit {
     Struck,
     /// A brick broke, with its band.
     Broke(u8),
+    /// An explosive broke and chained to its neighbours; the band is its own.
+    Exploded(u8),
 }
 
 /// A run of RIFT.
@@ -283,6 +321,8 @@ pub struct Game {
     wall_in_depth: u32,
     /// Lives left this run; the run ends when this reaches zero.
     lives: u32,
+    /// Steps the current wall has been in play, driving movers and spawners.
+    wall_steps: u32,
     phase: Phase,
     /// Seconds left of the pause before the serve.
     serve_countdown: f32,
@@ -307,6 +347,7 @@ impl Game {
             depth: 0,
             wall_in_depth: 0,
             lives: LIVES_START,
+            wall_steps: 0,
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
             seed,
@@ -426,6 +467,10 @@ impl Game {
     }
 
     fn advance_ball(&mut self) -> Events {
+        // The wall lives while the ball is in play: movers slide, spawners fill.
+        self.wall_steps += 1;
+        self.advance_wall();
+
         let previous = self.ball;
         self.ball.x += self.ball.vx * TIMESTEP;
         self.ball.y += self.ball.vy * TIMESTEP;
@@ -442,10 +487,11 @@ impl Game {
 
         let hit = self.collide_bricks(previous);
         let brick_broken = match hit {
-            Hit::Broke(band) => Some(band),
+            Hit::Broke(band) | Hit::Exploded(band) => Some(band),
             _ => None,
         };
         let brick_hit = matches!(hit, Hit::Struck);
+        let exploded = matches!(hit, Hit::Exploded(_));
 
         // Emptying a wall completes it: an ordinary wall brings up the next, a
         // guardian descends a depth (and re-parks), the final guardian wins.
@@ -480,6 +526,7 @@ impl Game {
             paddle_hit,
             brick_broken,
             brick_hit,
+            exploded,
             wall_cleared,
             guardian_cleared,
             lost_ball,
@@ -519,7 +566,7 @@ impl Game {
     fn build_wall(&mut self) {
         let specials = self.pool.specials.clone();
         let mut destructible = 0;
-        for cell in self.bricks.iter_mut() {
+        for i in 0..self.bricks.len() {
             // Give each enabled special a chance at this cell; the first that
             // rolls wins, otherwise the cell is a normal brick.
             let mut kind = Kind::Normal;
@@ -532,20 +579,119 @@ impl Game {
             if kind.destructible() {
                 destructible += 1;
             }
-            *cell = Some(Cell {
-                kind,
-                hits: kind.hits(),
-            });
+            let mut cell = Cell::of(kind);
+            if kind == Kind::Mover {
+                // Slide left or right, seeded.
+                cell.dir = if self.rng.range(0.0, 1.0) < 0.5 {
+                    -1
+                } else {
+                    1
+                };
+            }
+            self.bricks[i] = Some(cell);
         }
         self.bricks_left = destructible;
+        self.wall_steps = 0;
+    }
+
+    /// Chains an explosive break to its neighbours: every adjacent destructible
+    /// brick is destroyed and scored, and adjacent explosives chain in turn.
+    /// Mirrors, being indestructible, are unaffected.
+    fn explode(&mut self, origin: usize) {
+        let mut stack = vec![origin];
+        while let Some(i) = stack.pop() {
+            for n in orthogonal_neighbours(i) {
+                let Some(cell) = self.bricks[n] else {
+                    continue;
+                };
+                if !cell.kind.destructible() {
+                    continue;
+                }
+                self.bricks[n] = None;
+                self.bricks_left -= 1;
+                self.score += BAND_POINTS[band_of(n / BRICK_COLS) as usize];
+                if cell.kind == Kind::Explosive {
+                    stack.push(n);
+                }
+            }
+        }
+    }
+
+    /// Advances the living wall one step: movers slide and spawners fill on their
+    /// own cadences.
+    fn advance_wall(&mut self) {
+        if self.wall_steps.is_multiple_of(MOVER_PERIOD) {
+            self.advance_movers();
+        }
+        if self.wall_steps.is_multiple_of(SPAWN_PERIOD) {
+            self.advance_spawners();
+        }
+    }
+
+    /// Slides each mover one cell along its row into an empty neighbour, or
+    /// reverses it where it is blocked or at an edge. Occupancy is read from the
+    /// start of the tick so movers neither chase each other nor move twice.
+    fn advance_movers(&mut self) {
+        let occupied: Vec<bool> = self.bricks.iter().map(Option::is_some).collect();
+        let mut filled = vec![false; self.bricks.len()];
+        for i in 0..self.bricks.len() {
+            // A cell just moved into this tick is not itself re-processed.
+            if filled[i] {
+                continue;
+            }
+            let Some(cell) = self.bricks[i] else {
+                continue;
+            };
+            if cell.kind != Kind::Mover {
+                continue;
+            }
+            let col = i % BRICK_COLS;
+            let target_col = col as i32 + cell.dir as i32;
+            if (0..BRICK_COLS as i32).contains(&target_col) {
+                let target = i - col + target_col as usize;
+                if !occupied[target] && !filled[target] {
+                    self.bricks[target] = Some(cell);
+                    self.bricks[i] = None;
+                    filled[target] = true;
+                    continue;
+                }
+            }
+            // Blocked or at an edge: turn around in place.
+            self.bricks[i] = Some(Cell {
+                dir: -cell.dir,
+                ..cell
+            });
+        }
+    }
+
+    /// Each spawner refills the first empty cell among its neighbours (below,
+    /// then the sides, then above) with a normal brick, regrowing the wall until
+    /// the spawner itself is broken.
+    fn advance_spawners(&mut self) {
+        for i in 0..self.bricks.len() {
+            let Some(cell) = self.bricks[i] else {
+                continue;
+            };
+            if cell.kind != Kind::Spawner {
+                continue;
+            }
+            for n in orthogonal_neighbours(i) {
+                if self.bricks[n].is_none() {
+                    self.bricks[n] = Some(Cell::of(Kind::Normal));
+                    self.bricks_left += 1;
+                    break;
+                }
+            }
+        }
     }
 
     /// Resolves the ball's contact with the first standing brick it overlaps,
     /// reflecting off the face it came in through. A normal brick breaks (and
     /// scores); an armoured brick cracks on its first hit and breaks on its
-    /// second; a mirror sends the ball straight back and never breaks. At most
-    /// one brick per step — the ball's step is far smaller than a brick, so it
-    /// can never pass through the wall.
+    /// second; a mirror sends the ball straight back and never breaks; an
+    /// explosive breaks and chains to its neighbours. At most one direct contact
+    /// per step — the ball's step is far smaller than a brick, so it can never
+    /// pass through the wall.
     fn collide_bricks(&mut self, previous: Ball) -> Hit {
         let half = BALL_SIZE / 2.0;
         for row in 0..BRICK_ROWS {
@@ -601,11 +747,17 @@ impl Game {
                     self.bricks_left -= 1;
                     let band = band_of(row);
                     self.score += BAND_POINTS[band as usize];
+                    if cell.kind == Kind::Explosive {
+                        // Blow up, chaining the break to the neighbours.
+                        self.explode(i);
+                        return Hit::Exploded(band);
+                    }
                     return Hit::Broke(band);
                 }
                 self.bricks[i] = Some(Cell {
                     kind: cell.kind,
                     hits,
+                    dir: cell.dir,
                 });
                 return Hit::Struck;
             }
@@ -684,6 +836,26 @@ fn brick_rect(row: usize, col: usize) -> (f32, f32, f32, f32) {
 fn band_of(row: usize) -> u8 {
     // Row 0 is the top; it belongs to the highest band (index 3).
     (BRICK_ROWS / 2 - 1 - row / 2) as u8
+}
+
+/// The wall-cell indices orthogonally adjacent to `i`, in the order below, left,
+/// right, above — spawners fill the first empty one in that priority.
+fn orthogonal_neighbours(i: usize) -> impl Iterator<Item = usize> {
+    let (row, col) = (i / BRICK_COLS, i % BRICK_COLS);
+    let mut ns = Vec::with_capacity(4);
+    if row + 1 < BRICK_ROWS {
+        ns.push((row + 1) * BRICK_COLS + col);
+    }
+    if col > 0 {
+        ns.push(row * BRICK_COLS + col - 1);
+    }
+    if col + 1 < BRICK_COLS {
+        ns.push(row * BRICK_COLS + col + 1);
+    }
+    if row > 0 {
+        ns.push((row - 1) * BRICK_COLS + col);
+    }
+    ns.into_iter()
 }
 
 /// The ball at rest (its resting place is set when a ball begins).
@@ -772,10 +944,7 @@ mod tests {
         for cell in game.bricks.iter_mut() {
             *cell = None;
         }
-        game.bricks[row * BRICK_COLS + col] = Some(Cell {
-            kind,
-            hits: kind.hits(),
-        });
+        game.bricks[row * BRICK_COLS + col] = Some(Cell::of(kind));
         game.bricks_left = if kind.destructible() { 1 } else { 0 };
         aim_below(game, row, col);
     }
@@ -871,10 +1040,7 @@ mod tests {
         place_brick(&mut game, Kind::Armoured, 7, 7);
         // A keeper brick elsewhere, so breaking the armoured one does not empty
         // the wall (which would rebuild it and mask the result).
-        game.bricks[0] = Some(Cell {
-            kind: Kind::Normal,
-            hits: 1,
-        });
+        game.bricks[0] = Some(Cell::of(Kind::Normal));
         game.bricks_left = 2;
 
         let first = game.step(Input::default());
@@ -941,6 +1107,97 @@ mod tests {
         assert!(
             ball.vy > 0.0 && ball.vx < 0.0,
             "the mirror reverses both axes, sending the ball straight back"
+        );
+    }
+
+    #[test]
+    fn an_explosive_brick_chains_its_break_to_its_neighbours() {
+        let mut game = Game::new_run(2, &Pool::base());
+        for cell in game.bricks.iter_mut() {
+            *cell = None;
+        }
+        // An explosive with three neighbours (row 7 is the bottom row), plus a
+        // far keeper so the blast doesn't empty the wall.
+        game.bricks[7 * BRICK_COLS + 7] = Some(Cell::of(Kind::Explosive));
+        game.bricks[7 * BRICK_COLS + 6] = Some(Cell::of(Kind::Normal));
+        game.bricks[7 * BRICK_COLS + 8] = Some(Cell::of(Kind::Normal));
+        game.bricks[6 * BRICK_COLS + 7] = Some(Cell::of(Kind::Normal));
+        game.bricks[0] = Some(Cell::of(Kind::Normal));
+        game.bricks_left = 5;
+        aim_below(&mut game, 7, 7);
+
+        let events = game.step(Input::default());
+        assert!(
+            events.exploded,
+            "an explosive break is reported as an explosion"
+        );
+        assert_eq!(events.brick_broken, Some(band_of(7)));
+        assert_eq!(
+            game.bricks_left(),
+            1,
+            "the blast takes the explosive and its three neighbours, leaving the keeper"
+        );
+        assert!(game.bricks().all(|b| b.kind != Kind::Explosive));
+    }
+
+    #[test]
+    fn a_mover_slides_along_its_row_and_turns_at_an_edge() {
+        let mut game = Game::new_run(1, &Pool::base());
+        for cell in game.bricks.iter_mut() {
+            *cell = None;
+        }
+        // A right-moving mover with room to its right slides one cell.
+        let start = 4 * BRICK_COLS + 4;
+        game.bricks[start] = Some(Cell {
+            kind: Kind::Mover,
+            hits: 1,
+            dir: 1,
+        });
+        game.advance_movers();
+        assert!(game.bricks[start].is_none(), "the mover left its cell");
+        assert!(
+            matches!(game.bricks[start + 1], Some(c) if c.kind == Kind::Mover),
+            "it slid one cell to the right"
+        );
+
+        // Against the right edge it reverses instead of leaving the row.
+        for cell in game.bricks.iter_mut() {
+            *cell = None;
+        }
+        let edge = 4 * BRICK_COLS + (BRICK_COLS - 1);
+        game.bricks[edge] = Some(Cell {
+            kind: Kind::Mover,
+            hits: 1,
+            dir: 1,
+        });
+        game.advance_movers();
+        assert!(
+            matches!(game.bricks[edge], Some(c) if c.dir == -1),
+            "at the edge the mover turns around in place"
+        );
+    }
+
+    #[test]
+    fn a_spawner_refills_an_adjacent_empty_cell() {
+        let mut game = Game::new_run(1, &Pool::base());
+        for cell in game.bricks.iter_mut() {
+            *cell = None;
+        }
+        let spot = 4 * BRICK_COLS + 4;
+        game.bricks[spot] = Some(Cell::of(Kind::Spawner));
+        game.bricks_left = 1;
+        let below = 5 * BRICK_COLS + 4;
+        assert!(game.bricks[below].is_none());
+
+        game.advance_spawners();
+        assert!(
+            matches!(game.bricks[below], Some(c) if c.kind == Kind::Normal),
+            "the spawner refilled the cell below it"
+        );
+        assert_eq!(
+            game.bricks_left(),
+            2,
+            "the spawned brick counts toward the clear"
         );
     }
 }
