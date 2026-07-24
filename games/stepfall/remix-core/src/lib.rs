@@ -58,6 +58,22 @@ const WAVE_GAP: u32 = 90;
 /// What downing one enemy scores.
 const ENEMY_SCORE: u32 = 100;
 
+/// Return fire: bullet size and speed, the interrupts between the squadron's
+/// shots, and the fan a spread fires.
+pub const ENEMY_BULLET_SIZE: f32 = 3.0;
+const ENEMY_BULLET_SPEED: f32 = 95.0;
+const ENEMY_FIRE_INTERVAL: u32 = 22;
+const SPREAD_COUNT: u32 = 5;
+const SPREAD_STEP: f32 = 0.22;
+
+/// The ship's true hitbox is far smaller than its hull — a bullet only bites if
+/// it strikes this tiny square at the ship's heart.
+const HITBOX_SIZE: f32 = 3.0;
+
+/// Lives a run starts with, and how long the ship is spared after a hit.
+pub const LIVES_START: u32 = 3;
+const HIT_INVULN: u32 = 90;
+
 /// Which run a game is playing. The behaviours differ from a later ticket; here
 /// the mode is only recorded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -123,6 +139,16 @@ pub struct Enemy {
     pub y: f32,
 }
 
+/// An enemy bullet in flight, as the shell should draw it — a small square
+/// centred on `(x, y)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnemyBullet {
+    /// Centre x.
+    pub x: f32,
+    /// Centre y.
+    pub y: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It
 /// grows a field per ticket.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -131,6 +157,10 @@ pub struct Events {
     pub shot_fired: bool,
     /// A shot downed an enemy this step.
     pub enemy_killed: bool,
+    /// A bullet struck the ship this step and cost a life.
+    pub player_hit: bool,
+    /// The last life was spent this step — the run is over.
+    pub run_over: bool,
 }
 
 /// Where a run is.
@@ -142,11 +172,49 @@ pub enum Phase {
     Over,
 }
 
+/// A small, fast, deterministic RNG (xorshift64) — the run's only randomness,
+/// seeded once, so a seed and inputs always replay the same run.
+#[derive(Clone)]
+struct Rng {
+    state: u64,
+}
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self {
+            state: (seed ^ 0x9e37_79b9_7f4a_7c15) | 1,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+
+    /// A number in `0..n`.
+    fn below(&mut self, n: u32) -> u32 {
+        (self.next_u64() % u64::from(n)) as u32
+    }
+}
+
 /// A bullet's position.
 #[derive(Clone, Copy)]
 struct Pos {
     x: f32,
     y: f32,
+}
+
+/// An enemy bullet's position and velocity (logical units per second).
+#[derive(Clone, Copy)]
+struct EnemyBulletState {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
 }
 
 /// One enemy of a squadron: its home column, its live position, and the row it
@@ -171,9 +239,19 @@ pub struct Game {
     fire_cooldown: u32,
     /// The enemies currently flying.
     enemies: Vec<EnemyState>,
+    /// The enemy bullets in the air.
+    enemy_bullets: Vec<EnemyBulletState>,
+    /// Interrupts since the squadron last fired.
+    enemy_fire_tick: u32,
     /// Interrupts until the next squadron flies in, once the field is clear.
     wave_gap: u32,
+    /// Lives left; the run ends when this reaches zero.
+    lives: u32,
+    /// Interrupts of invulnerability left after a hit.
+    invuln: u32,
     score: u32,
+    /// The run's randomness.
+    rng: Rng,
     mode: Mode,
     #[allow(dead_code)]
     loadout: Loadout,
@@ -194,8 +272,13 @@ impl Game {
             bullets: Vec::new(),
             fire_cooldown: 0,
             enemies: Vec::new(),
+            enemy_bullets: Vec::new(),
+            enemy_fire_tick: 0,
             wave_gap: 0,
+            lives: LIVES_START,
+            invuln: 0,
             score: 0,
+            rng: Rng::new(seed),
             mode,
             loadout,
             phase: Phase::Playing,
@@ -222,6 +305,23 @@ impl Game {
     /// The enemies flying, for the shell to draw.
     pub fn enemies(&self) -> impl Iterator<Item = Enemy> + '_ {
         self.enemies.iter().map(|e| Enemy { x: e.x, y: e.y })
+    }
+
+    /// The enemy bullets in the air, for the shell to draw.
+    pub fn enemy_bullets(&self) -> impl Iterator<Item = EnemyBullet> + '_ {
+        self.enemy_bullets
+            .iter()
+            .map(|b| EnemyBullet { x: b.x, y: b.y })
+    }
+
+    /// Lives left.
+    pub fn lives(&self) -> u32 {
+        self.lives
+    }
+
+    /// Whether the ship is currently spared after a hit (for the shell to flash).
+    pub fn invulnerable(&self) -> bool {
+        self.invuln > 0
     }
 
     /// The score so far.
@@ -251,11 +351,14 @@ impl Game {
         if self.phase == Phase::Over {
             return events;
         }
+        self.invuln = self.invuln.saturating_sub(1);
         self.fly(input);
         self.fire(input, &mut events);
         self.advance_bullets();
         self.advance_enemies();
         self.resolve_hits(&mut events);
+        self.enemy_fire();
+        self.advance_enemy_bullets(&mut events);
         self.manage_waves();
         events
     }
@@ -333,6 +436,110 @@ impl Game {
             }
         }
         self.bullets = survivors;
+    }
+
+    /// The squadron shoots back on a cadence: a settled enemy, chosen at random,
+    /// fires either an aimed dart at the ship or a fan spread toward it.
+    fn enemy_fire(&mut self) {
+        self.enemy_fire_tick += 1;
+        if self.enemy_fire_tick < ENEMY_FIRE_INTERVAL {
+            return;
+        }
+        let shooters: Vec<usize> = self
+            .enemies
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.y >= e.hold_y - 0.5)
+            .map(|(i, _)| i)
+            .collect();
+        if shooters.is_empty() {
+            return;
+        }
+        self.enemy_fire_tick = 0;
+
+        let e = self.enemies[shooters[self.rng.below(shooters.len() as u32) as usize]];
+        let ex = e.x + ENEMY_WIDTH / 2.0;
+        let ey = e.y + ENEMY_HEIGHT;
+        let angle =
+            (self.ship_y + SHIP_HEIGHT / 2.0 - ey).atan2(self.ship_x + SHIP_WIDTH / 2.0 - ex);
+
+        if self.rng.below(2) == 0 {
+            self.spawn_enemy_bullet(ex, ey, angle);
+        } else {
+            let half = (SPREAD_COUNT as f32 - 1.0) / 2.0;
+            for i in 0..SPREAD_COUNT {
+                self.spawn_enemy_bullet(ex, ey, angle + (i as f32 - half) * SPREAD_STEP);
+            }
+        }
+    }
+
+    /// Adds an enemy bullet at `(x, y)` travelling along `angle`.
+    fn spawn_enemy_bullet(&mut self, x: f32, y: f32, angle: f32) {
+        self.enemy_bullets.push(EnemyBulletState {
+            x,
+            y,
+            vx: angle.cos() * ENEMY_BULLET_SPEED,
+            vy: angle.sin() * ENEMY_BULLET_SPEED,
+        });
+    }
+
+    /// Flies every enemy bullet, retiring the ones that leave the field. A bullet
+    /// that strikes the ship's tiny hitbox — unless it is spared after a hit —
+    /// costs a life.
+    fn advance_enemy_bullets(&mut self, events: &mut Events) {
+        let hitbox = self.hitbox();
+        let mut survivors = Vec::with_capacity(self.enemy_bullets.len());
+        let mut struck = false;
+        for mut b in std::mem::take(&mut self.enemy_bullets) {
+            b.x += b.vx * TIMESTEP;
+            b.y += b.vy * TIMESTEP;
+            if b.x < -ENEMY_BULLET_SIZE
+                || b.x > LOGICAL_WIDTH + ENEMY_BULLET_SIZE
+                || b.y < -ENEMY_BULLET_SIZE
+                || b.y > LOGICAL_HEIGHT + ENEMY_BULLET_SIZE
+            {
+                continue;
+            }
+            let rect = (
+                b.x - ENEMY_BULLET_SIZE / 2.0,
+                b.y - ENEMY_BULLET_SIZE / 2.0,
+                ENEMY_BULLET_SIZE,
+                ENEMY_BULLET_SIZE,
+            );
+            if !struck && self.invuln == 0 && overlaps(rect, hitbox) {
+                struck = true;
+            } else {
+                survivors.push(b);
+            }
+        }
+        self.enemy_bullets = survivors;
+        if struck {
+            self.lose_life(events);
+        }
+    }
+
+    /// The ship's true hitbox — the tiny square at its heart.
+    fn hitbox(&self) -> (f32, f32, f32, f32) {
+        let cx = self.ship_x + SHIP_WIDTH / 2.0;
+        let cy = self.ship_y + SHIP_HEIGHT / 2.0;
+        (
+            cx - HITBOX_SIZE / 2.0,
+            cy - HITBOX_SIZE / 2.0,
+            HITBOX_SIZE,
+            HITBOX_SIZE,
+        )
+    }
+
+    /// Spends a life to a hit: spares the ship for a beat, and ends the run if
+    /// that was the last life.
+    fn lose_life(&mut self, events: &mut Events) {
+        events.player_hit = true;
+        self.lives -= 1;
+        self.invuln = HIT_INVULN;
+        if self.lives == 0 {
+            self.phase = Phase::Over;
+            events.run_over = true;
+        }
     }
 
     /// Sends in a fresh squadron a short beat after the field is cleared.
@@ -541,6 +748,72 @@ mod tests {
         assert!(downed, "a held stream of fire never downed an enemy");
         assert!(game.enemies().count() < before, "the squadron thinned");
         assert!(game.score() > 0, "downing an enemy scores");
+    }
+
+    #[test]
+    fn the_settled_squadron_fires_back() {
+        let mut game = game();
+        let mut fired = false;
+        for _ in 0..1_500 {
+            game.step(Input::default());
+            if game.enemy_bullets().next().is_some() {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "the settled squadron fires back");
+    }
+
+    /// Places a still enemy bullet centred on `(x, y)`.
+    fn bullet_at(game: &mut Game, x: f32, y: f32) {
+        game.enemy_bullets.push(EnemyBulletState {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+        });
+    }
+
+    fn ship_centre(game: &Game) -> (f32, f32) {
+        let s = game.ship();
+        (s.x + SHIP_WIDTH / 2.0, s.y + SHIP_HEIGHT / 2.0)
+    }
+
+    #[test]
+    fn a_bullet_on_the_hitbox_costs_a_life() {
+        let mut game = game();
+        let (cx, cy) = ship_centre(&game);
+        bullet_at(&mut game, cx, cy);
+
+        let events = game.step(Input::default());
+
+        assert!(events.player_hit, "a bullet on the hitbox strikes the ship");
+        assert_eq!(game.lives(), LIVES_START - 1, "and costs a life");
+    }
+
+    #[test]
+    fn a_shot_through_the_hull_but_off_the_hitbox_spares_the_ship() {
+        let mut game = game();
+        let (cx, cy) = ship_centre(&game);
+        // Inside the wide hull, but clear of the tiny hitbox.
+        bullet_at(&mut game, cx + 4.0, cy);
+
+        game.step(Input::default());
+
+        assert_eq!(game.lives(), LIVES_START, "only the tiny hitbox can be hit");
+    }
+
+    #[test]
+    fn spending_the_last_life_ends_the_run() {
+        let mut game = game();
+        game.lives = 1;
+        let (cx, cy) = ship_centre(&game);
+        bullet_at(&mut game, cx, cy);
+
+        let events = game.step(Input::default());
+
+        assert!(events.run_over, "the last life ends the run");
+        assert_eq!(game.phase(), Phase::Over);
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.

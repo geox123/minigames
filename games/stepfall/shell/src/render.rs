@@ -191,14 +191,15 @@ const NEON_SHIP: Color = color_u8!(90, 220, 255, 255);
 const NEON_GLOW: Color = color_u8!(40, 120, 160, 255);
 const NEON_BULLET: Color = color_u8!(255, 240, 140, 255);
 const NEON_ENEMY: Color = color_u8!(255, 90, 170, 255);
+const NEON_ENEMY_FIRE: Color = color_u8!(255, 130, 90, 255);
 
 /// Draws one frame of HAILFALL — the Remix — onto the logical canvas. The swarm,
 /// the ship and its fire; the enemy fire, the tools and the HUD follow in later
 /// tickets.
 pub fn draw_remix(game: &stepfall_remix_core::Game) {
     use stepfall_remix_core::{
-        ENEMY_HEIGHT, ENEMY_WIDTH, PLAYER_BULLET_HEIGHT, PLAYER_BULLET_WIDTH, SHIP_HEIGHT,
-        SHIP_WIDTH,
+        ENEMY_BULLET_SIZE, ENEMY_HEIGHT, ENEMY_WIDTH, PLAYER_BULLET_HEIGHT, PLAYER_BULLET_WIDTH,
+        SHIP_HEIGHT, SHIP_WIDTH,
     };
     clear_background(color_u8!(4, 6, 14, 255));
 
@@ -225,8 +226,24 @@ pub fn draw_remix(game: &stepfall_remix_core::Game) {
         );
     }
 
-    // The ship: a bright arrowhead over a glow.
+    // The enemy fire, falling — drawn from its centre.
+    for bullet in game.enemy_bullets() {
+        draw_rectangle(
+            bullet.x - ENEMY_BULLET_SIZE / 2.0,
+            bullet.y - ENEMY_BULLET_SIZE / 2.0,
+            ENEMY_BULLET_SIZE,
+            ENEMY_BULLET_SIZE,
+            NEON_ENEMY_FIRE,
+        );
+    }
+
+    // The ship: a bright arrowhead over a glow, flashing while it is spared.
     let ship = game.ship();
+    let hull = if game.invulnerable() {
+        NEON_GLOW
+    } else {
+        NEON_SHIP
+    };
     draw_rectangle(
         ship.x - 1.0,
         ship.y - 1.0,
@@ -239,7 +256,7 @@ pub fn draw_remix(game: &stepfall_remix_core::Game) {
         vec2(cx, ship.y),
         vec2(ship.x, ship.y + SHIP_HEIGHT),
         vec2(ship.x + SHIP_WIDTH, ship.y + SHIP_HEIGHT),
-        NEON_SHIP,
+        hull,
     );
 }
 
