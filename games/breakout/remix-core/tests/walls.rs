@@ -24,7 +24,13 @@ fn dropping_the_ball_spends_a_life_and_serves_a_new_one() {
         } else {
             Move::Left
         };
-        if game.step(Input { paddle }).lost_ball {
+        if game
+            .step(Input {
+                paddle,
+                ..Default::default()
+            })
+            .lost_ball
+        {
             lost = true;
             assert_eq!(game.lives(), lives_before - 1, "a lost ball spends a life");
             assert_eq!(
@@ -63,7 +69,10 @@ fn spending_every_life_ends_the_run() {
         } else {
             Move::Left
         };
-        let events = game.step(Input { paddle });
+        let events = game.step(Input {
+            paddle,
+            ..Default::default()
+        });
         if events.lost_ball {
             drops += 1;
         }

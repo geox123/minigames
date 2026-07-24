@@ -39,7 +39,10 @@ async fn main() {
         } else {
             Move::Hold
         };
-        game.step(Input { paddle });
+        game.step(Input {
+            paddle,
+            ..Default::default()
+        });
         if dodge && game.phase() == Phase::Lost {
             break;
         }

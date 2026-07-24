@@ -82,7 +82,10 @@ fn a_fast_ball_never_tunnels_through_the_wall() {
     let mut last = game.bricks().count();
     for _ in 0..40_000 {
         let paddle = track(&game, 0.0);
-        game.step(Input { paddle });
+        game.step(Input {
+            paddle,
+            ..Default::default()
+        });
         let now = game.bricks().count();
         if now <= last {
             assert!(
@@ -110,7 +113,13 @@ fn a_missed_ball_leaves_the_wall_standing() {
         } else {
             Move::Left
         };
-        if game.step(Input { paddle }).lost_ball {
+        if game
+            .step(Input {
+                paddle,
+                ..Default::default()
+            })
+            .lost_ball
+        {
             break;
         }
     }

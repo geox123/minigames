@@ -33,6 +33,8 @@ pub const BALL_SPEED: f32 = 150.0;
 
 /// Full width of the paddle, in logical units.
 pub const PADDLE_WIDTH: f32 = 40.0;
+/// The widest the paddle grows, however many Widen boons are taken.
+const MAX_PADDLE_WIDTH: f32 = 96.0;
 /// Height of the paddle, in logical units.
 pub const PADDLE_HEIGHT: f32 = 6.0;
 /// Gap between the paddle's bottom and the foot of the field.
@@ -69,6 +71,15 @@ const MOVER_PERIOD: u32 = 60;
 /// Steps between a spawner refilling an adjacent empty cell.
 const SPAWN_PERIOD: u32 = 150;
 
+/// Boons offered in a draft.
+const DRAFT_OFFERS: usize = 3;
+/// Rerolls a run starts with.
+const START_REROLLS: u32 = 2;
+/// How much a Widen boon adds to the paddle's width.
+const WIDEN_AMOUNT: f32 = 8.0;
+/// How much a Swift boon adds to the paddle's speed.
+const SWIFT_AMOUNT: f32 = 40.0;
+
 /// How long the ball rests on the paddle before each serve.
 pub const SERVE_PAUSE: f32 = 0.6;
 
@@ -94,11 +105,17 @@ pub enum Move {
     Right,
 }
 
-/// What the player is doing this step.
+/// What the player is doing this step. During a draft, `paddle` moves the
+/// highlight (one step per press, as the shell only sends a direction on the
+/// key's edge), `confirm` takes the highlighted option, and `reroll` re-rolls.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Input {
-    /// The paddle direction.
+    /// The paddle direction (or, in a draft, the highlight move).
     pub paddle: Move,
+    /// Take the highlighted draft option.
+    pub confirm: bool,
+    /// Re-roll the draft offers.
+    pub reroll: bool,
 }
 
 /// A kind of brick. Normal bricks break in one hit; the zoo adds bricks that
@@ -148,21 +165,97 @@ impl Kind {
     }
 }
 
+/// Where a boon attaches, for grouping it in the draft.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Home {
+    /// Changes the ball.
+    Ball,
+    /// Changes the paddle.
+    Paddle,
+    /// Changes the run as a whole.
+    Global,
+}
+
+impl Home {
+    /// A short label for the draft.
+    pub fn label(self) -> &'static str {
+        match self {
+            Home::Ball => "BALL",
+            Home::Paddle => "PADDLE",
+            Home::Global => "RUN",
+        }
+    }
+}
+
+/// A boon the player drafts between walls. Effects stack across the run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Boon {
+    /// The ball plows through the bricks it breaks instead of rebounding.
+    Pierce,
+    /// The ball's breaks explode, chaining to neighbours.
+    Blast,
+    /// A wider paddle.
+    Widen,
+    /// A faster paddle.
+    Swift,
+    /// One more life.
+    ExtraLife,
+    /// Every brick is worth more.
+    Fortune,
+}
+
+impl Boon {
+    /// Where this boon attaches.
+    pub fn home(self) -> Home {
+        match self {
+            Boon::Pierce | Boon::Blast => Home::Ball,
+            Boon::Widen | Boon::Swift => Home::Paddle,
+            Boon::ExtraLife | Boon::Fortune => Home::Global,
+        }
+    }
+
+    /// A short name for the draft.
+    pub fn title(self) -> &'static str {
+        match self {
+            Boon::Pierce => "PIERCE",
+            Boon::Blast => "BLAST",
+            Boon::Widen => "WIDEN",
+            Boon::Swift => "SWIFT",
+            Boon::ExtraLife => "EXTRA LIFE",
+            Boon::Fortune => "FORTUNE",
+        }
+    }
+
+    /// A one-line description for the draft.
+    pub fn description(self) -> &'static str {
+        match self {
+            Boon::Pierce => "PLOW THROUGH BROKEN BRICKS",
+            Boon::Blast => "YOUR BREAKS EXPLODE",
+            Boon::Widen => "A WIDER PADDLE",
+            Boon::Swift => "A FASTER PADDLE",
+            Boon::ExtraLife => "ONE MORE LIFE",
+            Boon::Fortune => "BRICKS SCORE MORE",
+        }
+    }
+}
+
 /// The brick and boon types a run may draw on, passed *in* at construction so
 /// the core never knows about "unlocks" — only the pool it is handed.
 ///
-/// It carries the special brick kinds a run's walls may include; Phase A hands
-/// in the full set, and cross-run unlocks will pare it back later. Boons join it
-/// in their own ticket. Kept and threaded from the start so those additions
+/// It carries the special brick kinds a run's walls may include and the boons
+/// its drafts may offer; Phase A hands in the full set, and cross-run unlocks
+/// will pare it back later. Kept and threaded from the start so those additions
 /// don't reshape the seam.
 #[derive(Clone, Debug, Default)]
 pub struct Pool {
     /// Special (non-[`Kind::Normal`]) brick kinds walls may include.
     specials: Vec<Kind>,
+    /// The boons drafts may offer.
+    boons: Vec<Boon>,
 }
 
 impl Pool {
-    /// The base pool: every special brick kind built so far.
+    /// The base pool: every special brick kind and boon built so far.
     pub fn base() -> Self {
         Self {
             specials: vec![
@@ -171,6 +264,14 @@ impl Pool {
                 Kind::Mirror,
                 Kind::Mover,
                 Kind::Spawner,
+            ],
+            boons: vec![
+                Boon::Pierce,
+                Boon::Blast,
+                Boon::Widen,
+                Boon::Swift,
+                Boon::ExtraLife,
+                Boon::Fortune,
             ],
         }
     }
@@ -254,6 +355,8 @@ pub enum Phase {
     Serving,
     /// The ball is in play.
     Playing,
+    /// A wall was cleared; the player is drafting a boon before the next.
+    Drafting,
     /// The final guardian has fallen — the run is won.
     Won,
     /// Every life has been spent — the run is lost.
@@ -303,6 +406,22 @@ enum Hit {
     Exploded(u8),
 }
 
+/// The brick face the ball came in through, and the geometry needed to rebound
+/// off it.
+#[derive(Clone, Copy)]
+struct Face {
+    /// The ball met a horizontal (top or bottom) face rather than a side.
+    vertical: bool,
+    /// It came in through the top face.
+    from_above: bool,
+    rx: f32,
+    ry: f32,
+    rw: f32,
+    rh: f32,
+    /// The ball's horizontal position before the step, to pick the side face.
+    prev_x: f32,
+}
+
 /// A run of RIFT.
 pub struct Game {
     ball: Ball,
@@ -323,6 +442,22 @@ pub struct Game {
     lives: u32,
     /// Steps the current wall has been in play, driving movers and spawners.
     wall_steps: u32,
+    /// The ball plows through the bricks it breaks (a Pierce boon).
+    pierce: bool,
+    /// The ball's breaks explode (a Blast boon).
+    blast: bool,
+    /// The paddle's current speed; Swift boons raise it.
+    paddle_speed: f32,
+    /// Fortune boons taken; each raises every brick's score.
+    fortunes: u32,
+    /// Rerolls left this run.
+    rerolls: u32,
+    /// The boons on offer in the current draft.
+    offers: Vec<Boon>,
+    /// Which draft option is highlighted; the reroll option follows the offers.
+    draft_highlight: usize,
+    /// Every boon taken this run, in order, for the shell to show.
+    taken: Vec<Boon>,
     phase: Phase,
     /// Seconds left of the pause before the serve.
     serve_countdown: f32,
@@ -348,6 +483,14 @@ impl Game {
             wall_in_depth: 0,
             lives: LIVES_START,
             wall_steps: 0,
+            pierce: false,
+            blast: false,
+            paddle_speed: PADDLE_SPEED,
+            fortunes: 0,
+            rerolls: START_REROLLS,
+            offers: Vec::new(),
+            draft_highlight: 0,
+            taken: Vec::new(),
             phase: Phase::Serving,
             serve_countdown: SERVE_PAUSE,
             seed,
@@ -408,6 +551,26 @@ impl Game {
         self.wall_in_depth == ORDINARY_WALLS_PER_DEPTH
     }
 
+    /// The boons on offer in the open draft (empty outside a draft).
+    pub fn offers(&self) -> &[Boon] {
+        &self.offers
+    }
+
+    /// Which offer is highlighted in the open draft.
+    pub fn draft_highlight(&self) -> usize {
+        self.draft_highlight
+    }
+
+    /// Rerolls left this run.
+    pub fn rerolls(&self) -> u32 {
+        self.rerolls
+    }
+
+    /// Every boon taken this run, in the order taken.
+    pub fn boons(&self) -> &[Boon] {
+        &self.taken
+    }
+
     /// Starts the run over from the beginning: the same seed and pool replay the
     /// same run.
     pub fn restart(&mut self) {
@@ -435,12 +598,12 @@ impl Game {
         self.phase
     }
 
-    /// Advances the run by exactly one [`TIMESTEP`].
+    /// Advances the run by exactly one [`TIMESTEP`] (or, in a draft, applies one
+    /// input — the shell steps a draft once per frame, not on the accumulator).
     pub fn step(&mut self, input: Input) -> Events {
-        self.move_paddle(input.paddle);
-
         match self.phase {
             Phase::Serving => {
+                self.move_paddle(input.paddle);
                 // The ball rides the paddle until the pause ends.
                 self.ball.x = self.paddle_x;
                 self.serve_countdown -= TIMESTEP;
@@ -449,14 +612,18 @@ impl Game {
                 }
                 Events::default()
             }
-            Phase::Playing => self.advance_ball(),
+            Phase::Playing => {
+                self.move_paddle(input.paddle);
+                self.advance_ball()
+            }
+            Phase::Drafting => self.draft(input),
             // The run is over; it rests until restarted.
             Phase::Won | Phase::Lost => Events::default(),
         }
     }
 
     fn move_paddle(&mut self, mv: Move) {
-        let travel = PADDLE_SPEED * TIMESTEP;
+        let travel = self.paddle_speed * TIMESTEP;
         match mv {
             Move::Left => self.paddle_x -= travel,
             Move::Right => self.paddle_x += travel,
@@ -548,15 +715,78 @@ impl Game {
                 self.depth += 1;
                 self.wall_in_depth = 0;
                 self.lives = (self.lives + 1).min(LIVES_CAP);
-                self.build_wall();
-                self.begin_ball();
+                self.enter_draft();
                 WallOutcome::Depth
             }
         } else {
             self.wall_in_depth += 1;
+            self.enter_draft();
+            WallOutcome::Ordinary
+        }
+    }
+
+    /// Opens the boon draft held between walls: parks the ball and rolls the
+    /// offers. The next wall (already selected by the advanced counters) is built
+    /// once the player takes a boon.
+    fn enter_draft(&mut self) {
+        self.phase = Phase::Drafting;
+        self.ball = PARKED_BALL;
+        self.draft_highlight = 0;
+        self.roll_offers();
+    }
+
+    /// Rolls a fresh set of distinct boon offers from the pool.
+    fn roll_offers(&mut self) {
+        let mut available = self.pool.boons.clone();
+        self.offers.clear();
+        for _ in 0..DRAFT_OFFERS.min(available.len()) {
+            let idx = (self.rng.next_u64() as usize) % available.len();
+            self.offers.push(available.swap_remove(idx));
+        }
+    }
+
+    /// Applies one input to the open draft: the paddle direction moves the
+    /// highlight, `confirm` takes the highlighted boon (and moves on to the next
+    /// wall), `reroll` spends a reroll for fresh offers.
+    fn draft(&mut self, input: Input) -> Events {
+        let n = self.offers.len();
+        if n == 0 {
+            // No boons to offer — just move on.
             self.build_wall();
             self.begin_ball();
-            WallOutcome::Ordinary
+            return Events::default();
+        }
+        match input.paddle {
+            Move::Left => self.draft_highlight = (self.draft_highlight + n - 1) % n,
+            Move::Right => self.draft_highlight = (self.draft_highlight + 1) % n,
+            Move::Hold => {}
+        }
+        if input.confirm {
+            let boon = self.offers[self.draft_highlight];
+            self.apply_boon(boon);
+            self.taken.push(boon);
+            self.offers.clear();
+            // The counters already point at the next wall; build it and serve.
+            self.build_wall();
+            self.begin_ball();
+        } else if input.reroll && self.rerolls > 0 {
+            self.rerolls -= 1;
+            self.roll_offers();
+        }
+        Events::default()
+    }
+
+    /// Applies a taken boon's effect. Effects stack across the run.
+    fn apply_boon(&mut self, boon: Boon) {
+        match boon {
+            Boon::Pierce => self.pierce = true,
+            Boon::Blast => self.blast = true,
+            Boon::Widen => {
+                self.paddle_width = (self.paddle_width + WIDEN_AMOUNT).min(MAX_PADDLE_WIDTH)
+            }
+            Boon::Swift => self.paddle_speed += SWIFT_AMOUNT,
+            Boon::ExtraLife => self.lives += 1,
+            Boon::Fortune => self.fortunes += 1,
         }
     }
 
@@ -646,7 +876,7 @@ impl Game {
                 }
                 self.bricks[n] = None;
                 self.bricks_left -= 1;
-                self.score += BAND_POINTS[band_of(n / BRICK_COLS) as usize];
+                self.score += self.brick_score(band_of(n / BRICK_COLS));
                 if cell.kind == Kind::Explosive {
                     stack.push(n);
                 }
@@ -749,27 +979,21 @@ impl Game {
                 // Which face did it come in through? Use where it was before.
                 let from_above = previous.y + half <= ry;
                 let from_below = previous.y - half >= ry + rh;
-                let vertical = from_above || from_below;
-                if vertical {
-                    self.ball.vy = -self.ball.vy;
-                    self.ball.y = if from_above {
-                        ry - half
-                    } else {
-                        ry + rh + half
-                    };
-                } else {
-                    self.ball.vx = -self.ball.vx;
-                    self.ball.x = if previous.x < self.ball.x {
-                        rx - half
-                    } else {
-                        rx + rw + half
-                    };
-                }
+                let face = Face {
+                    vertical: from_above || from_below,
+                    from_above,
+                    rx,
+                    ry,
+                    rw,
+                    rh,
+                    prev_x: previous.x,
+                };
 
                 if cell.kind == Kind::Mirror {
-                    // A retroreflector: also reverse the other axis so the ball
-                    // heads straight back the way it came. It never breaks.
-                    if vertical {
+                    // A retroreflector: reflect off the face, then reverse the
+                    // other axis too, so the ball heads straight back. Never breaks.
+                    self.reflect_face(face);
+                    if face.vertical {
                         self.ball.vx = -self.ball.vx;
                     } else {
                         self.ball.vy = -self.ball.vy;
@@ -783,14 +1007,20 @@ impl Game {
                     self.bricks[i] = None;
                     self.bricks_left -= 1;
                     let band = band_of(row);
-                    self.score += BAND_POINTS[band as usize];
-                    if cell.kind == Kind::Explosive {
+                    self.score += self.brick_score(band);
+                    // Pierce plows through; otherwise rebound off the broken brick.
+                    if !self.pierce {
+                        self.reflect_face(face);
+                    }
+                    if cell.kind == Kind::Explosive || self.blast {
                         // Blow up, chaining the break to the neighbours.
                         self.explode(i);
                         return Hit::Exploded(band);
                     }
                     return Hit::Broke(band);
                 }
+                // An armoured brick's first hit: it cracks and rebounds.
+                self.reflect_face(face);
                 self.bricks[i] = Some(Cell {
                     kind: cell.kind,
                     hits,
@@ -800,6 +1030,31 @@ impl Game {
             }
         }
         Hit::None
+    }
+
+    /// Rebounds the ball off the brick face it came in through, nudging it clear.
+    fn reflect_face(&mut self, f: Face) {
+        let half = BALL_SIZE / 2.0;
+        if f.vertical {
+            self.ball.vy = -self.ball.vy;
+            self.ball.y = if f.from_above {
+                f.ry - half
+            } else {
+                f.ry + f.rh + half
+            };
+        } else {
+            self.ball.vx = -self.ball.vx;
+            self.ball.x = if f.prev_x < self.ball.x {
+                f.rx - half
+            } else {
+                f.rx + f.rw + half
+            };
+        }
+    }
+
+    /// A broken brick's score for its band, boosted by any Fortune boons.
+    fn brick_score(&self, band: u8) -> u32 {
+        BAND_POINTS[band as usize] * (1 + self.fortunes)
     }
 
     /// Rebounds the ball off the paddle if its path crossed the paddle's top
@@ -1047,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn clearing_an_ordinary_wall_brings_up_the_next_after_a_serve() {
+    fn clearing_an_ordinary_wall_opens_a_draft_then_brings_up_the_next() {
         let mut game = Game::new_run(1, &Pool::base());
         game.score = 40;
         assert!(!game.on_guardian(), "a depth opens on an ordinary wall");
@@ -1058,6 +1313,14 @@ mod tests {
         assert!(events.wall_cleared, "an ordinary wall clearing is reported");
         assert!(!events.guardian_cleared && !events.won);
         assert_eq!(game.depth(), 1, "an ordinary wall keeps the same depth");
+        assert_eq!(game.phase(), Phase::Drafting, "clearing opens a boon draft");
+        assert_eq!(game.score(), 41, "the last brick still scores");
+
+        // Taking a boon brings up the next wall, full, and serves.
+        game.step(Input {
+            confirm: true,
+            ..Default::default()
+        });
         assert_eq!(
             game.bricks().count(),
             BRICK_ROWS * BRICK_COLS,
@@ -1070,9 +1333,8 @@ mod tests {
         assert_eq!(
             game.phase(),
             Phase::Serving,
-            "a fresh wall waits on a serve"
+            "the next wall waits on a serve"
         );
-        assert_eq!(game.score(), 41, "the last brick still scores");
     }
 
     #[test]
@@ -1094,7 +1356,7 @@ mod tests {
             "the next depth opens on an ordinary wall"
         );
         assert_eq!(game.lives(), LIVES_START, "a cleared guardian banks a life");
-        assert_eq!(game.phase(), Phase::Serving);
+        assert_eq!(game.phase(), Phase::Drafting, "clearing opens a boon draft");
     }
 
     #[test]
@@ -1350,5 +1612,132 @@ mod tests {
                 "the final guardian's top row is solid armour"
             );
         }
+    }
+
+    /// Clears a wall to open the boon draft, leaving the game in `Drafting`.
+    fn open_draft(game: &mut Game) {
+        one_brick_left(game, 7, 7);
+        let events = game.step(Input::default());
+        assert!(
+            events.wall_cleared || events.guardian_cleared,
+            "clearing a wall opens the draft"
+        );
+        assert_eq!(game.phase(), Phase::Drafting);
+    }
+
+    #[test]
+    fn clearing_a_wall_opens_a_draft_of_distinct_boons() {
+        let mut game = Game::new_run(1, &Pool::base());
+        open_draft(&mut game);
+        let offers = game.offers();
+        assert_eq!(offers.len(), DRAFT_OFFERS, "three boons are offered");
+        assert!(
+            offers[0] != offers[1] && offers[1] != offers[2] && offers[0] != offers[2],
+            "the offers are distinct"
+        );
+    }
+
+    #[test]
+    fn the_draft_highlight_moves_with_the_paddle_keys() {
+        let mut game = Game::new_run(1, &Pool::base());
+        open_draft(&mut game);
+        assert_eq!(game.draft_highlight(), 0);
+        game.step(Input {
+            paddle: Move::Right,
+            ..Default::default()
+        });
+        assert_eq!(game.draft_highlight(), 1);
+        game.step(Input {
+            paddle: Move::Left,
+            ..Default::default()
+        });
+        assert_eq!(game.draft_highlight(), 0);
+        game.step(Input {
+            paddle: Move::Left,
+            ..Default::default()
+        });
+        assert_eq!(
+            game.draft_highlight(),
+            DRAFT_OFFERS - 1,
+            "left wraps around"
+        );
+    }
+
+    #[test]
+    fn taking_a_boon_records_it_and_leaves_the_draft() {
+        let mut game = Game::new_run(1, &Pool::base());
+        open_draft(&mut game);
+        let picked = game.offers()[0];
+        game.step(Input {
+            confirm: true,
+            ..Default::default()
+        });
+        assert_eq!(game.boons(), &[picked], "the taken boon is recorded");
+        assert_ne!(
+            game.phase(),
+            Phase::Drafting,
+            "taking a boon leaves the draft"
+        );
+    }
+
+    #[test]
+    fn a_reroll_spends_a_reroll_and_offers_afresh() {
+        let mut game = Game::new_run(1, &Pool::base());
+        open_draft(&mut game);
+        let rerolls = game.rerolls();
+        assert!(rerolls > 0, "a run starts with rerolls");
+        game.step(Input {
+            reroll: true,
+            ..Default::default()
+        });
+        assert_eq!(game.rerolls(), rerolls - 1, "a reroll is spent");
+        assert_eq!(game.phase(), Phase::Drafting, "a reroll stays in the draft");
+        assert_eq!(game.offers().len(), DRAFT_OFFERS, "fresh offers are rolled");
+    }
+
+    #[test]
+    fn an_extra_life_boon_grants_a_life() {
+        let pool = Pool {
+            specials: vec![],
+            boons: vec![Boon::ExtraLife],
+        };
+        let mut game = Game::new_run(1, &pool);
+        let lives = game.lives();
+        open_draft(&mut game);
+        game.step(Input {
+            confirm: true,
+            ..Default::default()
+        });
+        assert_eq!(game.lives(), lives + 1, "Extra Life grants a life");
+    }
+
+    #[test]
+    fn boons_apply_and_stack_across_the_run() {
+        // A single-boon pool so every offer is Widen.
+        let pool = Pool {
+            specials: vec![],
+            boons: vec![Boon::Widen],
+        };
+        let mut game = Game::new_run(1, &pool);
+        let base = game.paddle().width;
+
+        open_draft(&mut game);
+        game.step(Input {
+            confirm: true,
+            ..Default::default()
+        });
+        let after_one = game.paddle().width;
+        assert!(after_one > base, "Widen widens the paddle");
+
+        open_draft(&mut game);
+        game.step(Input {
+            confirm: true,
+            ..Default::default()
+        });
+        assert!(
+            game.paddle().width > after_one,
+            "a second Widen stacks on the first"
+        );
+        assert_eq!(game.boons().len(), 2, "both boons are recorded");
     }
 }

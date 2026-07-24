@@ -5,8 +5,8 @@
 //! canvas, camera and blit; only its input, look and HUD are its own. Everything
 //! here is engine glue around the pure `breakout_remix_core`, which owns the
 //! rules. It draws the descent — the wall, the depth and guardian markers, the
-//! lives — and the run-summary card when a run is won or lost. The brick zoo and
-//! the boons arrive in later work.
+//! lives — the boon draft held between walls, and the run-summary card when a run
+//! is won or lost.
 
 use breakout_remix_core::{BALL_SIZE, DEPTHS, Game, Input, Kind, Move, PADDLE_HEIGHT, Phase};
 use breakout_remix_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
@@ -51,6 +51,8 @@ const SPAWNER_MARK: Color = color_u8!(255, 235, 245, 255);
 
 /// A colour to mark a guardian wall, and the run-lost card.
 const GUARDIAN: Color = color_u8!(230, 90, 200, 255);
+/// A dim scrim drawn over the frozen field behind the draft.
+const DRAFT_SCRIM: Color = color_u8!(12, 10, 26, 222);
 
 /// The HUD lives in the strip above the wall.
 const HUD_SCALE: f32 = 2.0;
@@ -62,8 +64,9 @@ const LIFE_ICON_W: f32 = 12.0;
 const LIFE_ICON_H: f32 = 3.0;
 const LIFE_ICON_GAP: f32 = 4.0;
 
-/// Reads RIFT's paddle off the keyboard: the left/right arrows or A/D.
-pub fn read_input() -> Input {
+/// Reads RIFT's paddle off the keyboard while the ball is live: the left/right
+/// arrows or A/D, held.
+pub fn read_play_input() -> Input {
     let left = is_key_down(KeyCode::Left) || is_key_down(KeyCode::A);
     let right = is_key_down(KeyCode::Right) || is_key_down(KeyCode::D);
     Input {
@@ -72,6 +75,24 @@ pub fn read_input() -> Input {
             (false, true) => Move::Right,
             _ => Move::Hold,
         },
+        ..Default::default()
+    }
+}
+
+/// Reads a draft input: arrows move the highlight (one step per press), Enter or
+/// Space takes the boon, Tab re-rolls. Edge-triggered, since a draft is a menu.
+pub fn read_draft_input() -> Input {
+    let paddle = if is_key_pressed(KeyCode::Left) || is_key_pressed(KeyCode::A) {
+        Move::Left
+    } else if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::D) {
+        Move::Right
+    } else {
+        Move::Hold
+    };
+    Input {
+        paddle,
+        confirm: is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space),
+        reroll: is_key_pressed(KeyCode::Tab),
     }
 }
 
@@ -193,4 +214,53 @@ pub fn run_summary(game: &Game, best_depth: u32) {
         HINT_SCALE,
         HUD_TEXT,
     );
+}
+
+/// The boon draft held between walls: three offers, keyboard-chosen, with a
+/// reroll. Drawn over a dim scrim on the frozen field.
+pub fn draw_draft(game: &Game) {
+    draw_rectangle(0.0, 0.0, LOGICAL_WIDTH, LOGICAL_HEIGHT, DRAFT_SCRIM);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "DRAFT A BOON",
+        34.0,
+        HEADING_SCALE,
+        HUD_ACCENT,
+    );
+
+    let highlight = game.draft_highlight();
+    let mut y = 84.0;
+    for (i, boon) in game.offers().iter().enumerate() {
+        let colour = if i == highlight { HUD_ACCENT } else { HUD_TEXT };
+        let title = format!("{}  [{}]", boon.title(), boon.home().label());
+        let w = font::text_width(&title, HUD_SCALE);
+        let x = (LOGICAL_WIDTH - w) / 2.0;
+        font::draw(&title, x, y, HUD_SCALE, colour);
+        if i == highlight {
+            font::draw(
+                ">",
+                x - font::text_width("> ", HUD_SCALE),
+                y,
+                HUD_SCALE,
+                colour,
+            );
+        }
+        font::draw_centred(
+            LOGICAL_WIDTH,
+            boon.description(),
+            y + 12.0,
+            HINT_SCALE,
+            HUD_TEXT,
+        );
+        y += 40.0;
+    }
+
+    let rerolls = game.rerolls();
+    let hint = if rerolls > 0 {
+        format!("ENTER TAKE    TAB REROLL ({rerolls})")
+    } else {
+        "ENTER TAKE".to_string()
+    };
+    font::draw_centred(LOGICAL_WIDTH, &hint, 276.0, HINT_SCALE, HUD_ACCENT);
+    font::draw_centred(LOGICAL_WIDTH, "ARROWS CHOOSE", 288.0, HINT_SCALE, GRAY);
 }

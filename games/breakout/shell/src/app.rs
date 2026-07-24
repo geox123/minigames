@@ -137,16 +137,23 @@ impl App {
                     self.return_to_mode_select();
                     return;
                 }
-                if is_key_pressed(KeyCode::P) {
-                    *paused = !*paused;
-                }
                 if is_key_pressed(KeyCode::R) {
                     game.restart();
                     *paused = false;
                 }
+                // Pause only applies while the ball is live, not mid-draft.
+                let live = matches!(game.phase(), RiftPhase::Serving | RiftPhase::Playing);
+                if live && is_key_pressed(KeyCode::P) {
+                    *paused = !*paused;
+                }
 
-                if !*paused {
-                    let input = rift::read_input();
+                if game.phase() == RiftPhase::Drafting {
+                    // A draft is a menu, not real-time: one input per frame, off
+                    // the accumulator, so a held key never repeats.
+                    accumulator.reset();
+                    self.audio.play_rift(game.step(rift::read_draft_input()));
+                } else if !*paused {
+                    let input = rift::read_play_input();
                     for _ in 0..accumulator.steps(get_frame_time()) {
                         let events = game.step(input);
                         self.audio.play_rift(events);
@@ -165,8 +172,12 @@ impl App {
                 }
 
                 rift::draw(game);
-                if matches!(game.phase(), RiftPhase::Won | RiftPhase::Lost) {
-                    rift::run_summary(game, self.rift_best_depth);
+                match game.phase() {
+                    RiftPhase::Drafting => rift::draw_draft(game),
+                    RiftPhase::Won | RiftPhase::Lost => {
+                        rift::run_summary(game, self.rift_best_depth)
+                    }
+                    _ => {}
                 }
                 if *paused {
                     render::paused_overlay();
