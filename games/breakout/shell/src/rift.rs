@@ -8,6 +8,7 @@
 //! lives — the boon draft held between walls, and the run-summary card when a run
 //! is won or lost.
 
+use breakout_remix_core::meta::{self, Content, Unlocked};
 use breakout_remix_core::{BALL_SIZE, DEPTHS, Game, Input, Kind, Move, PADDLE_HEIGHT, Phase};
 use breakout_remix_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
 use macroquad::prelude::*;
@@ -55,6 +56,8 @@ const GUARDIAN: Color = color_u8!(230, 90, 200, 255);
 const DRAFT_SCRIM: Color = color_u8!(12, 10, 26, 222);
 /// Warm gold, for content a run just added to the collection.
 const UNLOCK: Color = color_u8!(255, 214, 110, 255);
+/// Dim, for content still out there to earn.
+const LOCKED: Color = color_u8!(120, 114, 148, 255);
 
 /// The HUD lives in the strip above the wall.
 const HUD_SCALE: f32 = 2.0;
@@ -228,6 +231,65 @@ pub fn run_summary(game: &Game, best_line: &str, earned_line: &str) {
         HINT_SCALE,
         HUD_TEXT,
     );
+}
+
+/// The collection: every piece of content RIFT can offer, earned or still out
+/// there. Unlocked items read in gold; locked ones show the condition that earns
+/// them, so there is always a next goal.
+pub fn draw_collection(unlocked: Unlocked) {
+    clear_background(BACKGROUND);
+
+    let have = meta::ALL.iter().filter(|c| unlocked.has(**c)).count();
+    font::draw_centred(LOGICAL_WIDTH, "COLLECTION", 20.0, HEADING_SCALE, HUD_ACCENT);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("{have} OF {} UNLOCKED", meta::ALL.len()),
+        44.0,
+        HINT_SCALE,
+        HUD_TEXT,
+    );
+
+    let mut y = 64.0;
+    font::draw_centred(LOGICAL_WIDTH, "BRICKS", y, HINT_SCALE, GUARDIAN);
+    y += 14.0;
+    for content in meta::ALL {
+        if matches!(content, Content::Brick(_)) {
+            collection_row(content, unlocked.has(content), y);
+            y += 13.0;
+        }
+    }
+
+    y += 8.0;
+    font::draw_centred(LOGICAL_WIDTH, "BOONS", y, HINT_SCALE, GUARDIAN);
+    y += 14.0;
+    for content in meta::ALL {
+        if matches!(content, Content::Boon(_)) {
+            collection_row(content, unlocked.has(content), y);
+            y += 13.0;
+        }
+    }
+
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "ESC  BACK",
+        LOGICAL_HEIGHT - 22.0,
+        HINT_SCALE,
+        HUD_TEXT,
+    );
+}
+
+/// One collection row: the name alone once earned, or the name and the condition
+/// that unlocks it while still locked.
+fn collection_row(content: Content, unlocked: bool, y: f32) {
+    let (text, colour) = if unlocked {
+        (content.label().to_string(), UNLOCK)
+    } else {
+        (
+            format!("{}   {}", content.label(), content.condition()),
+            LOCKED,
+        )
+    };
+    font::draw_centred(LOGICAL_WIDTH, &text, y, HINT_SCALE, colour);
 }
 
 /// The boon draft held between walls: three offers, keyboard-chosen, with a
