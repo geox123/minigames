@@ -39,7 +39,7 @@ async fn main() {
         set_default_camera();
 
         clear_background(DARKGRAY);
-        blit_canvas(&canvas.texture);
+        blit_canvas(&canvas.texture, Vec2::ZERO);
 
         if frame == 1 {
             canvas

@@ -25,6 +25,10 @@ pub struct Audio {
     clink: Sound,
     /// A low boom when an explosive brick chains.
     boom: Sound,
+    /// A short rising chime when a boon is drafted.
+    select: Sound,
+    /// A rising fanfare when a run is won.
+    win: Sound,
 }
 
 impl Audio {
@@ -44,6 +48,8 @@ impl Audio {
             lost: chirp(300.0, 90.0, 0.35).await,
             clink: blip(540.0, 0.022).await,
             boom: chirp(220.0, 60.0, 0.18).await,
+            select: chirp(420.0, 900.0, 0.12).await,
+            win: chirp(400.0, 1120.0, 0.4).await,
         }
     }
 
@@ -73,7 +79,9 @@ impl Audio {
     pub fn play_rift(&self, events: RiftEvents) {
         if events.lost {
             play_sound_once(&self.lost);
-        } else if events.won || events.guardian_cleared || events.wall_cleared {
+        } else if events.won {
+            play_sound_once(&self.win);
+        } else if events.guardian_cleared || events.wall_cleared {
             play_sound_once(&self.cleared);
         } else if events.lost_ball {
             play_sound_once(&self.lost);
@@ -89,5 +97,10 @@ impl Audio {
         if events.wall_bounce && !events.lost_ball && !events.lost {
             play_sound_once(&self.wall);
         }
+    }
+
+    /// Plays the chime for a drafted boon.
+    pub fn play_select(&self) {
+        play_sound_once(&self.select);
     }
 }

@@ -10,8 +10,9 @@
 //! RIFT's mode menu.
 
 use breakout::app::RiftMode;
+use breakout::fx::Fx;
 use breakout::{blit_canvas, logical_camera, logical_canvas, render, rift};
-use breakout_remix_core::{Game, Input, Move, Phase, Pool};
+use breakout_remix_core::{BALL_SIZE, Game, Input, Move, Phase, Pool, TIMESTEP};
 use macroquad::prelude::*;
 
 #[macroquad::main("rift canvas shot")]
@@ -31,7 +32,7 @@ async fn main() {
             render::rift_menu(RiftMode::Ascension, 3);
             set_default_camera();
             clear_background(DARKGRAY);
-            blit_canvas(&canvas.texture);
+            blit_canvas(&canvas.texture, Vec2::ZERO);
             if frame == 1 {
                 canvas
                     .texture
@@ -44,6 +45,7 @@ async fn main() {
         return;
     }
     let mut game = Game::new_run(7, &Pool::base());
+    let mut fx = Fx::default();
     for _ in 0..steps {
         let ball = game.ball();
         let centre = game.paddle().x + game.paddle().width / 2.0;
@@ -61,24 +63,28 @@ async fn main() {
         } else {
             Move::Hold
         };
-        game.step(Input {
+        let events = game.step(Input {
             paddle,
             ..Default::default()
         });
+        fx.on_step(events, game.ball(), game.phase() == Phase::Playing);
+        fx.update(TIMESTEP);
         if dodge && game.phase() == Phase::Lost {
             break;
         }
     }
 
     let suffix = if dodge { "summary" } else { "play" };
+    let ball = game.ball();
     for frame in 0..2 {
         set_camera(&camera);
         rift::draw(&game);
+        fx.draw(BALL_SIZE, ball.vx.hypot(ball.vy));
         rift::run_summary(&game, "RUN BEST DEPTH 2");
         set_default_camera();
 
         clear_background(DARKGRAY);
-        blit_canvas(&canvas.texture);
+        blit_canvas(&canvas.texture, Vec2::ZERO);
 
         if frame == 1 {
             canvas

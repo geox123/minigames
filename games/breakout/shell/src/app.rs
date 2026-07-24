@@ -4,12 +4,14 @@
 
 use breakout_core::{Game, TIMESTEP};
 use breakout_remix_core::{
-    Game as RiftGame, Phase as RiftPhase, Pool as RiftPool, TIMESTEP as RIFT_TIMESTEP,
+    BALL_SIZE as RIFT_BALL_SIZE, Game as RiftGame, Phase as RiftPhase, Pool as RiftPool,
+    TIMESTEP as RIFT_TIMESTEP,
 };
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
 use crate::audio::Audio;
+use crate::fx::Fx;
 use crate::{read_input, render, rift};
 
 /// How much real time a single frame may contribute to the simulation. Without
@@ -85,6 +87,8 @@ enum Screen {
         day: u32,
         /// The best depth to beat and show for this mode, updated when beaten.
         best: u32,
+        /// The run's feel — trail, particles, shake, hit-stop.
+        fx: Fx,
     },
 }
 
@@ -95,6 +99,8 @@ pub struct App {
     next_seed: u64,
     audio: Audio,
     fullscreen: bool,
+    /// The screen-shake offset to blit by this frame, in logical units.
+    blit_shake: Vec2,
 }
 
 impl App {
@@ -107,7 +113,13 @@ impl App {
             next_seed: seed_from_clock(),
             audio,
             fullscreen: false,
+            blit_shake: Vec2::ZERO,
         }
+    }
+
+    /// The screen-shake offset the window should blit the canvas by this frame.
+    pub fn blit_shake(&self) -> Vec2 {
+        self.blit_shake
     }
 
     /// Advances the shell by one real frame: reads input, runs whatever the
@@ -118,6 +130,8 @@ impl App {
             self.fullscreen = !self.fullscreen;
             set_fullscreen(self.fullscreen);
         }
+        // Reset the shake each frame; a RIFT run sets it below.
+        self.blit_shake = Vec2::ZERO;
 
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
@@ -188,6 +202,7 @@ impl App {
                 mode,
                 day,
                 best,
+                fx,
             } => {
                 // Backing out of a run returns to RIFT's mode menu.
                 if is_key_pressed(KeyCode::Escape) {
@@ -204,16 +219,25 @@ impl App {
                     *paused = !*paused;
                 }
 
+                let dt = get_frame_time();
+                fx.update(dt);
+
                 if game.phase() == RiftPhase::Drafting {
                     // A draft is a menu, not real-time: one input per frame, off
                     // the accumulator, so a held key never repeats.
                     accumulator.reset();
                     self.audio.play_rift(game.step(rift::read_draft_input()));
-                } else if !*paused {
+                    if game.phase() != RiftPhase::Drafting {
+                        // A boon was just taken — the draft is done.
+                        self.audio.play_select();
+                        fx.beat();
+                    }
+                } else if !*paused && !fx.frozen() {
                     let input = rift::read_play_input();
-                    for _ in 0..accumulator.steps(get_frame_time()) {
+                    for _ in 0..accumulator.steps(dt) {
                         let events = game.step(input);
                         self.audio.play_rift(events);
+                        fx.on_step(events, game.ball(), game.phase() == RiftPhase::Playing);
                         // A run that just ended may better its mode's record: a
                         // deeper Run/Daily, or — on a win — the next Ascension
                         // tier unlocked.
@@ -246,11 +270,15 @@ impl App {
                         }
                     }
                 } else {
-                    // Don't let paused wall-time pile up and fast-forward on resume.
+                    // Paused, or held for hit-stop: don't pile up wall-time.
                     accumulator.reset();
                 }
 
+                self.blit_shake = Vec2::from(fx.shake_offset());
+
                 rift::draw(game);
+                let ball = game.ball();
+                fx.draw(RIFT_BALL_SIZE, ball.vx.hypot(ball.vy));
                 match game.phase() {
                     RiftPhase::Drafting => rift::draw_draft(game),
                     RiftPhase::Won | RiftPhase::Lost => {
@@ -335,6 +363,7 @@ impl App {
             mode,
             day,
             best,
+            fx: Fx::default(),
         };
     }
 }
