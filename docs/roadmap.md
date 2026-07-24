@@ -70,9 +70,10 @@ Faithfuls reference the original name plainly; Remixes ship under invented names
 - **Breakout, Asteroids** — Atari, arcade-era, low risk. Real names, same
   posture as Pong.
 - **Space Invaders** — Taito is more protective than Atari, though a rung below
-  the Nintendo-tier ADR 0002 flags. Build the Faithful under its real name with
-  original evocative sprites, **but do an explicit per-title IP re-check before
-  it ships.**
+  the Nintendo-tier ADR 0002 flags. The required per-title re-check is done and
+  recorded in [ADR 0004](adr/0004-space-invaders-ip-recheck.md): build the
+  Faithful under its real name with hand-authored sprites and synthesized audio,
+  with renaming held as the cheap fallback if the rights holder ever objects.
 - **Pac-Man** (next batch) — Namco; do the per-title re-check when it comes up.
 
 ## Working notes
