@@ -10,8 +10,10 @@ every sprite and sound is authored from scratch, nothing sampled or traced.
 - **Faithful** — the arcade invasion game recreated: a lock-step formation that
   marches down at you, four bunkers to hide behind, a mystery saucer, and the
   march that winds tighter as you thin the formation. Documented below.
-- **Remix** — still to come. It grows out of the Faithful, as every Remix does,
-  and gets its own name and spec once it ships.
+- **Remix** — **[HAILFALL](HAILFALL.md)**, a bullet-hell that cuts the swarm loose
+  into sweeping squadrons, a nimble ship with a dash, focus and a graze-fed
+  overdrive nova, power-ups, multi-phase motherships and three modes. Pick it from
+  the mode-select.
 
 **▶ Play: https://geox123.github.io/minigames/stepfall/**
 
@@ -37,8 +39,8 @@ bring the next, lower wave.
 | **F** | Toggle fullscreen |
 | **Esc** | Back out to mode-select |
 
-The Game opens on a **mode-select** screen — Faithful (playable) or Remix
-(coming soon) — then drops you into the first wave.
+The Game opens on a **mode-select** screen — the Faithful, or its Remix
+**[HAILFALL](HAILFALL.md)** — then drops you into the first wave.
 
 ## What makes it faithful
 

@@ -31,14 +31,16 @@ in [`docs/adr/`](docs/adr).
 | ---- | ---- | -------- | ----- | ------ |
 | [Pong](games/pong) | 1972 | ✅ playable | ✅ [PULSE](games/pong/PULSE.md) | **Done** |
 | [Breakout](games/breakout) | 1976 | ✅ playable | ✅ [RIFT](games/breakout/RIFT.md) | **Done** |
-| [STEPFALL](games/stepfall) | 1978 | ✅ playable | 🔜 coming | Faithful live |
+| [STEPFALL](games/stepfall) | 1978 | ✅ playable | ✅ [HAILFALL](games/stepfall/HAILFALL.md) | **Done** |
 
-**Pong and Breakout are Done** — each has shipped both takes. Pong pairs its
-Faithful with [PULSE](games/pong/PULSE.md); Breakout pairs its Faithful with
-[RIFT](games/breakout/RIFT.md), a roguelike descent with a brick zoo, a boon
+**Pong, Breakout and STEPFALL are Done** — each has shipped both takes. Pong
+pairs its Faithful with [PULSE](games/pong/PULSE.md); Breakout pairs its Faithful
+with [RIFT](games/breakout/RIFT.md), a roguelike descent with a brick zoo, a boon
 draft and three modes. The third Game, **[STEPFALL](games/stepfall)** — the 1978
-arcade invasion game, shipped under a name of its own — now has its Faithful
-live; its Remix follows.
+arcade invasion game, shipped under a name of its own — pairs its Faithful with
+[HAILFALL](games/stepfall/HAILFALL.md), a bullet-hell that cuts the swarm loose
+into sweeping squadrons, a nimble ship with a dash, focus and a graze-fed
+overdrive nova, power-ups, multi-phase motherships and three modes.
 
 ## How it's built
 
