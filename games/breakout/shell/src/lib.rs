@@ -6,6 +6,7 @@
 pub mod app;
 pub mod audio;
 pub mod render;
+pub mod rift;
 
 pub use app::App;
 pub use audio::Audio;

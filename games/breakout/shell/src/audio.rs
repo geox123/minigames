@@ -4,6 +4,7 @@
 //! browser builds.
 
 use breakout_core::Events;
+use breakout_remix_core::Events as RiftEvents;
 use macroquad::audio::{Sound, play_sound_once};
 use shell_kit::synth::{blip, chirp};
 
@@ -54,6 +55,24 @@ impl Audio {
             play_sound_once(&self.paddle);
         }
         if events.wall_bounce && !events.lost_turn {
+            play_sound_once(&self.wall);
+        }
+    }
+
+    /// Plays whatever a RIFT step produced. RIFT reuses the same voices for now —
+    /// the same picking rule as the Faithful, keyed to RIFT's events — until the
+    /// juice pass gives the Remix its own voice character.
+    pub fn play_rift(&self, events: RiftEvents) {
+        if events.lost_ball {
+            play_sound_once(&self.lost);
+        } else if events.wall_cleared {
+            play_sound_once(&self.cleared);
+        } else if let Some(band) = events.brick_broken {
+            play_sound_once(&self.brick[(band as usize).min(BANDS - 1)]);
+        } else if events.paddle_hit {
+            play_sound_once(&self.paddle);
+        }
+        if events.wall_bounce && !events.lost_ball {
             play_sound_once(&self.wall);
         }
     }

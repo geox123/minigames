@@ -3,30 +3,31 @@
 //! around the pure core, which is why it lives in the shell, not `breakout_core`.
 
 use breakout_core::{Game, TIMESTEP};
+use breakout_remix_core::{Game as RiftGame, Pool as RiftPool, TIMESTEP as RIFT_TIMESTEP};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
 use crate::audio::Audio;
-use crate::{read_input, render};
+use crate::{read_input, render, rift};
 
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make
 /// the game try to catch up by simulating seconds at once.
 const MAX_FRAME_TIME: f32 = 0.25;
 
-/// The two takes every Game in the Collection ships. Breakout's Remix is not
-/// built yet, so only the Faithful is playable — the Remix shows as locked.
+/// The two takes every Game in the Collection ships. Both are now playable: the
+/// Faithful, and RIFT — its Remix.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// The faithful recreation.
     Faithful,
-    /// The reimagined version — coming later.
+    /// RIFT, the reimagined version.
     Remix,
 }
 
 /// Which screen the player is looking at.
 enum Screen {
-    /// The Collection's two-takes screen: Faithful or the locked Remix.
+    /// The Collection's two-takes screen: Faithful or RIFT.
     ModeSelect { highlight: Mode },
     /// A Faithful match in progress.
     Match {
@@ -34,6 +35,14 @@ enum Screen {
         /// Left-over real time not yet folded into a fixed step.
         accumulator: Accumulator,
         /// Whether the match is paused.
+        paused: bool,
+    },
+    /// A RIFT run in progress.
+    Rift {
+        game: RiftGame,
+        /// Left-over real time not yet folded into a fixed step.
+        accumulator: Accumulator,
+        /// Whether the run is paused.
         paused: bool,
     },
 }
@@ -72,10 +81,9 @@ impl App {
         match &mut self.screen {
             Screen::ModeSelect { highlight } => {
                 if mode_select_input(highlight) {
-                    // Only the Faithful is playable; committing to the locked
-                    // Remix does nothing.
-                    if *highlight == Mode::Faithful {
-                        self.start_match();
+                    match *highlight {
+                        Mode::Faithful => self.start_match(),
+                        Mode::Remix => self.start_rift(),
                     }
                 } else {
                     render::mode_select(*highlight);
@@ -114,6 +122,39 @@ impl App {
                     render::paused_overlay();
                 }
             }
+            Screen::Rift {
+                game,
+                accumulator,
+                paused,
+            } => {
+                // Backing out of a run returns to the Collection's mode-select.
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                    return;
+                }
+                if is_key_pressed(KeyCode::P) {
+                    *paused = !*paused;
+                }
+                if is_key_pressed(KeyCode::R) {
+                    game.restart();
+                    *paused = false;
+                }
+
+                if !*paused {
+                    let input = rift::read_input();
+                    for _ in 0..accumulator.steps(get_frame_time()) {
+                        self.audio.play_rift(game.step(input));
+                    }
+                } else {
+                    // Don't let paused wall-time pile up and fast-forward on resume.
+                    accumulator.reset();
+                }
+
+                rift::draw(game);
+                if *paused {
+                    render::paused_overlay();
+                }
+            }
         }
     }
 
@@ -135,6 +176,15 @@ impl App {
         self.screen = Screen::Match {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
+            paused: false,
+        };
+    }
+
+    fn start_rift(&mut self) {
+        let game = RiftGame::new_run(self.take_seed(), &RiftPool::base());
+        self.screen = Screen::Rift {
+            game,
+            accumulator: Accumulator::new(RIFT_TIMESTEP, MAX_FRAME_TIME),
             paused: false,
         };
     }
