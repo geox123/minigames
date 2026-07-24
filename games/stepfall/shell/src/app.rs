@@ -28,21 +28,25 @@ pub enum Mode {
     Remix,
 }
 
-/// A row on HAILFALL's menu: one of its modes to play, or the collection to browse.
+/// A row on HAILFALL's menu: one of its modes to play, the Ascension ladder, or
+/// the collection to browse.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MenuRow {
     /// Start a run in this mode.
     Mode(RunMode),
+    /// Start an Ascension run at the reached tier.
+    Ascension,
     /// Open the collection screen.
     Collection,
 }
 
 impl MenuRow {
     /// The rows, top to bottom.
-    pub const ROWS: [MenuRow; 4] = [
+    pub const ROWS: [MenuRow; 5] = [
         MenuRow::Mode(RunMode::Sortie),
         MenuRow::Mode(RunMode::Onslaught),
         MenuRow::Mode(RunMode::Daily),
+        MenuRow::Ascension,
         MenuRow::Collection,
     ];
 
@@ -52,6 +56,7 @@ impl MenuRow {
             MenuRow::Mode(RunMode::Sortie) => "SORTIE",
             MenuRow::Mode(RunMode::Onslaught) => "ONSLAUGHT",
             MenuRow::Mode(RunMode::Daily) => "DAILY",
+            MenuRow::Ascension => "ASCENSION",
             MenuRow::Collection => "COLLECTION",
         }
     }
@@ -91,8 +96,11 @@ enum Screen {
         mode: RunMode,
         /// The calendar day a Daily run belongs to (its saved key; 0 otherwise).
         day: u32,
-        /// The best score to beat and show for this mode (0 for Sortie).
+        /// The best score to beat and show for this mode (0 for Sortie/Ascension).
         best: u32,
+        /// Whether this is an Ascension run — its tier is read from the game, and a
+        /// win pushes the reached tier up.
+        ascension: bool,
         /// The options unlocked so far — this run's loadout was built from it, and
         /// its outcome is recorded back into it.
         unlocked: meta::Unlocked,
@@ -168,6 +176,7 @@ impl App {
                 if let Some(chosen) = remix_menu_input(highlight) {
                     match chosen {
                         MenuRow::Mode(mode) => self.start_remix_match(mode),
+                        MenuRow::Ascension => self.start_ascension_match(),
                         MenuRow::Collection => self.open_collection(),
                     }
                 } else {
@@ -246,6 +255,7 @@ impl App {
                 mode,
                 day,
                 best,
+                ascension,
                 unlocked,
                 earned,
                 saved,
@@ -311,17 +321,26 @@ impl App {
                     }
 
                     // Record the run's outcome into the unlock set; save and call
-                    // out anything newly earned. (Ascension tier lands in B3.)
+                    // out anything newly earned.
+                    let won = game.outcome() == Some(RunOutcome::Won);
                     let outcome = meta::Outcome {
-                        won: game.outcome() == Some(RunOutcome::Won),
+                        won,
                         stages_cleared: game.stage(),
                         score,
-                        tier: 0,
+                        tier: if *ascension { game.tier() } else { 0 },
                     };
                     let newly = unlocked.record(outcome);
                     if !newly.is_empty() {
                         stepfall_storage::set_unlocked_bits(unlocked.bits());
                         *earned = newly;
+                    }
+
+                    // Winning an Ascension run pushes the reached tier up a rung.
+                    if *ascension && won {
+                        let next = game.tier() + 1;
+                        if next > stepfall_storage::ascension_tier() {
+                            stepfall_storage::set_ascension_tier(next);
+                        }
                     }
                 }
 
@@ -329,7 +348,7 @@ impl App {
                 render::draw_remix(game, *best);
                 fx.draw();
                 if over {
-                    render::remix_summary(game, *mode, *best, earned);
+                    render::remix_summary(game, *mode, *best, *ascension, earned);
                 } else if *paused {
                     render::paused_overlay();
                 }
@@ -400,6 +419,32 @@ impl App {
             mode,
             day,
             best,
+            ascension: false,
+            unlocked,
+            earned: Vec::new(),
+            saved: false,
+        };
+    }
+
+    /// Starts an Ascension run at the reached tier — a Sortie escalated by the
+    /// tier's modifiers. Winning it pushes the reached tier up.
+    fn start_ascension_match(&mut self) {
+        let tier = stepfall_storage::ascension_tier();
+        let unlocked = meta::Unlocked::from_bits(stepfall_storage::unlocked_bits());
+        let game = Box::new(RemixGame::new_ascension(
+            self.take_seed(),
+            tier,
+            unlocked.loadout(),
+        ));
+        self.screen = Screen::RemixMatch {
+            game,
+            accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
+            fx: Fx::default(),
+            paused: false,
+            mode: RunMode::Sortie,
+            day: 0,
+            best: 0,
+            ascension: true,
             unlocked,
             earned: Vec::new(),
             saved: false,
