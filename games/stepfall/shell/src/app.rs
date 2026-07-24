@@ -43,6 +43,8 @@ pub struct App {
     screen: Screen,
     next_seed: u64,
     fullscreen: bool,
+    /// The best score this session, carried across restarts and new games.
+    best: u32,
 }
 
 impl Default for App {
@@ -60,6 +62,7 @@ impl App {
             },
             next_seed: seed_from_clock(),
             fullscreen: false,
+            best: 0,
         }
     }
 
@@ -112,7 +115,8 @@ impl App {
                     accumulator.reset();
                 }
 
-                render::draw(game);
+                self.best = self.best.max(game.score());
+                render::draw(game, self.best);
                 if *paused {
                     render::paused_overlay();
                 }

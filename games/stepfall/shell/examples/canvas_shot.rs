@@ -20,22 +20,18 @@ async fn main() {
     let camera = logical_camera(&canvas);
     let mut game = Game::new(7);
     for i in 0..steps {
-        // Drift the cannon back and forth so the scene isn't static, and fire
-        // now and then so a shot and the return bombs show up in the capture.
-        let cannon = if (i / 90) % 2 == 0 {
-            Move::Right
-        } else {
-            Move::Left
-        };
+        // Hug the left wall, where the bombs miss, so the cannon survives long
+        // enough to capture a live scene (bunkers, and — past ~3000 steps — the
+        // saucer), firing now and then so a shot shows up too.
         game.step(Input {
-            cannon,
+            cannon: Move::Left,
             fire: i % 30 == 0,
         });
     }
 
     for frame in 0..2 {
         set_camera(&camera);
-        render::draw(&game);
+        render::draw(&game, game.score());
         set_default_camera();
 
         clear_background(DARKGRAY);
