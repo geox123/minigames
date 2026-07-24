@@ -10,6 +10,7 @@ repository.workspace = true
 macroquad.workspace = true
 shell-kit = { path = "../../../shell-kit" }
 stepfall-core = { path = "../core" }
+stepfall-remix-core = { path = "../remix-core" }
 
 [lints]
 workspace = true
