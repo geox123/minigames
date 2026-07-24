@@ -1,6 +1,6 @@
 //! The core is deterministic: the same seed and inputs replay the same game.
 
-use invaders_core::{Game, Input, Move};
+use stepfall_core::{Game, Input, Move};
 
 type Snapshot = (f32, f32, f32, u32);
 

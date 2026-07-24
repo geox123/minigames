@@ -3,7 +3,7 @@
 mod common;
 
 use common::{game, push, still};
-use invaders_core::{CANNON_WIDTH, LOGICAL_WIDTH, Move};
+use stepfall_core::{CANNON_WIDTH, LOGICAL_WIDTH, Move};
 
 #[test]
 fn the_cannon_slides_both_ways() {

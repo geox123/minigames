@@ -10,7 +10,7 @@ members = [
     "games/breakout/remix-core",
     "games/breakout/storage",
     "games/breakout/shell",
-    "games/invaders/core",
+    "games/stepfall/core",
 ]
 
 [workspace.package]

@@ -1,4 +1,8 @@
-//! The pure, deterministic core of the Space Invaders Faithful.
+//! The pure, deterministic core of **STEPFALL** — the Collection's faithful
+//! recreation of the 1978 arcade alien-invasion original (Taito's *Space
+//! Invaders*), shipped under a name of its own per
+//! [ADR 0004](../../../docs/adr/0004-space-invaders-ip-recheck.md). The name is
+//! the game's signature motion: the formation steps sideways, then falls a row.
 //!
 //! Like the Collection's other cores it owns every rule and knows nothing about
 //! rendering, audio, windows or wall-clock time, and advances in fixed timesteps
