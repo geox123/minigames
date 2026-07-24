@@ -1,15 +1,17 @@
 # Breakout
 
-Atari's 1976 wall-breaker, the Collection's second Game. Its first take has
-shipped:
+Atari's 1976 wall-breaker, the Collection's second Game — and now a **Done**
+Game, with both its takes shipped:
 
 - **Faithful** — Atari's *Breakout* recreated: one paddle, one ball, an
   eight-row wall to knock down twice, the original's difficulty and feel kept
   intact under a modern shell. Documented below.
-- **Remix** — the reimagining that grows out of the Faithful. Still to come, so
-  Breakout is not yet a **Done** Game.
+- **Remix** — [**RIFT**](RIFT.md), a roguelike descent that grows out of the
+  Faithful: deepening walls and guardian set-pieces, a brick zoo, a boon draft
+  between walls, and three modes (Run, Daily, Ascension).
 
-**▶ Play: https://geox123.github.io/minigames/breakout/**
+**▶ Play: https://geox123.github.io/minigames/breakout/** — pick the Faithful or
+RIFT on the opening screen.
 
 ---
 
