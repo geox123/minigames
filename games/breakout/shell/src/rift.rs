@@ -8,7 +8,7 @@
 //! lives — and the run-summary card when a run is won or lost. The brick zoo and
 //! the boons arrive in later work.
 
-use breakout_remix_core::{BALL_SIZE, DEPTHS, Game, Input, Move, PADDLE_HEIGHT, Phase};
+use breakout_remix_core::{BALL_SIZE, DEPTHS, Game, Input, Kind, Move, PADDLE_HEIGHT, Phase};
 use breakout_remix_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
 use macroquad::prelude::*;
 
@@ -32,6 +32,13 @@ const BAND_COLOURS: [Color; 4] = [
     color_u8!(150, 110, 240, 255), // violet
     color_u8!(230, 90, 200, 255),  // magenta
 ];
+
+/// Armoured bricks read as steel — darker once cracked.
+const ARMOURED: Color = color_u8!(122, 128, 148, 255);
+const ARMOURED_CRACKED: Color = color_u8!(84, 88, 104, 255);
+/// Mirror bricks read as pale silver with a diagonal sheen.
+const MIRROR: Color = color_u8!(206, 222, 236, 255);
+const MIRROR_SHEEN: Color = color_u8!(250, 252, 255, 255);
 
 /// A colour to mark a guardian wall, and the run-lost card.
 const GUARDIAN: Color = color_u8!(230, 90, 200, 255);
@@ -69,16 +76,22 @@ pub fn draw(game: &Game) {
     draw_rectangle(0.0, 0.0, w, LOGICAL_HEIGHT, FRAME);
     draw_rectangle(LOGICAL_WIDTH - w, 0.0, w, LOGICAL_HEIGHT, FRAME);
 
-    // The brick wall, each brick inset a touch so the rows read apart.
+    // The brick wall, each brick inset a touch so the rows read apart, coloured
+    // by kind: normal bricks by band, armoured as steel (darker when cracked),
+    // mirrors as pale silver with a diagonal sheen.
     for brick in game.bricks() {
-        let colour = BAND_COLOURS[brick.band as usize];
-        draw_rectangle(
-            brick.x + 0.5,
-            brick.y + 0.5,
-            brick.width - 1.0,
-            brick.height - 1.0,
-            colour,
-        );
+        let colour = match brick.kind {
+            Kind::Normal => BAND_COLOURS[brick.band as usize],
+            Kind::Armoured if brick.damaged => ARMOURED_CRACKED,
+            Kind::Armoured => ARMOURED,
+            Kind::Mirror => MIRROR,
+        };
+        let (bx, by) = (brick.x + 0.5, brick.y + 0.5);
+        let (bw, bh) = (brick.width - 1.0, brick.height - 1.0);
+        draw_rectangle(bx, by, bw, bh, colour);
+        if brick.kind == Kind::Mirror {
+            draw_line(bx, by + bh, bx + bw, by, 1.0, MIRROR_SHEEN);
+        }
     }
 
     let paddle = game.paddle();

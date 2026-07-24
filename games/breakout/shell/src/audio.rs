@@ -21,6 +21,8 @@ pub struct Audio {
     cleared: Sound,
     /// The low tone when the ball is lost.
     lost: Sound,
+    /// A hard tick when a brick is struck but not broken (armoured, mirror).
+    clink: Sound,
 }
 
 impl Audio {
@@ -38,6 +40,7 @@ impl Audio {
             brick,
             cleared: chirp(300.0, 820.0, 0.25).await,
             lost: chirp(300.0, 90.0, 0.35).await,
+            clink: blip(540.0, 0.022).await,
         }
     }
 
@@ -59,20 +62,26 @@ impl Audio {
         }
     }
 
-    /// Plays whatever a RIFT step produced. RIFT reuses the same voices for now —
-    /// the same picking rule as the Faithful, keyed to RIFT's events — until the
-    /// juice pass gives the Remix its own voice character.
+    /// Plays whatever a RIFT step produced. One contact voice sounds per step,
+    /// chosen by what matters most — the run ending, a depth or wall cleared, a
+    /// ball lost, a broken brick, a struck-but-unbroken brick, then a plain
+    /// paddle return — with a wall bounce ticking underneath. RIFT reuses the
+    /// Faithful's voices for now; its own voice character is the juice pass.
     pub fn play_rift(&self, events: RiftEvents) {
-        if events.lost_ball {
+        if events.lost {
             play_sound_once(&self.lost);
-        } else if events.wall_cleared {
+        } else if events.won || events.guardian_cleared || events.wall_cleared {
             play_sound_once(&self.cleared);
+        } else if events.lost_ball {
+            play_sound_once(&self.lost);
         } else if let Some(band) = events.brick_broken {
             play_sound_once(&self.brick[(band as usize).min(BANDS - 1)]);
+        } else if events.brick_hit {
+            play_sound_once(&self.clink);
         } else if events.paddle_hit {
             play_sound_once(&self.paddle);
         }
-        if events.wall_bounce && !events.lost_ball {
+        if events.wall_bounce && !events.lost_ball && !events.lost {
             play_sound_once(&self.wall);
         }
     }

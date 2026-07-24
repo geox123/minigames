@@ -95,19 +95,63 @@ pub struct Input {
     pub paddle: Move,
 }
 
+/// A kind of brick. Normal bricks break in one hit; the zoo adds bricks that
+/// behave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Breaks in one hit and scores its band.
+    Normal,
+    /// Takes two hits: the first reflects and cracks it, the second breaks it.
+    Armoured,
+    /// Indestructible: sends the ball straight back and never breaks, so it does
+    /// not count toward clearing the wall — an obstacle to play around.
+    Mirror,
+}
+
+impl Kind {
+    /// Hits this kind takes before breaking (0 for the indestructible mirror).
+    fn hits(self) -> u8 {
+        match self {
+            Kind::Normal => 1,
+            Kind::Armoured => 2,
+            Kind::Mirror => 0,
+        }
+    }
+
+    /// Whether this kind counts toward clearing the wall.
+    fn destructible(self) -> bool {
+        self != Kind::Mirror
+    }
+
+    /// How often a cell rolls this special kind when it is in the pool.
+    fn chance(self) -> f32 {
+        match self {
+            Kind::Armoured => 0.12,
+            Kind::Mirror => 0.05,
+            Kind::Normal => 0.0,
+        }
+    }
+}
+
 /// The brick and boon types a run may draw on, passed *in* at construction so
 /// the core never knows about "unlocks" — only the pool it is handed.
 ///
-/// The skeleton run uses only normal bricks and no boons, so the base pool
-/// currently carries no options; the brick zoo and the boon set fill it in later
-/// work. It is kept and threaded now so those additions don't reshape the seam.
+/// It carries the special brick kinds a run's walls may include; Phase A hands
+/// in the full set, and cross-run unlocks will pare it back later. Boons join it
+/// in their own ticket. Kept and threaded from the start so those additions
+/// don't reshape the seam.
 #[derive(Clone, Debug, Default)]
-pub struct Pool {}
+pub struct Pool {
+    /// Special (non-[`Kind::Normal`]) brick kinds walls may include.
+    specials: Vec<Kind>,
+}
 
 impl Pool {
-    /// The base pool of the plain run: normal bricks, no boons.
+    /// The base pool: every special brick kind built so far.
     pub fn base() -> Self {
-        Self::default()
+        Self {
+            specials: vec![Kind::Armoured, Kind::Mirror],
+        }
     }
 }
 
@@ -123,8 +167,8 @@ pub struct Paddle {
     pub width: f32,
 }
 
-/// A brick, as the shell should draw it: a rectangle in a colour band. Every
-/// brick in the skeleton is a normal brick; the brick zoo adds behaving types.
+/// A brick, as the shell should draw it: a rectangle in a colour band, with its
+/// kind and whether it is a cracked (part-broken) armoured brick.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Brick {
     /// Left edge.
@@ -137,6 +181,10 @@ pub struct Brick {
     pub height: f32,
     /// Colour band, 0 (low, bottom) to 3 (high, top).
     pub band: u8,
+    /// What kind of brick this is.
+    pub kind: Kind,
+    /// An armoured brick that has taken its first hit.
+    pub damaged: bool,
 }
 
 /// The ball's position and velocity, in logical units.
@@ -161,6 +209,9 @@ pub struct Events {
     pub paddle_hit: bool,
     /// A brick was broken this step, and its band (0 low to 3 high).
     pub brick_broken: Option<u8>,
+    /// A brick was struck but not broken this step — an armoured brick's first
+    /// hit, or a mirror's bounce.
+    pub brick_hit: bool,
     /// The last brick of an ordinary wall fell, bringing up the next wall.
     pub wall_cleared: bool,
     /// A guardian fell this step, completing a depth (and banking a life).
@@ -196,15 +247,34 @@ enum WallOutcome {
     Won,
 }
 
+/// One standing brick: its kind and the hits it has left (unused for the
+/// indestructible mirror).
+#[derive(Clone, Copy)]
+struct Cell {
+    kind: Kind,
+    hits: u8,
+}
+
+/// What a ball's contact with the wall did this step.
+enum Hit {
+    /// No brick was touched.
+    None,
+    /// A brick was struck but not broken (armoured's first hit, or a mirror).
+    Struck,
+    /// A brick broke, with its band.
+    Broke(u8),
+}
+
 /// A run of RIFT.
 pub struct Game {
     ball: Ball,
     /// Centre of the paddle, in logical units.
     paddle_x: f32,
     paddle_width: f32,
-    /// Whether each brick is still standing, indexed `row * BRICK_COLS + col`.
-    bricks: Vec<bool>,
-    /// Standing bricks remaining.
+    /// The wall: each cell's standing brick, or `None`, indexed
+    /// `row * BRICK_COLS + col`.
+    bricks: Vec<Option<Cell>>,
+    /// Standing destructible bricks remaining (mirrors are not counted).
     bricks_left: u32,
     score: u32,
     /// The depth being played, 0-based (0 to [`DEPTHS`] − 1).
@@ -231,8 +301,8 @@ impl Game {
             ball: PARKED_BALL,
             paddle_x: LOGICAL_WIDTH / 2.0,
             paddle_width: PADDLE_WIDTH,
-            bricks: vec![true; BRICK_ROWS * BRICK_COLS],
-            bricks_left: (BRICK_ROWS * BRICK_COLS) as u32,
+            bricks: vec![None; BRICK_ROWS * BRICK_COLS],
+            bricks_left: 0,
             score: 0,
             depth: 0,
             wall_in_depth: 0,
@@ -243,6 +313,7 @@ impl Game {
             pool: pool.clone(),
             rng: Rng::new(seed),
         };
+        game.build_wall();
         game.begin_ball();
         game
     }
@@ -259,21 +330,20 @@ impl Game {
 
     /// The bricks still standing, as the shell should draw them.
     pub fn bricks(&self) -> impl Iterator<Item = Brick> + '_ {
-        self.bricks
-            .iter()
-            .enumerate()
-            .filter(|(_, present)| **present)
-            .map(|(i, _)| {
-                let (row, col) = (i / BRICK_COLS, i % BRICK_COLS);
-                let (x, y, width, height) = brick_rect(row, col);
-                Brick {
-                    x,
-                    y,
-                    width,
-                    height,
-                    band: band_of(row),
-                }
+        self.bricks.iter().enumerate().filter_map(|(i, cell)| {
+            let cell = (*cell)?;
+            let (row, col) = (i / BRICK_COLS, i % BRICK_COLS);
+            let (x, y, width, height) = brick_rect(row, col);
+            Some(Brick {
+                x,
+                y,
+                width,
+                height,
+                band: band_of(row),
+                kind: cell.kind,
+                damaged: cell.kind == Kind::Armoured && cell.hits == 1,
             })
+        })
     }
 
     /// Standing bricks remaining.
@@ -370,7 +440,12 @@ impl Game {
             wall_bounce = true;
         }
 
-        let brick_broken = self.collide_bricks(previous);
+        let hit = self.collide_bricks(previous);
+        let brick_broken = match hit {
+            Hit::Broke(band) => Some(band),
+            _ => None,
+        };
+        let brick_hit = matches!(hit, Hit::Struck);
 
         // Emptying a wall completes it: an ordinary wall brings up the next, a
         // guardian descends a depth (and re-parks), the final guardian wins.
@@ -404,6 +479,7 @@ impl Game {
             wall_bounce,
             paddle_hit,
             brick_broken,
+            brick_hit,
             wall_cleared,
             guardian_cleared,
             lost_ball,
@@ -425,38 +501,59 @@ impl Game {
                 self.depth += 1;
                 self.wall_in_depth = 0;
                 self.lives = (self.lives + 1).min(LIVES_CAP);
-                self.refill_wall();
+                self.build_wall();
                 self.begin_ball();
                 WallOutcome::Depth
             }
         } else {
             self.wall_in_depth += 1;
-            self.refill_wall();
+            self.build_wall();
             self.begin_ball();
             WallOutcome::Ordinary
         }
     }
 
-    /// Stands every brick back up for a fresh wall.
-    fn refill_wall(&mut self) {
-        for standing in self.bricks.iter_mut() {
-            *standing = true;
+    /// Builds a fresh wall, drawing each cell's kind from the pool: mostly normal
+    /// bricks, with the pool's special kinds sprinkled in at their own rates. The
+    /// same seed and pool always build the same wall.
+    fn build_wall(&mut self) {
+        let specials = self.pool.specials.clone();
+        let mut destructible = 0;
+        for cell in self.bricks.iter_mut() {
+            // Give each enabled special a chance at this cell; the first that
+            // rolls wins, otherwise the cell is a normal brick.
+            let mut kind = Kind::Normal;
+            for &special in &specials {
+                if self.rng.range(0.0, 1.0) < special.chance() {
+                    kind = special;
+                    break;
+                }
+            }
+            if kind.destructible() {
+                destructible += 1;
+            }
+            *cell = Some(Cell {
+                kind,
+                hits: kind.hits(),
+            });
         }
-        self.bricks_left = (BRICK_ROWS * BRICK_COLS) as u32;
+        self.bricks_left = destructible;
     }
 
-    /// Breaks the first standing brick the ball is now overlapping, reflecting
-    /// the ball off the face it came in through and scoring the brick's band.
-    /// At most one brick per step. The ball's step is far smaller than a brick,
-    /// so it can never pass through the wall.
-    fn collide_bricks(&mut self, previous: Ball) -> Option<u8> {
+    /// Resolves the ball's contact with the first standing brick it overlaps,
+    /// reflecting off the face it came in through. A normal brick breaks (and
+    /// scores); an armoured brick cracks on its first hit and breaks on its
+    /// second; a mirror sends the ball straight back and never breaks. At most
+    /// one brick per step — the ball's step is far smaller than a brick, so it
+    /// can never pass through the wall.
+    fn collide_bricks(&mut self, previous: Ball) -> Hit {
         let half = BALL_SIZE / 2.0;
         for row in 0..BRICK_ROWS {
             for col in 0..BRICK_COLS {
                 let i = row * BRICK_COLS + col;
-                if !self.bricks[i] {
+                let Some(cell) = self.bricks[i] else {
                     continue;
-                }
+                };
                 let (rx, ry, rw, rh) = brick_rect(row, col);
                 let overlaps = self.ball.x + half > rx
                     && self.ball.x - half < rx + rw
@@ -469,7 +566,8 @@ impl Game {
                 // Which face did it come in through? Use where it was before.
                 let from_above = previous.y + half <= ry;
                 let from_below = previous.y - half >= ry + rh;
-                if from_above || from_below {
+                let vertical = from_above || from_below;
+                if vertical {
                     self.ball.vy = -self.ball.vy;
                     self.ball.y = if from_above {
                         ry - half
@@ -485,14 +583,34 @@ impl Game {
                     };
                 }
 
-                self.bricks[i] = false;
-                self.bricks_left -= 1;
-                let band = band_of(row);
-                self.score += BAND_POINTS[band as usize];
-                return Some(band);
+                if cell.kind == Kind::Mirror {
+                    // A retroreflector: also reverse the other axis so the ball
+                    // heads straight back the way it came. It never breaks.
+                    if vertical {
+                        self.ball.vx = -self.ball.vx;
+                    } else {
+                        self.ball.vy = -self.ball.vy;
+                    }
+                    return Hit::Struck;
+                }
+
+                // Destructible: the hit either cracks or breaks the brick.
+                let hits = cell.hits - 1;
+                if hits == 0 {
+                    self.bricks[i] = None;
+                    self.bricks_left -= 1;
+                    let band = band_of(row);
+                    self.score += BAND_POINTS[band as usize];
+                    return Hit::Broke(band);
+                }
+                self.bricks[i] = Some(Cell {
+                    kind: cell.kind,
+                    hits,
+                });
+                return Hit::Struck;
             }
         }
-        None
+        Hit::None
     }
 
     /// Rebounds the ball off the paddle if its path crossed the paddle's top
@@ -635,17 +753,10 @@ mod tests {
     //! does. Lives and losing are reachable by honest play, tested in `tests/`.
     use super::*;
 
-    /// Leaves a single standing brick and puts the ball on course to break it on
-    /// the next step, so a test can drive a wall empty.
-    fn one_brick_left(game: &mut Game, row: usize, col: usize) {
-        for standing in game.bricks.iter_mut() {
-            *standing = false;
-        }
-        game.bricks[row * BRICK_COLS + col] = true;
-        game.bricks_left = 1;
-
+    /// Aims the ball just below `(row, col)`, rising into its underside on the
+    /// next step.
+    fn aim_below(game: &mut Game, row: usize, col: usize) {
         let (x, y, w, h) = brick_rect(row, col);
-        // Just below the brick, rising into its underside this step.
         game.ball = Ball {
             x: x + w / 2.0,
             y: y + h + BALL_SIZE / 2.0,
@@ -653,6 +764,25 @@ mod tests {
             vy: -BALL_SPEED,
         };
         game.phase = Phase::Playing;
+    }
+
+    /// Leaves a single brick of `kind` standing and aims the ball at it, so a
+    /// test can drive that one contact through the real `step` path.
+    fn place_brick(game: &mut Game, kind: Kind, row: usize, col: usize) {
+        for cell in game.bricks.iter_mut() {
+            *cell = None;
+        }
+        game.bricks[row * BRICK_COLS + col] = Some(Cell {
+            kind,
+            hits: kind.hits(),
+        });
+        game.bricks_left = if kind.destructible() { 1 } else { 0 };
+        aim_below(game, row, col);
+    }
+
+    /// Leaves a single normal brick standing, ready to be broken next step.
+    fn one_brick_left(game: &mut Game, row: usize, col: usize) {
+        place_brick(game, Kind::Normal, row, col);
     }
 
     #[test]
@@ -668,9 +798,13 @@ mod tests {
         assert!(!events.guardian_cleared && !events.won);
         assert_eq!(game.depth(), 1, "an ordinary wall keeps the same depth");
         assert_eq!(
-            game.bricks_left(),
-            (BRICK_ROWS * BRICK_COLS) as u32,
-            "the next wall starts full"
+            game.bricks().count(),
+            BRICK_ROWS * BRICK_COLS,
+            "the next wall starts full of bricks"
+        );
+        assert!(
+            game.bricks_left() > 0,
+            "the next wall has destructible bricks to clear"
         );
         assert_eq!(
             game.phase(),
@@ -729,5 +863,84 @@ mod tests {
         assert!(!events.guardian_cleared);
         assert_eq!(game.phase(), Phase::Won);
         assert_eq!(game.depth(), DEPTHS, "a won run reached the final depth");
+    }
+
+    #[test]
+    fn an_armoured_brick_cracks_on_the_first_hit_and_breaks_on_the_second() {
+        let mut game = Game::new_run(2, &Pool::base());
+        place_brick(&mut game, Kind::Armoured, 7, 7);
+        // A keeper brick elsewhere, so breaking the armoured one does not empty
+        // the wall (which would rebuild it and mask the result).
+        game.bricks[0] = Some(Cell {
+            kind: Kind::Normal,
+            hits: 1,
+        });
+        game.bricks_left = 2;
+
+        let first = game.step(Input::default());
+        assert!(
+            first.brick_hit && first.brick_broken.is_none(),
+            "the first hit cracks the armoured brick, not breaks it"
+        );
+        assert_eq!(
+            game.bricks_left(),
+            2,
+            "a cracked armoured brick has not broken"
+        );
+        let target = game
+            .bricks()
+            .find(|b| b.kind == Kind::Armoured)
+            .expect("the armoured brick still stands");
+        assert!(target.damaged, "a cracked armoured brick reads as damaged");
+
+        aim_below(&mut game, 7, 7);
+        let second = game.step(Input::default());
+        assert_eq!(
+            second.brick_broken,
+            Some(band_of(7)),
+            "the second hit breaks it and scores its band"
+        );
+        assert_eq!(
+            game.bricks_left(),
+            1,
+            "breaking it leaves the keeper standing"
+        );
+        assert!(
+            game.bricks().all(|b| b.kind != Kind::Armoured),
+            "the armoured brick is gone"
+        );
+    }
+
+    #[test]
+    fn a_mirror_sends_the_ball_straight_back_and_never_breaks() {
+        let mut game = Game::new_run(3, &Pool::base());
+        place_brick(&mut game, Kind::Mirror, 7, 7);
+        // Approach the underside moving up and to the right.
+        let (x, y, _w, h) = brick_rect(7, 7);
+        game.ball = Ball {
+            x,
+            y: y + h + BALL_SIZE / 2.0,
+            vx: 60.0,
+            vy: -BALL_SPEED,
+        };
+        game.phase = Phase::Playing;
+
+        let events = game.step(Input::default());
+        assert!(
+            events.brick_hit && events.brick_broken.is_none(),
+            "a mirror is struck, never broken"
+        );
+        assert_eq!(game.bricks().count(), 1, "a mirror stays standing");
+        assert_eq!(game.bricks().next().unwrap().kind, Kind::Mirror);
+        assert_eq!(
+            game.bricks_left(),
+            0,
+            "a mirror is not counted toward the clear"
+        );
+        let ball = game.ball();
+        assert!(
+            ball.vy > 0.0 && ball.vx < 0.0,
+            "the mirror reverses both axes, sending the ball straight back"
+        );
     }
 }
