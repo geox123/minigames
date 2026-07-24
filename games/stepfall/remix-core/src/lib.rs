@@ -152,6 +152,8 @@ const BOSS_ENTRY_SPEED: f32 = 60.0;
 const BOSS_SWAY_AMP: f32 = 46.0;
 const BOSS_SWAY_RATE: f32 = 0.7;
 const WAVES_PER_STAGE: u32 = 3;
+/// How many stages a Sortie runs; felling the final stage's mothership wins it.
+const SORTIE_STAGES: u32 = 4;
 /// Its health, deepening each stage; the speed and sweep of its fire; and how big
 /// a bite a nova takes out of it.
 const BOSS_BASE_HP: u32 = 60;
@@ -399,9 +401,13 @@ pub struct Events {
     pub boss_hit: bool,
     /// The mothership shifted into a new phase this step.
     pub boss_phase_changed: bool,
-    /// The mothership was felled this step — the stage is cleared.
+    /// A mothership was felled this step.
     pub boss_cleared: bool,
-    /// The last life was spent this step — the run is over.
+    /// A stage was cleared this step and the run plays on (a non-final mothership fell).
+    pub stage_cleared: bool,
+    /// The run was won this step — a Sortie's final mothership fell.
+    pub run_won: bool,
+    /// The last life was spent this step — the run is over (lost).
     pub run_over: bool,
 }
 
@@ -412,6 +418,15 @@ pub enum Phase {
     Playing,
     /// The run is over.
     Over,
+}
+
+/// How a run ended — set once it is over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// Won — a Sortie's final mothership fell.
+    Won,
+    /// Lost — the last life was spent.
+    Lost,
 }
 
 /// A small, fast, deterministic RNG (xorshift64) — the run's only randomness,
@@ -576,6 +591,8 @@ pub struct Game {
     #[allow(dead_code)]
     loadout: Loadout,
     phase: Phase,
+    /// How the run ended, once it is over.
+    outcome: Option<Outcome>,
     /// Steps taken so far.
     steps: u64,
     /// The seed the run began on, so a restart replays it exactly.
@@ -613,6 +630,7 @@ impl Game {
             mode,
             loadout,
             phase: Phase::Playing,
+            outcome: None,
             steps: 0,
             seed,
         };
@@ -731,6 +749,11 @@ impl Game {
     /// Where the run is.
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// How the run ended, or `None` while it is still being played.
+    pub fn outcome(&self) -> Option<Outcome> {
+        self.outcome
     }
 
     /// Starts the run over from the beginning; the same seed replays it.
@@ -1249,6 +1272,7 @@ impl Game {
         self.invuln = HIT_INVULN;
         if self.lives == 0 {
             self.phase = Phase::Over;
+            self.outcome = Some(Outcome::Lost);
             events.run_over = true;
         }
     }
@@ -1403,8 +1427,17 @@ impl Game {
         if self.boss.as_ref().is_some_and(|b| b.hp == 0) {
             self.boss = None;
             self.stage += 1;
-            self.wave_gap = WAVE_GAP;
             events.boss_cleared = true;
+            if self.mode == Mode::Sortie && self.stage >= SORTIE_STAGES {
+                // The final mothership of a Sortie has fallen — the run is won.
+                self.phase = Phase::Over;
+                self.outcome = Some(Outcome::Won);
+                events.run_won = true;
+            } else {
+                // A stage cleared; the run plays on (endlessly for Onslaught/Daily).
+                self.wave_gap = WAVE_GAP;
+                events.stage_cleared = true;
+            }
         }
     }
 
@@ -2434,6 +2467,92 @@ mod tests {
         assert!(changed, "a phase change fires as it wears down");
         assert!(phases.contains(&2), "it reaches its enraged phase");
         assert!(fired, "it fills the field with fire");
+    }
+
+    /// Spawns a mothership and fells it on the next step, returning that step's
+    /// events — for driving the stage/mode flow without staging a whole fight.
+    fn spawn_and_fell_boss(g: &mut Game) -> Events {
+        g.enemies.clear();
+        g.spawn_boss();
+        g.boss.as_mut().unwrap().hp = 0;
+        g.invuln = 10_000;
+        g.step(Input::default())
+    }
+
+    #[test]
+    fn a_sortie_ends_in_a_win_at_the_final_mothership() {
+        let mut g = Game::new(1, Mode::Sortie, Loadout::default());
+        g.stage = SORTIE_STAGES - 1; // the final stage
+        let events = spawn_and_fell_boss(&mut g);
+        assert!(events.run_won, "felling the final mothership wins the run");
+        assert!(
+            !events.stage_cleared,
+            "the final fall is a win, not a stage clear"
+        );
+        assert_eq!(g.phase(), Phase::Over);
+        assert_eq!(g.outcome(), Some(Outcome::Won));
+    }
+
+    #[test]
+    fn a_sortie_stage_clear_carries_health_on() {
+        let mut g = Game::new(1, Mode::Sortie, Loadout::default());
+        g.stage = 0;
+        g.lives = 2; // some health already spent
+        let events = spawn_and_fell_boss(&mut g);
+        assert!(events.stage_cleared, "an early mothership clears the stage");
+        assert!(!events.run_won, "the run is not yet won");
+        assert_eq!(g.phase(), Phase::Playing, "the run plays on");
+        assert_eq!(g.lives(), 2, "health carries across the stage");
+        assert_eq!(g.stage(), 1, "onto the next stage");
+    }
+
+    #[test]
+    fn onslaught_never_wins_and_keeps_deepening() {
+        let mut g = Game::new(1, Mode::Onslaught, Loadout::default());
+        for _ in 0..(SORTIE_STAGES + 3) {
+            let events = spawn_and_fell_boss(&mut g);
+            assert!(!events.run_won, "onslaught never declares a win");
+            assert!(events.stage_cleared, "each mothership just clears a stage");
+            assert_eq!(g.phase(), Phase::Playing, "onslaught plays on");
+        }
+        assert!(g.stage() > SORTIE_STAGES, "and the stages keep deepening");
+    }
+
+    #[test]
+    fn a_daily_replays_identically_for_its_seed() {
+        // Keep the ship alive so the run unfolds; the seed drives the enemy fire, so
+        // the bullet stream is the seed's fingerprint.
+        let play = |seed: u64| {
+            let mut g = Game::new(seed, Mode::Daily, Loadout::default());
+            for i in 0..1_500usize {
+                g.invuln = 10_000;
+                g.step(Input {
+                    fire: i.is_multiple_of(2),
+                    ..Default::default()
+                });
+            }
+            let fire: Vec<(f32, f32)> = g.enemy_bullets().map(|b| (b.x, b.y)).collect();
+            (g.score(), fire)
+        };
+        assert!(
+            play(0x0000_DA11) == play(0x0000_DA11),
+            "the same day replays the same run"
+        );
+        assert!(
+            play(0x0000_DA11) != play(0x0000_BEEF),
+            "a different day is a different run"
+        );
+    }
+
+    #[test]
+    fn a_lost_run_reports_the_loss() {
+        let mut g = game();
+        g.lives = 1;
+        let (cx, cy) = ship_centre(&g);
+        bullet_at(&mut g, cx, cy);
+        let events = g.step(Input::default());
+        assert!(events.run_over, "the last life ends the run");
+        assert_eq!(g.outcome(), Some(Outcome::Lost), "as a loss");
     }
 
     /// A generous ceiling on how long a firing test plays before giving up.
