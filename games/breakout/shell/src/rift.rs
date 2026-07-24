@@ -39,6 +39,15 @@ const ARMOURED_CRACKED: Color = color_u8!(84, 88, 104, 255);
 /// Mirror bricks read as pale silver with a diagonal sheen.
 const MIRROR: Color = color_u8!(206, 222, 236, 255);
 const MIRROR_SHEEN: Color = color_u8!(250, 252, 255, 255);
+/// Explosive bricks glow hot with a bright core.
+const EXPLOSIVE: Color = color_u8!(240, 130, 60, 255);
+const EXPLOSIVE_CORE: Color = color_u8!(255, 240, 180, 255);
+/// Mover bricks are lime with a track line across the middle.
+const MOVER: Color = color_u8!(170, 215, 90, 255);
+const MOVER_TRACK: Color = color_u8!(54, 74, 28, 255);
+/// Spawner bricks are rose with a small plus.
+const SPAWNER: Color = color_u8!(235, 150, 195, 255);
+const SPAWNER_MARK: Color = color_u8!(255, 235, 245, 255);
 
 /// A colour to mark a guardian wall, and the run-lost card.
 const GUARDIAN: Color = color_u8!(230, 90, 200, 255);
@@ -85,12 +94,27 @@ pub fn draw(game: &Game) {
             Kind::Armoured if brick.damaged => ARMOURED_CRACKED,
             Kind::Armoured => ARMOURED,
             Kind::Mirror => MIRROR,
+            Kind::Explosive => EXPLOSIVE,
+            Kind::Mover => MOVER,
+            Kind::Spawner => SPAWNER,
         };
         let (bx, by) = (brick.x + 0.5, brick.y + 0.5);
         let (bw, bh) = (brick.width - 1.0, brick.height - 1.0);
         draw_rectangle(bx, by, bw, bh, colour);
-        if brick.kind == Kind::Mirror {
-            draw_line(bx, by + bh, bx + bw, by, 1.0, MIRROR_SHEEN);
+        let (cx, cy) = (bx + bw / 2.0, by + bh / 2.0);
+        match brick.kind {
+            // A diagonal sheen marks the mirror.
+            Kind::Mirror => draw_line(bx, by + bh, bx + bw, by, 1.0, MIRROR_SHEEN),
+            // A bright core marks the explosive.
+            Kind::Explosive => draw_rectangle(cx - 1.0, cy - 1.0, 2.0, 2.0, EXPLOSIVE_CORE),
+            // A track line marks the mover.
+            Kind::Mover => draw_line(bx + 1.0, cy, bx + bw - 1.0, cy, 1.0, MOVER_TRACK),
+            // A small plus marks the spawner.
+            Kind::Spawner => {
+                draw_line(cx - 1.5, cy, cx + 1.5, cy, 1.0, SPAWNER_MARK);
+                draw_line(cx, cy - 1.5, cx, cy + 1.5, 1.0, SPAWNER_MARK);
+            }
+            _ => {}
         }
     }
 

@@ -2,7 +2,7 @@
 
 mod common;
 
-use breakout_remix_core::{BRICK_COLS, BRICK_ROWS, Input, Kind, Move};
+use breakout_remix_core::{BRICK_COLS, BRICK_ROWS, Game, Input, Kind, Move, Pool};
 use common::{rally_until, run, track};
 
 #[test]
@@ -28,22 +28,27 @@ fn the_wall_starts_full_in_four_bands() {
 }
 
 #[test]
-fn the_wall_includes_the_special_brick_kinds() {
-    // A base-pool wall is mostly normal bricks with armoured and mirror kinds
-    // sprinkled in.
-    let kinds: Vec<Kind> = run(7).bricks().map(|b| b.kind).collect();
-    assert!(
-        kinds.contains(&Kind::Normal),
-        "normal bricks still make up the wall"
-    );
-    assert!(
-        kinds.contains(&Kind::Armoured),
-        "armoured bricks appear in the wall"
-    );
-    assert!(
-        kinds.contains(&Kind::Mirror),
-        "mirror bricks appear in the wall"
-    );
+fn base_pool_walls_include_every_brick_kind() {
+    // Base-pool walls are mostly normal bricks with the whole zoo sprinkled in;
+    // gather across several seeds so every kind is bound to turn up.
+    use std::collections::HashSet;
+    let mut seen: HashSet<Kind> = HashSet::new();
+    for seed in 0..12 {
+        seen.extend(run(seed).bricks().map(|b| b.kind));
+    }
+    for kind in [
+        Kind::Normal,
+        Kind::Armoured,
+        Kind::Mirror,
+        Kind::Explosive,
+        Kind::Mover,
+        Kind::Spawner,
+    ] {
+        assert!(
+            seen.contains(&kind),
+            "{kind:?} should appear in base-pool walls"
+        );
+    }
 }
 
 #[test]
@@ -68,10 +73,11 @@ fn deflecting_the_ball_breaks_bricks_and_scores() {
 
 #[test]
 fn a_fast_ball_never_tunnels_through_the_wall() {
-    // Over a long rally the ball keeps breaking bricks rather than slipping
-    // through the wall — the standing count only ever falls, one break at a
-    // time (a cleared wall refills, so ignore the step it jumps back up).
-    let mut game = run(3);
+    // On a plain (normal-only) wall the ball keeps breaking bricks rather than
+    // slipping through — the standing count only ever falls, one direct contact
+    // at a time (a cleared wall refills, so ignore the step it jumps back up).
+    // A normal-only pool isolates this from the zoo's chain-breaks and regrowth.
+    let mut game = Game::new_run(3, &Pool::default());
     let full = BRICK_ROWS * BRICK_COLS;
     let mut last = game.bricks().count();
     for _ in 0..40_000 {
