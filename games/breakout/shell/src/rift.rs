@@ -178,10 +178,10 @@ fn draw_hud(game: &Game) {
     }
 }
 
-/// The card shown once a run is won or lost: how deep it got, its score, and the
-/// best depth reached so far for its mode (labelled by `best_label`). Drawn over
-/// the frozen field.
-pub fn run_summary(game: &Game, best: u32, best_label: &str) {
+/// The card shown once a run is won or lost: how deep it got, its score, and a
+/// mode-specific `best_line` (best depth, or the Ascension tier). Drawn over the
+/// frozen field.
+pub fn run_summary(game: &Game, best_line: &str) {
     let (line, colour) = match game.phase() {
         Phase::Won => ("RUN CLEARED", HUD_ACCENT),
         Phase::Lost => ("RUN OVER", GUARDIAN),
@@ -203,7 +203,7 @@ pub fn run_summary(game: &Game, best: u32, best_label: &str) {
     );
     font::draw_centred(
         LOGICAL_WIDTH,
-        &format!("{best_label} BEST DEPTH {best}"),
+        best_line,
         LOGICAL_HEIGHT / 2.0 + 12.0,
         HINT_SCALE,
         HUD_ACCENT,

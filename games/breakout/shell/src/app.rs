@@ -34,6 +34,8 @@ pub enum RiftMode {
     Run,
     /// The day's shared seed — one fair attempt, the day's best kept.
     Daily,
+    /// A mastery ladder: win to unlock the next, tougher tier.
+    Ascension,
 }
 
 impl RiftMode {
@@ -41,7 +43,8 @@ impl RiftMode {
     fn next(self) -> Self {
         match self {
             RiftMode::Run => RiftMode::Daily,
-            RiftMode::Daily => RiftMode::Run,
+            RiftMode::Daily => RiftMode::Ascension,
+            RiftMode::Ascension => RiftMode::Run,
         }
     }
 
@@ -50,6 +53,7 @@ impl RiftMode {
         match self {
             RiftMode::Run => "RUN",
             RiftMode::Daily => "DAILY",
+            RiftMode::Ascension => "ASCENSION",
         }
     }
 }
@@ -141,7 +145,7 @@ impl App {
                 if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
                     self.start_run(chosen);
                 } else {
-                    render::rift_menu(chosen);
+                    render::rift_menu(chosen, breakout_storage::ascension_tier());
                 }
             }
             Screen::Match {
@@ -210,16 +214,32 @@ impl App {
                     for _ in 0..accumulator.steps(get_frame_time()) {
                         let events = game.step(input);
                         self.audio.play_rift(events);
-                        // A run that just ended may have set a new best for its
-                        // mode.
+                        // A run that just ended may better its mode's record: a
+                        // deeper Run/Daily, or — on a win — the next Ascension
+                        // tier unlocked.
                         if events.won || events.lost {
-                            let depth = game.depth();
-                            if depth > *best {
-                                *best = depth;
-                                match mode {
-                                    RiftMode::Run => breakout_storage::set_best_depth(depth),
-                                    RiftMode::Daily => {
-                                        breakout_storage::set_daily_best(*day, depth)
+                            match mode {
+                                RiftMode::Run => {
+                                    let depth = game.depth();
+                                    if depth > *best {
+                                        *best = depth;
+                                        breakout_storage::set_best_depth(depth);
+                                    }
+                                }
+                                RiftMode::Daily => {
+                                    let depth = game.depth();
+                                    if depth > *best {
+                                        *best = depth;
+                                        breakout_storage::set_daily_best(*day, depth);
+                                    }
+                                }
+                                RiftMode::Ascension => {
+                                    if events.won {
+                                        let next = game.tier() + 1;
+                                        if next > *best {
+                                            *best = next;
+                                            breakout_storage::set_ascension_tier(next);
+                                        }
                                     }
                                 }
                             }
@@ -234,7 +254,14 @@ impl App {
                 match game.phase() {
                     RiftPhase::Drafting => rift::draw_draft(game),
                     RiftPhase::Won | RiftPhase::Lost => {
-                        rift::run_summary(game, *best, mode.label())
+                        let best_line = match mode {
+                            RiftMode::Run => format!("RUN BEST DEPTH {best}"),
+                            RiftMode::Daily => format!("DAILY BEST DEPTH {best}"),
+                            RiftMode::Ascension => {
+                                format!("ASCENSION TIER {}   BEST {best}", game.tier())
+                            }
+                        };
+                        rift::run_summary(game, &best_line);
                     }
                     _ => {}
                 }
@@ -274,16 +301,33 @@ impl App {
     }
 
     /// Starts a RIFT run in the chosen mode. A Run takes a fresh seed and the
-    /// saved Run best; a Daily takes the day's shared seed and the day's best.
+    /// saved Run best; a Daily takes the day's shared seed and the day's best; an
+    /// Ascension takes a fresh seed at the highest unlocked tier.
     fn start_run(&mut self, mode: RiftMode) {
-        let (seed, day, best) = match mode {
-            RiftMode::Run => (self.take_seed(), 0, breakout_storage::best_depth()),
+        let pool = RiftPool::base();
+        let (game, day, best) = match mode {
+            RiftMode::Run => (
+                RiftGame::new_run(self.take_seed(), &pool),
+                0,
+                breakout_storage::best_depth(),
+            ),
             RiftMode::Daily => {
                 let day = today();
-                (u64::from(day), day, breakout_storage::daily_best(day))
+                (
+                    RiftGame::new_run(u64::from(day), &pool),
+                    day,
+                    breakout_storage::daily_best(day),
+                )
+            }
+            RiftMode::Ascension => {
+                let tier = breakout_storage::ascension_tier();
+                (
+                    RiftGame::new_ascension(self.take_seed(), tier, &pool),
+                    0,
+                    tier,
+                )
             }
         };
-        let game = RiftGame::new_run(seed, &RiftPool::base());
         self.screen = Screen::Rift {
             game,
             accumulator: Accumulator::new(RIFT_TIMESTEP, MAX_FRAME_TIME),

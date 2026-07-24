@@ -139,23 +139,26 @@ pub fn mode_select(highlight: Mode) {
     );
 }
 
-/// Draws RIFT's own mode menu: Run or Daily, with a one-line blurb.
-pub fn rift_menu(highlight: RiftMode) {
+/// Draws RIFT's own mode menu: Run, Daily or Ascension, with a one-line blurb.
+/// `ascension_tier` is the highest tier unlocked, shown against Ascension.
+pub fn rift_menu(highlight: RiftMode, ascension_tier: u32) {
     clear_background(BLACK);
 
-    font::draw_centred(LOGICAL_WIDTH, "RIFT", 48.0, TITLE_SCALE, WHITE);
-    font::draw_centred(LOGICAL_WIDTH, "BREAKOUT REMIX", 96.0, HINT_SCALE, GRAY);
-    option("RUN", 140.0, highlight == RiftMode::Run, false);
-    option("DAILY", 176.0, highlight == RiftMode::Daily, false);
+    font::draw_centred(LOGICAL_WIDTH, "RIFT", 40.0, TITLE_SCALE, WHITE);
+    font::draw_centred(LOGICAL_WIDTH, "BREAKOUT REMIX", 84.0, HINT_SCALE, GRAY);
+    option("RUN", 128.0, highlight == RiftMode::Run, false);
+    option("DAILY", 160.0, highlight == RiftMode::Daily, false);
+    option("ASCENSION", 192.0, highlight == RiftMode::Ascension, false);
     let blurb = match highlight {
-        RiftMode::Run => "A FRESH DESCENT",
-        RiftMode::Daily => "TODAYS SHARED SEED",
+        RiftMode::Run => "A FRESH DESCENT".to_string(),
+        RiftMode::Daily => "TODAYS SHARED SEED".to_string(),
+        RiftMode::Ascension => format!("TIER {ascension_tier}   WIN TO ASCEND"),
     };
-    font::draw_centred(LOGICAL_WIDTH, blurb, 200.0, HINT_SCALE, GRAY);
+    font::draw_centred(LOGICAL_WIDTH, &blurb, 216.0, HINT_SCALE, GRAY);
     font::draw_centred(
         LOGICAL_WIDTH,
         "ARROWS TO CHOOSE   ENTER TO SELECT",
-        260.0,
+        264.0,
         HINT_SCALE,
         GRAY,
     );
