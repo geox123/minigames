@@ -4,7 +4,9 @@
 //! irregular rock silhouettes and the era's glow arrive with the look ticket; this
 //! draws the readable placeholders that make the game playable.
 
-use asteroids_core::{Asteroid, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Ship};
+use asteroids_core::{
+    Asteroid, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Ship, Shot,
+};
 use macroquad::prelude::*;
 use shell_kit::font;
 use std::f32::consts::TAU;
@@ -18,13 +20,100 @@ const HINT_SCALE: f32 = 1.0;
 /// The line weight of the vector outlines, in logical units.
 const STROKE: f32 = 2.0;
 
-/// Draws a live game: the rocks and the ship, each wrapped across the edges.
+/// Draws a live game: the rocks, shots and explosions, the ship (while it is on the
+/// field), and the HUD.
 pub fn draw(game: &Game) {
     clear_background(BLACK);
     for rock in game.asteroids() {
         draw_asteroid(rock);
     }
-    draw_ship(game.ship());
+    for shot in game.shots() {
+        draw_shot(shot);
+    }
+    for blast in game.blasts() {
+        draw_blast(blast);
+    }
+    if game.ship_alive() && ship_visible(game) {
+        draw_ship(game.ship());
+    }
+    draw_hud(game);
+}
+
+/// Whether to draw the ship this frame — a fresh, protected ship blinks to show it
+/// cannot yet be hit.
+fn ship_visible(game: &Game) -> bool {
+    !game.ship_invulnerable() || ((get_time() * 10.0) as i64).rem_euclid(2) == 0
+}
+
+/// A shot: a small bright blip.
+fn draw_shot(shot: Shot) {
+    draw_circle(shot.x, shot.y, 2.5, WHITE);
+}
+
+/// An explosion: a burst of line-shards where a rock or the ship broke. (The look
+/// ticket animates these; this is the readable placeholder.)
+fn draw_blast(blast: Blast) {
+    const SHARDS: usize = 8;
+    let (inner, outer) = (3.0, 12.0);
+    for i in 0..SHARDS {
+        let a = TAU * i as f32 / SHARDS as f32;
+        draw_line(
+            blast.x + a.cos() * inner,
+            blast.y + a.sin() * inner,
+            blast.x + a.cos() * outer,
+            blast.y + a.sin() * outer,
+            STROKE,
+            WHITE,
+        );
+    }
+}
+
+/// The HUD: the running score, and the ships in reserve drawn as little icons.
+fn draw_hud(game: &Game) {
+    font::draw(&game.score().to_string(), 20.0, 20.0, OPTION_SCALE, WHITE);
+    for i in 0..game.lives() {
+        draw_ship_icon(28.0 + i as f32 * 24.0, 60.0);
+    }
+}
+
+/// A small upward-pointing ship, for the lives readout.
+fn draw_ship_icon(x: f32, y: f32) {
+    let s = 8.0;
+    draw_line(x, y - s, x - s * 0.7, y + s * 0.7, STROKE, WHITE);
+    draw_line(x, y - s, x + s * 0.7, y + s * 0.7, STROKE, WHITE);
+    draw_line(
+        x - s * 0.7,
+        y + s * 0.7,
+        x + s * 0.7,
+        y + s * 0.7,
+        STROKE,
+        WHITE,
+    );
+}
+
+/// Draws the game-over banner over the final field.
+pub fn game_over(game: &Game) {
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "GAME OVER",
+        LOGICAL_HEIGHT / 2.0 - 40.0,
+        TITLE_SCALE,
+        WHITE,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("SCORE {}", game.score()),
+        LOGICAL_HEIGHT / 2.0 + 24.0,
+        OPTION_SCALE,
+        WHITE,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "R RESTART   ESC QUIT",
+        LOGICAL_HEIGHT / 2.0 + 60.0,
+        HINT_SCALE,
+        GRAY,
+    );
 }
 
 /// The ship: a vector triangle pointing along its facing, with a flickering thrust

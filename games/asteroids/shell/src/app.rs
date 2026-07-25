@@ -2,7 +2,7 @@
 //! it and play. Everything here is window, input and rendering glue around the
 //! pure core, which is why it lives in the shell, not `asteroids_core`.
 
-use asteroids_core::{Game, TIMESTEP};
+use asteroids_core::{Game, Phase, TIMESTEP};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
@@ -111,7 +111,9 @@ impl App {
                 }
 
                 render::draw(game);
-                if *paused {
+                if game.phase() == Phase::GameOver {
+                    render::game_over(game);
+                } else if *paused {
                     render::paused_overlay();
                 }
             }
