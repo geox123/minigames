@@ -3,7 +3,7 @@
 //! pure core, which is why it lives in the shell, not `asteroids_core`.
 
 use asteroids_core::{Game, Phase, TIMESTEP};
-use asteroids_remix_core::{Game as RemixGame, Loadout, Mode as RunMode};
+use asteroids_remix_core::{Game as RemixGame, Loadout, Mode as RunMode, Phase as RemixPhase};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
@@ -204,7 +204,9 @@ impl App {
                 }
 
                 render::draw_remix(game);
-                if *paused {
+                if game.phase() == RemixPhase::Over {
+                    render::remix_game_over(game);
+                } else if *paused {
                     render::paused_overlay();
                 }
             }

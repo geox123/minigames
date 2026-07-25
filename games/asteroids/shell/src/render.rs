@@ -135,19 +135,24 @@ fn draw_saucer_bullet(bullet: SaucerBullet) {
 /// An explosion: a burst of line-shards flying outward from where a rock or the ship
 /// broke, expanding and fading over the blast's life.
 fn draw_blast(blast: Blast) {
+    draw_blast_at(blast.x, blast.y, blast.progress);
+}
+
+/// Draws an explosion of `progress` (0→1) at `(x, y)` — shared by the Faithful and
+/// ACCRETE.
+fn draw_blast_at(x: f32, y: f32, progress: f32) {
     const SHARDS: usize = 8;
-    let p = blast.progress;
-    let inner = 3.0 + 10.0 * p;
-    let outer = 6.0 + 26.0 * p;
-    let color = Color::new(1.0, 1.0, 1.0, (1.0 - p).clamp(0.0, 1.0));
+    let inner = 3.0 + 10.0 * progress;
+    let outer = 6.0 + 26.0 * progress;
+    let color = Color::new(1.0, 1.0, 1.0, (1.0 - progress).clamp(0.0, 1.0));
     for i in 0..SHARDS {
         // A slight turn as they fly, so the burst reads as motion, not a static star.
-        let a = TAU * i as f32 / SHARDS as f32 + p * 0.6;
+        let a = TAU * i as f32 / SHARDS as f32 + progress * 0.6;
         draw_line(
-            blast.x + a.cos() * inner,
-            blast.y + a.sin() * inner,
-            blast.x + a.cos() * outer,
-            blast.y + a.sin() * outer,
+            x + a.cos() * inner,
+            y + a.sin() * inner,
+            x + a.cos() * outer,
+            y + a.sin() * outer,
             STROKE,
             color,
         );
@@ -407,7 +412,60 @@ pub fn draw_remix(game: &RemixGame) {
     for shot in game.shots() {
         blip(shot.x, shot.y, 2.5, WHITE);
     }
-    draw_remix_ship(game.ship());
+    for blast in game.blasts() {
+        draw_blast_at(blast.x, blast.y, blast.progress);
+    }
+    // A fresh, protected ship blinks; a downed one is off the field.
+    let visible = !game.ship_invulnerable() || ((get_time() * 10.0) as i64).rem_euclid(2) == 0;
+    if game.ship_alive() && visible {
+        draw_remix_ship(game.ship());
+    }
+    draw_remix_hud(game);
+}
+
+/// ACCRETE's HUD: the score, the ships left, and the accretion feed streak while it
+/// is running.
+fn draw_remix_hud(game: &RemixGame) {
+    font::draw(&game.score().to_string(), 20.0, 20.0, OPTION_SCALE, WHITE);
+    for i in 0..game.lives() {
+        draw_ship_icon(28.0 + i as f32 * 24.0, 60.0);
+    }
+    let streak = game.feed_streak();
+    if streak > 1 {
+        font::draw_centred(
+            LOGICAL_WIDTH,
+            &format!("FEED x{streak}"),
+            24.0,
+            HINT_SCALE,
+            WELL_COLOR,
+        );
+    }
+}
+
+/// Draws ACCRETE's run-over banner. (The victory summary arrives with the modes and
+/// persistence tickets.)
+pub fn remix_game_over(game: &RemixGame) {
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "RUN OVER",
+        LOGICAL_HEIGHT / 2.0 - 44.0,
+        TITLE_SCALE,
+        WHITE,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("SCORE {}", game.score()),
+        LOGICAL_HEIGHT / 2.0 + 20.0,
+        OPTION_SCALE,
+        WHITE,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "R RESTART   ESC QUIT",
+        LOGICAL_HEIGHT / 2.0 + 60.0,
+        HINT_SCALE,
+        GRAY,
+    );
 }
 
 /// A rock on the gravity field: a glowing polygon at its radius. (The look ticket
