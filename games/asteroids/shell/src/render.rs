@@ -541,8 +541,8 @@ fn draw_collapse_meter(meter: f32) {
 
 /// ACCRETE's run summary — VICTORY when the finite Orbit ladder is beaten, RUN OVER
 /// otherwise — with the run's score, the system it reached, the rocks it fed the wells,
-/// the mode `best`, and the way on (restart / back out).
-pub fn remix_summary(game: &RemixGame, best: u32) {
+/// the mode `best`, anything the run newly `earned`, and the way on (restart / back out).
+pub fn remix_summary(game: &RemixGame, best: u32, earned: &[asteroids_remix_core::meta::Content]) {
     let won = game.outcome() == Some(asteroids_remix_core::Outcome::Won);
     let (banner, colour) = if won {
         ("VICTORY", WELL_COLOR)
@@ -582,7 +582,21 @@ pub fn remix_summary(game: &RemixGame, best: u32) {
             WELL_COLOR,
         );
     }
-    font::draw_centred(cx, "R RESTART   ESC MODES", mid + 104.0, HINT_SCALE, GRAY);
+    // Anything this run newly unlocked, called out in gold — pushing the way-on hint
+    // down to make room.
+    let hint_y = if earned.is_empty() {
+        mid + 104.0
+    } else {
+        let names = earned
+            .iter()
+            .map(|c| c.label())
+            .collect::<Vec<_>>()
+            .join("  ");
+        font::draw_centred(cx, "UNLOCKED", mid + 88.0, HINT_SCALE, PICKUP_COLOR);
+        font::draw_centred(cx, &names, mid + 104.0, HINT_SCALE, PICKUP_COLOR);
+        mid + 128.0
+    };
+    font::draw_centred(cx, "R RESTART   ESC MODES", hint_y, HINT_SCALE, GRAY);
 }
 
 /// ACCRETE's mode picker — Orbit (the finite ladder), Maelstrom and Daily (endless).
