@@ -3,23 +3,24 @@
 //! pure core, which is why it lives in the shell, not `asteroids_core`.
 
 use asteroids_core::{Game, Phase, TIMESTEP};
+use asteroids_remix_core::{Game as RemixGame, Loadout, Mode as RunMode};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
-use crate::{Audio, read_input, render};
+use crate::{Audio, read_input, read_remix_input, render};
 
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make the
 /// game try to catch up by simulating seconds at once.
 const MAX_FRAME_TIME: f32 = 0.25;
 
-/// The two takes every Game in the Collection ships: the Faithful, playable now,
-/// and the Remix, still to come.
+/// The two takes every Game in the Collection ships — both playable: the Faithful,
+/// and ACCRETE, its gravity Remix.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// The faithful recreation.
     Faithful,
-    /// The reimagined version — not built yet, so the slot is locked.
+    /// The reimagined version — ACCRETE.
     Remix,
 }
 
@@ -42,6 +43,12 @@ enum Screen {
         /// The heartbeat: seconds until the next thump, and which of the two it is.
         beat_timer: f32,
         beat_high: bool,
+    },
+    /// An ACCRETE run in progress — the gravity Remix. Boxed like the Faithful's game.
+    RemixMatch {
+        game: Box<RemixGame>,
+        accumulator: Accumulator,
+        paused: bool,
     },
 }
 
@@ -88,9 +95,11 @@ impl App {
                         Mode::Remix => Mode::Faithful,
                     };
                 }
-                // Only the Faithful is playable; the Remix slot is locked.
-                if committed() && *highlight == Mode::Faithful {
-                    self.start_match();
+                if committed() {
+                    match *highlight {
+                        Mode::Faithful => self.start_match(),
+                        Mode::Remix => self.start_remix_match(),
+                    }
                 } else {
                     render::mode_select(*highlight);
                 }
@@ -168,6 +177,37 @@ impl App {
                     render::paused_overlay();
                 }
             }
+            Screen::RemixMatch {
+                game,
+                accumulator,
+                paused,
+            } => {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                    return;
+                }
+                if is_key_pressed(KeyCode::P) {
+                    *paused = !*paused;
+                }
+                if is_key_pressed(KeyCode::R) {
+                    game.restart();
+                    *paused = false;
+                }
+
+                if !*paused {
+                    let input = read_remix_input();
+                    for _ in 0..accumulator.steps(get_frame_time()) {
+                        game.step(input);
+                    }
+                } else {
+                    accumulator.reset();
+                }
+
+                render::draw_remix(game);
+                if *paused {
+                    render::paused_overlay();
+                }
+            }
         }
     }
 
@@ -194,6 +234,20 @@ impl App {
             saucer_sounding: false,
             beat_timer: 0.0,
             beat_high: false,
+        };
+    }
+
+    /// Starts an ACCRETE run — the gravity Remix — in its opening mode.
+    fn start_remix_match(&mut self) {
+        let game = Box::new(RemixGame::new(
+            self.take_seed(),
+            RunMode::Orbit,
+            Loadout::default(),
+        ));
+        self.screen = Screen::RemixMatch {
+            game,
+            accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
+            paused: false,
         };
     }
 }

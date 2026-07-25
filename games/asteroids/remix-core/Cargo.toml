@@ -1,0 +1,10 @@
+[package]
+name = "asteroids-remix-core"
+version = "0.1.0"
+description = "Pure, deterministic game core for ACCRETE — Asteroids' Remix (gravity). No engine dependency."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
