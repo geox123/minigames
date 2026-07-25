@@ -10,7 +10,7 @@ use asteroids_core::{
 };
 use asteroids_remix_core::{
     Asteroid as RemixAsteroid, Enemy as RemixEnemy, EnemyBullet as RemixEnemyBullet, EnemyKind,
-    Game as RemixGame, Ship as RemixShip, Well,
+    Game as RemixGame, Pickup as RemixPickup, PowerUp, Ship as RemixShip, Well,
 };
 use macroquad::prelude::*;
 use shell_kit::font;
@@ -37,6 +37,11 @@ const WELL_COLOR: Color = color_u8!(255, 220, 130, 255);
 /// against the ship's white and the well's gold so a threat reads at a glance.
 const ENEMY_COLOR: Color = color_u8!(255, 100, 150, 255);
 const ENEMY_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
+
+/// ACCRETE's power-ups — a cool green-cyan "boon" colour, apart from the warm hazards;
+/// individual pickups tint from it by kind. Also the shield's protective ring.
+const PICKUP_COLOR: Color = color_u8!(120, 255, 180, 255);
+const SHIELD_COLOR: Color = color_u8!(120, 220, 255, 255);
 
 /// One irregular rock silhouette per size: radius multipliers at evenly spaced
 /// angles, so each size reads as its own lumpy polygon. Authored in code, nothing
@@ -438,6 +443,9 @@ pub fn draw_remix(game: &RemixGame) {
     for bullet in game.enemy_bullets() {
         draw_remix_enemy_bullet(bullet);
     }
+    for pickup in game.pickups() {
+        draw_remix_pickup(pickup);
+    }
     for shot in game.shots() {
         blip(shot.x, shot.y, 2.5, WHITE);
     }
@@ -448,12 +456,15 @@ pub fn draw_remix(game: &RemixGame) {
     let visible = !game.ship_invulnerable() || ((get_time() * 10.0) as i64).rem_euclid(2) == 0;
     if game.ship_alive() && visible {
         draw_remix_ship(game.ship());
+        if game.has_shield() {
+            draw_shield(game.ship());
+        }
     }
     draw_remix_hud(game);
 }
 
-/// ACCRETE's HUD: the score, the ships left, and the accretion feed streak while it
-/// is running.
+/// ACCRETE's HUD: the score, the ships left, the accretion feed streak, and the
+/// earned weapon tier while it is running.
 fn draw_remix_hud(game: &RemixGame) {
     font::draw(&game.score().to_string(), 20.0, 20.0, OPTION_SCALE, WHITE);
     for i in 0..game.lives() {
@@ -468,6 +479,16 @@ fn draw_remix_hud(game: &RemixGame) {
             HINT_SCALE,
             WELL_COLOR,
         );
+    }
+    // The weapon rung, named, once the ship has climbed off the base tier.
+    let weapon = match game.weapon_level() {
+        0 => "",
+        1 => "SPREAD",
+        2 => "PIERCE",
+        _ => "RAPID",
+    };
+    if !weapon.is_empty() {
+        font::draw(weapon, 20.0, 84.0, HINT_SCALE, PICKUP_COLOR);
     }
     draw_collapse_meter(game.collapse_meter());
 }
@@ -605,4 +626,37 @@ fn draw_enemy_shepherd(cx: f32, cy: f32, r: f32) {
 /// An enemy shot: a small warm blip, set apart from the player's white fire.
 fn draw_remix_enemy_bullet(bullet: RemixEnemyBullet) {
     blip(bullet.x, bullet.y, 2.5, ENEMY_FIRE_COLOR);
+}
+
+/// A power-up adrift on the field: a glowing rotating square in its kind's tint, with
+/// a letter marking what it grants — W(eapon), S(hield), C(ollapse).
+fn draw_remix_pickup(pickup: RemixPickup) {
+    let (color, label) = match pickup.kind {
+        PowerUp::Weapon => (PICKUP_COLOR, "W"),
+        PowerUp::Shield => (SHIELD_COLOR, "S"),
+        PowerUp::Collapse => (WELL_COLOR, "C"),
+    };
+    let r = 9.0;
+    // A diamond (a square on its point) so a boon reads apart from the enemies' hulls.
+    let pts = [(0.0, -r), (r, 0.0), (0.0, r), (-r, 0.0)];
+    for i in 0..pts.len() {
+        let (ax, ay) = pts[i];
+        let (bx, by) = pts[(i + 1) % pts.len()];
+        stroke(
+            pickup.x + ax,
+            pickup.y + ay,
+            pickup.x + bx,
+            pickup.y + by,
+            color,
+        );
+    }
+    let w = font::text_width(label, HINT_SCALE);
+    font::draw(label, pickup.x - w / 2.0, pickup.y - 3.0, HINT_SCALE, color);
+}
+
+/// The shield: a protective ring around the ship while one is up.
+fn draw_shield(ship: RemixShip) {
+    let r = asteroids_remix_core::SHIP_RADIUS * 1.7;
+    draw_circle(ship.x, ship.y, r + STROKE, dim(SHIELD_COLOR));
+    draw_circle_lines(ship.x, ship.y, r, STROKE, SHIELD_COLOR);
 }
