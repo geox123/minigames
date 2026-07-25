@@ -209,6 +209,47 @@
         height: 6px;
         background: #f4f4f5;
       }
+      /* Asteroids' mark: a ship and a rock adrift on a vector field, a shot between. */
+      .field {
+        flex: none;
+        width: 96px;
+        height: 72px;
+        border: 1px solid #3a3a40;
+        border-radius: 4px;
+        position: relative;
+        background: #000;
+        overflow: hidden;
+      }
+      .field i {
+        position: absolute;
+      }
+      .field .rock {
+        right: 14px;
+        top: 14px;
+        width: 22px;
+        height: 22px;
+        border: 1.5px solid #f4f4f5;
+        border-radius: 46% 54% 50% 48% / 50% 46% 54% 50%;
+        transform: rotate(12deg);
+      }
+      .field .ship {
+        left: 22px;
+        bottom: 16px;
+        width: 0;
+        height: 0;
+        border-left: 6px solid transparent;
+        border-right: 6px solid transparent;
+        border-bottom: 15px solid #f4f4f5;
+        transform: rotate(38deg);
+      }
+      .field .shot {
+        left: 42px;
+        top: 33px;
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: #f4f4f5;
+      }
       .game-body {
         flex: 1 1 auto;
         min-width: 0;
@@ -371,6 +412,33 @@
           <div class="takes">
             <a class="play" href="./stepfall/">▶ Play the Faithful</a>
             <a class="play" href="./stepfall/">▶ Play HAILFALL</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="game">
+        <div class="field" aria-hidden="true">
+          <i class="rock"></i>
+          <i class="ship"></i>
+          <i class="shot"></i>
+        </div>
+        <div class="game-body">
+          <p class="game-title">
+            Asteroids <span style="color: var(--muted)">· 1979 · Faithful live</span>
+          </p>
+          <p class="game-note">
+            Atari's vector rock-shooter, a year on from the invasion game — the
+            Collection's fourth Game. The <b>Faithful</b> gives you a ship that
+            rotates, thrusts and drifts with real inertia on a screen-wrapped field,
+            firing on rocks that split into faster fragments as you break them; a
+            large and a small mystery saucer that spray and aim; hyperspace to escape
+            a corner; escalating waves; and a heartbeat that quickens as the field
+            thins. Its <b>Remix</b> is still to come — a Game is Done only once both
+            takes ship.
+          </p>
+          <div class="takes">
+            <a class="play" href="./asteroids/">▶ Play the Faithful</a>
+            <span class="locked">Remix · coming soon</span>
           </div>
         </div>
       </article>

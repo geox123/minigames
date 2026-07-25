@@ -32,6 +32,7 @@ in [`docs/adr/`](docs/adr).
 | [Pong](games/pong) | 1972 | ✅ playable | ✅ [PULSE](games/pong/PULSE.md) | **Done** |
 | [Breakout](games/breakout) | 1976 | ✅ playable | ✅ [RIFT](games/breakout/RIFT.md) | **Done** |
 | [STEPFALL](games/stepfall) | 1978 | ✅ playable | ✅ [HAILFALL](games/stepfall/HAILFALL.md) | **Done** |
+| [Asteroids](games/asteroids) | 1979 | ✅ playable | ⏳ coming | In progress |
 
 **Pong, Breakout and STEPFALL are Done** — each has shipped both takes. Pong
 pairs its Faithful with [PULSE](games/pong/PULSE.md); Breakout pairs its Faithful
@@ -41,6 +42,12 @@ arcade invasion game, shipped under a name of its own — pairs its Faithful wit
 [HAILFALL](games/stepfall/HAILFALL.md), a bullet-hell that cuts the swarm loose
 into sweeping squadrons, a nimble ship with a dash, focus and a graze-fed
 overdrive nova, power-ups, multi-phase motherships and three modes.
+
+The fourth Game, **[Asteroids](games/asteroids)** (1979 · Atari, under its real
+name), is **in progress**: its **Faithful** is live — a Newtonian ship that
+rotates, thrusts and drifts on a screen-wrapped vector field, rocks that split
+into faster fragments, a large and a small mystery saucer, hyperspace, escalating
+waves and a quickening heartbeat — with its Remix still to come.
 
 ## How it's built
 
