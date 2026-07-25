@@ -11,13 +11,13 @@ use asteroids_core::{
 use asteroids_remix_core::{
     Asteroid as RemixAsteroid, Boss as RemixBoss, Enemy as RemixEnemy,
     EnemyBullet as RemixEnemyBullet, EnemyKind, Game as RemixGame, Mode as RunMode,
-    Pickup as RemixPickup, PowerUp, Ship as RemixShip, Well,
+    Pickup as RemixPickup, PowerUp, Ship as RemixShip, Well, meta,
 };
 use macroquad::prelude::*;
 use shell_kit::font;
 use std::f32::consts::TAU;
 
-use crate::app::Mode;
+use crate::app::{MenuRow, Mode};
 
 const TITLE_SCALE: f32 = 4.0;
 const OPTION_SCALE: f32 = 2.0;
@@ -599,38 +599,75 @@ pub fn remix_summary(game: &RemixGame, best: u32, earned: &[asteroids_remix_core
     font::draw_centred(cx, "R RESTART   ESC MODES", hint_y, HINT_SCALE, GRAY);
 }
 
-/// ACCRETE's mode picker — Orbit (the finite ladder), Maelstrom and Daily (endless).
-/// The row order is the single source in [`crate::app::REMIX_MODES`], so the on-screen
-/// order and the highlight navigation can never drift apart.
-pub fn remix_select(highlight: RunMode) {
+/// ACCRETE's menu — its three modes and the collection. The row order is the single
+/// source in [`MenuRow::ROWS`], so the on-screen order and the highlight navigation can
+/// never drift apart.
+pub fn remix_select(highlight: MenuRow) {
     clear_background(BLACK);
     font::draw_centred(LOGICAL_WIDTH, "ACCRETE", 150.0, TITLE_SCALE, WELL_COLOR);
-    font::draw_centred(LOGICAL_WIDTH, "CHOOSE A MODE", 224.0, HINT_SCALE, GRAY);
+    font::draw_centred(LOGICAL_WIDTH, "THE GRAVITY REMIX", 224.0, HINT_SCALE, GRAY);
 
-    for (i, mode) in crate::app::REMIX_MODES.iter().enumerate() {
-        let (label, blurb) = mode_blurb(*mode);
-        let y = 320.0 + i as f32 * 54.0;
-        option(label, y, *mode == highlight, false);
-        if *mode == highlight {
-            font::draw_centred(LOGICAL_WIDTH, blurb, y + 24.0, HINT_SCALE, GRAY);
+    for (i, row) in MenuRow::ROWS.iter().enumerate() {
+        let y = 300.0 + i as f32 * 50.0;
+        option(row.label(), y, *row == highlight, false);
+        if *row == highlight {
+            font::draw_centred(LOGICAL_WIDTH, row_blurb(*row), y + 22.0, HINT_SCALE, GRAY);
         }
     }
     font::draw_centred(
         LOGICAL_WIDTH,
-        "UP/DOWN TO CHOOSE   ENTER TO FLY   ESC BACK",
+        "UP/DOWN TO CHOOSE   ENTER TO SELECT   ESC BACK",
         LOGICAL_HEIGHT - 60.0,
         HINT_SCALE,
         GRAY,
     );
 }
 
-/// A mode's picker label and its one-line blurb.
-fn mode_blurb(mode: RunMode) -> (&'static str, &'static str) {
-    match mode {
-        RunMode::Orbit => ("ORBIT", "A WINNABLE LADDER OF SYSTEMS"),
-        RunMode::Maelstrom => ("MAELSTROM", "ENDLESS - CHASE A HIGH SCORE"),
-        RunMode::Daily => ("DAILY", "TODAY'S SEEDED RUN, SHARED BY ALL"),
+/// A menu row's one-line blurb.
+fn row_blurb(row: MenuRow) -> &'static str {
+    match row {
+        MenuRow::Mode(RunMode::Orbit) => "A WINNABLE LADDER OF SYSTEMS",
+        MenuRow::Mode(RunMode::Maelstrom) => "ENDLESS - CHASE A HIGH SCORE",
+        MenuRow::Mode(RunMode::Daily) => "TODAY'S SEEDED RUN, SHARED BY ALL",
+        MenuRow::Collection => "THE SHIP OPTIONS YOU HAVE EARNED",
     }
+}
+
+/// The collection screen: every ship option, those earned in gold, those still locked
+/// shown with the condition that unlocks them — read from the persisted set.
+pub fn draw_collection(unlocked: meta::Unlocked) {
+    clear_background(BLACK);
+    let have = meta::ALL.iter().filter(|c| unlocked.has(**c)).count();
+    font::draw_centred(LOGICAL_WIDTH, "COLLECTION", 80.0, TITLE_SCALE, WELL_COLOR);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("{have} OF {} UNLOCKED", meta::ALL.len()),
+        150.0,
+        HINT_SCALE,
+        GRAY,
+    );
+
+    let mut y = 240.0;
+    for content in meta::ALL {
+        let (text, colour) = if unlocked.has(content) {
+            (content.label().to_string(), PICKUP_COLOR)
+        } else {
+            (
+                format!("{}   {}", content.label(), content.condition()),
+                GRAY,
+            )
+        };
+        font::draw_centred(LOGICAL_WIDTH, &text, y, OPTION_SCALE, colour);
+        y += 44.0;
+    }
+
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "ESC BACK",
+        LOGICAL_HEIGHT - 60.0,
+        HINT_SCALE,
+        GRAY,
+    );
 }
 
 /// A rock on the gravity field: a glowing polygon at its radius. (The look ticket
