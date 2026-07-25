@@ -15,6 +15,7 @@ members = [
     "games/stepfall/storage",
     "games/stepfall/shell",
     "games/asteroids/core",
+    "games/asteroids/shell",
 ]
 
 [workspace.package]
