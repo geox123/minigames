@@ -8,7 +8,7 @@ use asteroids_core::{
     Asteroid, AsteroidSize, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Saucer,
     SaucerBullet, Ship, Shot,
 };
-use asteroids_remix_core::{Game as RemixGame, Ship as RemixShip, Well};
+use asteroids_remix_core::{Asteroid as RemixAsteroid, Game as RemixGame, Ship as RemixShip, Well};
 use macroquad::prelude::*;
 use shell_kit::font;
 use std::f32::consts::TAU;
@@ -393,14 +393,39 @@ pub fn paused_overlay() {
     );
 }
 
-/// Draws a live ACCRETE run: the gravity wells and the ship, in neon. (Rocks,
-/// enemies, the accretion glow and the lensing arrive with the later tickets.)
+/// Draws a live ACCRETE run: the gravity wells, the rocks orbiting them, the shots,
+/// and the ship — in neon. (Enemies, the accretion glow and the lensing arrive with
+/// the later tickets.)
 pub fn draw_remix(game: &RemixGame) {
     clear_background(BLACK);
     for well in game.wells() {
         draw_well(well);
     }
+    for rock in game.asteroids() {
+        draw_remix_rock(rock);
+    }
+    for shot in game.shots() {
+        blip(shot.x, shot.y, 2.5, WHITE);
+    }
     draw_remix_ship(game.ship());
+}
+
+/// A rock on the gravity field: a glowing polygon at its radius. (The look ticket
+/// gives it the Faithful's authored silhouette.)
+fn draw_remix_rock(rock: RemixAsteroid) {
+    const SIDES: usize = 10;
+    let r = rock.size.radius();
+    for i in 0..SIDES {
+        let a0 = TAU * i as f32 / SIDES as f32;
+        let a1 = TAU * (i + 1) as f32 / SIDES as f32;
+        stroke(
+            rock.x + a0.cos() * r,
+            rock.y + a0.sin() * r,
+            rock.x + a1.cos() * r,
+            rock.y + a1.sin() * r,
+            WHITE,
+        );
+    }
 }
 
 /// A gravity well: a bright star core ringed by a faint halo.
