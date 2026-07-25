@@ -8,6 +8,7 @@ use asteroids_core::{
     Asteroid, AsteroidSize, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Saucer,
     SaucerBullet, Ship, Shot,
 };
+use asteroids_remix_core::{Game as RemixGame, Ship as RemixShip, Well};
 use macroquad::prelude::*;
 use shell_kit::font;
 use std::f32::consts::TAU;
@@ -25,6 +26,9 @@ const STROKE: f32 = 2.0;
 /// white so the threat reads at a glance.
 const SAUCER_COLOR: Color = color_u8!(140, 220, 255, 255);
 const SAUCER_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
+
+/// ACCRETE's gravity well — a warm star-glow.
+const WELL_COLOR: Color = color_u8!(255, 220, 130, 255);
 
 /// One irregular rock silhouette per size: radius multipliers at evenly spaced
 /// angles, so each size reads as its own lumpy polygon. Authored in code, nothing
@@ -218,46 +222,35 @@ pub fn game_over(game: &Game, best: u32) {
 /// The ship: a vector triangle pointing along its facing, with a flickering thrust
 /// flame behind it while it thrusts.
 fn draw_ship(ship: Ship) {
+    draw_ship_glyph(ship.x, ship.y, ship.angle, ship.thrusting, SHIP_RADIUS);
+}
+
+/// Draws a ship triangle of `radius` at `(x, y)` facing `angle`, wrapped across the
+/// edges, with a flickering thrust flame while `thrusting`. Shared by the Faithful
+/// and ACCRETE, which fly the same shape on the same toroidal field.
+fn draw_ship_glyph(x: f32, y: f32, angle: f32, thrusting: bool, radius: f32) {
     // Forward along the facing (angle 0 points up), and right, perpendicular to it.
-    let (fx, fy) = (ship.angle.sin(), -ship.angle.cos());
-    let (rx, ry) = (ship.angle.cos(), ship.angle.sin());
+    let (fx, fy) = (angle.sin(), -angle.cos());
+    let (rx, ry) = (angle.cos(), angle.sin());
 
-    let nose = vec2(
-        ship.x + fx * SHIP_RADIUS * 1.3,
-        ship.y + fy * SHIP_RADIUS * 1.3,
-    );
-    let base_x = ship.x - fx * SHIP_RADIUS * 0.8;
-    let base_y = ship.y - fy * SHIP_RADIUS * 0.8;
-    let left = vec2(
-        base_x - rx * SHIP_RADIUS * 0.9,
-        base_y - ry * SHIP_RADIUS * 0.9,
-    );
-    let right = vec2(
-        base_x + rx * SHIP_RADIUS * 0.9,
-        base_y + ry * SHIP_RADIUS * 0.9,
-    );
+    let nose = vec2(x + fx * radius * 1.3, y + fy * radius * 1.3);
+    let base_x = x - fx * radius * 0.8;
+    let base_y = y - fy * radius * 0.8;
+    let left = vec2(base_x - rx * radius * 0.9, base_y - ry * radius * 0.9);
+    let right = vec2(base_x + rx * radius * 0.9, base_y + ry * radius * 0.9);
 
-    draw_wrapped(ship.x, ship.y, SHIP_RADIUS * 1.3, |ox, oy| {
+    draw_wrapped(x, y, radius * 1.3, |ox, oy| {
         stroke(nose.x + ox, nose.y + oy, left.x + ox, left.y + oy, WHITE);
         stroke(nose.x + ox, nose.y + oy, right.x + ox, right.y + oy, WHITE);
         stroke(left.x + ox, left.y + oy, right.x + ox, right.y + oy, WHITE);
     });
 
     // A thrust flame that blinks on and off, like the original's.
-    if ship.thrusting && ((get_time() * 20.0) as i64).rem_euclid(2) == 0 {
-        let fl = vec2(
-            base_x - rx * SHIP_RADIUS * 0.45,
-            base_y - ry * SHIP_RADIUS * 0.45,
-        );
-        let fr = vec2(
-            base_x + rx * SHIP_RADIUS * 0.45,
-            base_y + ry * SHIP_RADIUS * 0.45,
-        );
-        let tip = vec2(
-            ship.x - fx * SHIP_RADIUS * 1.7,
-            ship.y - fy * SHIP_RADIUS * 1.7,
-        );
-        draw_wrapped(ship.x, ship.y, SHIP_RADIUS * 1.7, |ox, oy| {
+    if thrusting && ((get_time() * 20.0) as i64).rem_euclid(2) == 0 {
+        let fl = vec2(base_x - rx * radius * 0.45, base_y - ry * radius * 0.45);
+        let fr = vec2(base_x + rx * radius * 0.45, base_y + ry * radius * 0.45);
+        let tip = vec2(x - fx * radius * 1.7, y - fy * radius * 1.7);
+        draw_wrapped(x, y, radius * 1.7, |ox, oy| {
             stroke(fl.x + ox, fl.y + oy, tip.x + ox, tip.y + oy, ORANGE);
             stroke(fr.x + ox, fr.y + oy, tip.x + ox, tip.y + oy, ORANGE);
         });
@@ -324,8 +317,7 @@ fn axis_offsets(pos: f32, radius: f32, max: f32) -> [Option<f32>; 2] {
     [Some(0.0), wrap]
 }
 
-/// The Collection's two-takes screen: the Faithful, playable, and the Remix,
-/// locked until it is built.
+/// The Collection's two-takes screen: the Faithful and ACCRETE, both playable.
 pub fn mode_select(highlight: Mode) {
     clear_background(BLACK);
 
@@ -338,15 +330,9 @@ pub fn mode_select(highlight: Mode) {
         GRAY,
     );
     option("FAITHFUL", 310.0, highlight == Mode::Faithful, false);
-    option("REMIX (SOON)", 360.0, highlight == Mode::Remix, true);
+    option("ACCRETE", 360.0, highlight == Mode::Remix, false);
     if highlight == Mode::Remix {
-        font::draw_centred(
-            LOGICAL_WIDTH,
-            "THE REMIX IS STILL TO COME",
-            404.0,
-            HINT_SCALE,
-            GRAY,
-        );
+        font::draw_centred(LOGICAL_WIDTH, "THE GRAVITY REMIX", 404.0, HINT_SCALE, GRAY);
     }
     font::draw_centred(
         LOGICAL_WIDTH,
@@ -404,5 +390,34 @@ pub fn paused_overlay() {
         LOGICAL_HEIGHT / 2.0 + 16.0,
         HINT_SCALE,
         WHITE,
+    );
+}
+
+/// Draws a live ACCRETE run: the gravity wells and the ship, in neon. (Rocks,
+/// enemies, the accretion glow and the lensing arrive with the later tickets.)
+pub fn draw_remix(game: &RemixGame) {
+    clear_background(BLACK);
+    for well in game.wells() {
+        draw_well(well);
+    }
+    draw_remix_ship(game.ship());
+}
+
+/// A gravity well: a bright star core ringed by a faint halo.
+fn draw_well(well: Well) {
+    let r = asteroids_remix_core::WELL_CORE_RADIUS;
+    draw_circle(well.x, well.y, r * 2.4, dim(WELL_COLOR));
+    draw_circle_lines(well.x, well.y, r, STROKE, WELL_COLOR);
+    draw_circle(well.x, well.y, 3.5, WELL_COLOR);
+}
+
+/// The ACCRETE ship: the same glowing triangle the Faithful flies.
+fn draw_remix_ship(ship: RemixShip) {
+    draw_ship_glyph(
+        ship.x,
+        ship.y,
+        ship.angle,
+        ship.thrusting,
+        asteroids_remix_core::SHIP_RADIUS,
     );
 }

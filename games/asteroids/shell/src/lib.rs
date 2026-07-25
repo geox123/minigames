@@ -27,6 +27,21 @@ pub fn read_input() -> Input {
     }
 }
 
+/// Reads the ACCRETE ship off the keyboard: left/right arrows or A/D to turn, up or
+/// W to thrust, Space to fire, and Shift or C to spend a collapse. (Only turning and
+/// thrust do anything until the later tickets wire firing and the collapse.)
+pub fn read_remix_input() -> asteroids_remix_core::Input {
+    asteroids_remix_core::Input {
+        turn_left: is_key_down(KeyCode::Left) || is_key_down(KeyCode::A),
+        turn_right: is_key_down(KeyCode::Right) || is_key_down(KeyCode::D),
+        thrust: is_key_down(KeyCode::Up) || is_key_down(KeyCode::W),
+        fire: is_key_down(KeyCode::Space),
+        collapse: is_key_down(KeyCode::LeftShift)
+            || is_key_down(KeyCode::RightShift)
+            || is_key_down(KeyCode::C),
+    }
+}
+
 /// The Asteroids canvas, at the original's 1024×768 vector resolution.
 pub fn logical_canvas() -> RenderTarget {
     shell_kit::screen::logical_canvas(LOGICAL_WIDTH as u32, LOGICAL_HEIGHT as u32)
