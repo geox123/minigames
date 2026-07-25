@@ -14,12 +14,15 @@
 //! the well.
 //!
 //! So far: the gravity field and the Newtonian ship (A1); a held stream of fire and
-//! rocks that split and curve under the pull (A2); and the well **accreting** rocks
-//! for a streak-fed score, with a ship that falls into a core — or is struck by a
-//! rock — destroyed (A3). The collapse, enemies, bosses, the modes and the meta
-//! arrive in the later tickets; the ship's **loadout** is handed *in* at
-//! construction, so the core never knows the word "unlock" — it only ever flies what
-//! it is given.
+//! rocks that split and curve under the pull (A2); the well **accreting** rocks for a
+//! streak-fed score, with a ship that falls into a core — or is struck by a rock —
+//! destroyed (A3); the signature quartet — slingshot, skim and collapse (A4); and now
+//! an **orbital enemy zoo** that rides the same gravity — Orbiters that settle into an
+//! orbit and fire, Divers that fall in on a bent path, Mines that drift inert until
+//! the ship nears, and Shepherds that herd rocks at the player — arriving in waves
+//! that rotate through the kinds and escalate (A5). Bosses, the modes and the meta
+//! arrive in the later tickets; the ship's **loadout** is handed *in* at construction,
+//! so the core never knows the word "unlock" — it only ever flies what it is given.
 
 use core::f32::consts::TAU;
 
@@ -100,6 +103,67 @@ const FEED_PER_MULTIPLE: u32 = 4;
 const SKIM_BAND: f32 = 46.0;
 const SKIM_CHARGE: f32 = 0.34;
 const COLLAPSE_IMPULSE: f32 = 440.0;
+
+/// The orbital enemy zoo. Every enemy rides the same gravity as the rest of the
+/// field; a kind's *behaviour* is what it does on top of that pull. Its collision
+/// radius — its hull, for shots, the ship, and the well core.
+pub const ENEMY_RADIUS: f32 = 16.0;
+
+/// The radius an **Orbiter** (and, a little wider, a **Shepherd**) is placed at
+/// around its anchor well; a near-circular orbit's speed falls out of the gravity
+/// model (see [`orbital_speed`]), so an enemy dropped there truly orbits the pull.
+const ORBITER_RADIUS: f32 = 250.0;
+const SHEPHERD_RADIUS: f32 = 320.0;
+/// A Shepherd holds a slower, looser orbit than an Orbiter, so it drifts about the
+/// field herding rather than settling into a tight ring.
+const SHEPHERD_ORBIT_FRACTION: f32 = 0.85;
+
+/// A **Diver** enters at a field edge and crosses on a gravity-bent path, aimed just
+/// off the well so it slings by; it leaves (despawns) after this long if it survives,
+/// and flies at this speed before the pull bends it.
+const DIVER_LIFE: f32 = 8.0;
+const DIVER_SPEED: f32 = 240.0;
+/// How far off dead-centre a Diver aims, in radians — enough to sling by, not dive in.
+const DIVER_AIM_OFFSET: f32 = 0.35;
+
+/// A **Mine** drifts inert until the ship comes within this, then wakes and thrusts
+/// straight at it; asleep it only creeps, at this drift speed.
+const MINE_WAKE_RADIUS: f32 = 170.0;
+const MINE_THRUST: f32 = 240.0;
+const MINE_DRIFT_SPEED: f32 = 20.0;
+/// The band of distances from a well a Mine is scattered into — clear of the core,
+/// short of the edge.
+const MINE_SPAWN_MIN: f32 = 180.0;
+const MINE_SPAWN_MAX: f32 = 340.0;
+
+/// Enemy fire: how fast a pellet flies before the gravity bends it (it curves like
+/// everything else), how fast each wave of escalation adds to that, how long a shot
+/// lives, and its radius.
+const ENEMY_SHOT_SPEED: f32 = 300.0;
+const ENEMY_SHOT_SPEED_PER_WAVE: f32 = 10.0;
+const ENEMY_SHOT_LIFE: f32 = 3.0;
+const ENEMY_SHOT_RADIUS: f32 = 3.0;
+
+/// A Shepherd's herd: the velocity impulse it lends the nearest rock, aimed at the
+/// ship, each time its cadence comes round.
+const SHEPHERD_NUDGE: f32 = 60.0;
+
+/// Waves. The field of enemies must be cleared before the next wave; then a gap, then
+/// a fresh wave rotated through the zoo. The first wave's size and the cap it grows
+/// to, how many waves in the escalation plateaus, and how many steps of cadence one
+/// wave of escalation shaves off.
+const ENEMY_WAVE_GAP: f32 = 2.5;
+const WAVE_BASE_COUNT: usize = 2;
+const WAVE_COUNT_CAP: usize = 6;
+const ESCALATION_CAP: u32 = 8;
+const CADENCE_PER_WAVE: u32 = 12;
+/// The enemy kinds a wave draws from, in rotation order.
+const ENEMY_ZOO: [EnemyKind; 4] = [
+    EnemyKind::Orbiter,
+    EnemyKind::Diver,
+    EnemyKind::Mine,
+    EnemyKind::Shepherd,
+];
 
 /// Which run this is. Inert for now — every mode plays the same until the modes
 /// ticket shapes their ends.
@@ -223,8 +287,77 @@ pub struct Blast {
     pub progress: f32,
 }
 
+/// The kind of an enemy — its entry, how it rides the gravity, and how it threatens.
+/// This is the pattern zoo: each kind reads and menaces differently. Exposed so the
+/// shell can draw a distinct silhouette per kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnemyKind {
+    /// Settles into an orbit of a well and fires aimed shots at the ship.
+    Orbiter,
+    /// Enters at a field edge and falls across on a gravity-bent path, firing ahead.
+    Diver,
+    /// Drifts inert in the pull until the ship nears, then wakes and rushes it,
+    /// detonating on contact.
+    Mine,
+    /// Herds rocks toward the ship — nudges the rock nearest it at the player.
+    Shepherd,
+}
+
+impl EnemyKind {
+    /// The kind's baseline fire (or, for a Shepherd, herd) cadence in steps, before
+    /// the run's escalation tightens it. A [`Mine`](EnemyKind::Mine) never fires, so
+    /// its cadence is zero — the sentinel [`Game::enemy_cadence`] reads as "no fire".
+    fn base_cadence(self) -> u32 {
+        match self {
+            EnemyKind::Orbiter => 96,
+            EnemyKind::Diver => 72,
+            EnemyKind::Mine => 0,
+            EnemyKind::Shepherd => 120,
+        }
+    }
+
+    /// The tightest cadence it may reach as the run escalates, so heavy waves never
+    /// overwhelm the field.
+    fn min_cadence(self) -> u32 {
+        match self {
+            EnemyKind::Orbiter => 48,
+            EnemyKind::Diver => 40,
+            EnemyKind::Mine => 0,
+            EnemyKind::Shepherd => 72,
+        }
+    }
+
+    /// What downing one is worth. The well eating one instead pays half (see
+    /// [`Game::resolve_enemy_accretion`]) — a kill you did not make.
+    fn score(self) -> u32 {
+        match self {
+            EnemyKind::Orbiter => 200,
+            EnemyKind::Diver => 150,
+            EnemyKind::Mine => 100,
+            EnemyKind::Shepherd => 250,
+        }
+    }
+}
+
+/// An enemy riding the gravity field, as the shell should draw it. `x`/`y` are its
+/// centre; `kind` is its silhouette and behaviour.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Enemy {
+    pub x: f32,
+    pub y: f32,
+    pub kind: EnemyKind,
+}
+
+/// An enemy shot in flight, as the shell should draw it — a small warm blip that,
+/// like everything else, curves in the gravity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnemyBullet {
+    pub x: f32,
+    pub y: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It grows
-/// as accretion, the collapse and the rest arrive in the later tickets.
+/// as the collapse and the rest arrive in the later tickets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Events {
     /// The ship fired a shot this step.
@@ -237,6 +370,10 @@ pub struct Events {
     pub skimmed: bool,
     /// A collapse was fired this step.
     pub collapse_fired: bool,
+    /// An enemy loosed a shot this step.
+    pub enemy_fired: bool,
+    /// An enemy was destroyed this step — by a shot, the collapse, or the well.
+    pub enemy_destroyed: bool,
     /// The ship was destroyed this step and a life was lost.
     pub ship_destroyed: bool,
     /// The last ship was spent this step — the run is over.
@@ -301,6 +438,33 @@ struct BlastState {
 /// How long an explosion lingers for the shell to draw, in seconds.
 const BLAST_LIFE: f32 = 0.5;
 
+/// An enemy's live state: its centre and velocity (its own motion plus whatever the
+/// gravity has added), its kind, the steps since it last fired (phased at spawn so a
+/// wave staggers), the seconds it has left (finite only for a Diver), and — for a
+/// Mine — whether it has woken.
+#[derive(Clone, Copy)]
+struct EnemyState {
+    kind: EnemyKind,
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    fire_tick: u32,
+    life: f32,
+    awake: bool,
+}
+
+/// An enemy shot's live state: its centre, its velocity, and the seconds of life it
+/// has left. Like the player's shots, it feels the gravity and curves.
+#[derive(Clone, Copy)]
+struct EnemyBulletState {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    life: f32,
+}
+
 /// The whole run: the ship, the gravity wells that pull on it, and the seed the run
 /// began on. Advanced only through [`Game::step`]; everything else is read-only.
 pub struct Game {
@@ -310,6 +474,14 @@ pub struct Game {
     asteroids: Vec<AsteroidState>,
     shots: Vec<ShotState>,
     blasts: Vec<BlastState>,
+    /// The enemies riding the field, and the shots they have loosed.
+    enemies: Vec<EnemyState>,
+    enemy_bullets: Vec<EnemyBulletState>,
+    /// Seconds until the next wave flies in, once the field of enemies is clear.
+    wave_timer: f32,
+    /// How many waves have flown in so far — drives the rotation through the zoo and
+    /// the escalation (size, cadence, fire speed).
+    waves_spawned: u32,
     /// Steps until the held stream may loose its next shot.
     fire_cooldown: u64,
     /// Whether the ship is on the field; false during the pause after a destruction.
@@ -363,6 +535,10 @@ impl Game {
             asteroids: Vec::with_capacity(INITIAL_ROCKS),
             shots: Vec::new(),
             blasts: Vec::new(),
+            enemies: Vec::new(),
+            enemy_bullets: Vec::new(),
+            wave_timer: ENEMY_WAVE_GAP,
+            waves_spawned: 0,
             fire_cooldown: 0,
             ship_alive: true,
             dead_timer: 0.0,
@@ -439,6 +615,8 @@ impl Game {
 
         self.advance_shots();
         self.advance_asteroids();
+        self.advance_enemies(&mut events);
+        self.advance_enemy_bullets();
         self.advance_blasts();
         if self.invuln > 0.0 {
             self.invuln = (self.invuln - TIMESTEP).max(0.0);
@@ -447,9 +625,11 @@ impl Game {
 
         self.resolve_shot_hits(&mut events);
         self.resolve_accretion(&mut events);
+        self.resolve_enemy_accretion(&mut events);
         if self.ship_alive && self.invuln <= 0.0 {
             self.resolve_ship_death(&mut events);
         }
+        self.manage_waves();
         events
     }
 
@@ -513,7 +693,11 @@ impl Game {
         }
     }
 
-    /// The ship is destroyed if it falls into a well's core or is struck by a rock.
+    /// The ship is destroyed if it falls into a well's core, is struck by a rock, runs
+    /// into a **Mine**, or is caught by enemy fire. Each enemy kind keeps its own
+    /// threat: a Mine is the contact hazard (it detonates on the ship), an Orbiter and
+    /// Diver menace with their fire, a Shepherd with the rocks it herds — so the other
+    /// craft can be flown past, only their shots (and the rocks) bite.
     fn resolve_ship_death(&mut self, events: &mut Events) {
         let ship = (self.ship.x, self.ship.y, SHIP_RADIUS);
         let into_well = in_any_core(&self.wells, self.ship.x, self.ship.y);
@@ -521,7 +705,18 @@ impl Game {
             .asteroids
             .iter()
             .any(|a| overlap(ship, (a.x, a.y, a.size.radius())));
-        if into_well || hit_rock {
+        let hit_mine = self
+            .enemies
+            .iter()
+            .any(|e| e.kind == EnemyKind::Mine && overlap(ship, (e.x, e.y, ENEMY_RADIUS)));
+        let hit_bullet = self
+            .enemy_bullets
+            .iter()
+            .any(|b| overlap(ship, (b.x, b.y, ENEMY_SHOT_RADIUS)));
+        if into_well || hit_rock || hit_mine || hit_bullet {
+            // The Mine the ship ran into detonates with it.
+            self.enemies
+                .retain(|e| e.kind != EnemyKind::Mine || !overlap(ship, (e.x, e.y, ENEMY_RADIUS)));
             self.destroy_ship(events);
         }
     }
@@ -550,8 +745,8 @@ impl Game {
     }
 
     /// Spends a full meter, on the press, on a collapse: a shockwave from the wells
-    /// that destroys the fine debris it catches and flings the rest of the rocks
-    /// outward. (It also destroys the enemies it catches, once they arrive.)
+    /// that shatters the fine debris and enemies it catches — the screen-clearing
+    /// panic button — and flings the rest of the rocks outward.
     fn try_collapse(&mut self, pressed: bool, events: &mut Events) {
         if !pressed || self.collapse_meter < 1.0 {
             return;
@@ -566,6 +761,15 @@ impl Game {
                 a.vy -= gy / mag * COLLAPSE_IMPULSE;
             }
         }
+        // It sweeps the field clear of enemies and their fire, scoring each craft.
+        if !self.enemies.is_empty() {
+            for e in &self.enemies {
+                self.score += e.kind.score();
+            }
+            self.enemies.clear();
+            events.enemy_destroyed = true;
+        }
+        self.enemy_bullets.clear();
         self.collapse_meter = 0.0;
         events.collapse_fired = true;
     }
@@ -579,6 +783,7 @@ impl Game {
         self.dead_timer = DEATH_PAUSE;
         self.ending = self.lives == 0;
         self.shots.clear();
+        self.enemy_bullets.clear();
         self.feed_streak = 0;
         self.blasts.push(BlastState {
             x: self.ship.x,
@@ -625,18 +830,299 @@ impl Game {
         }
     }
 
-    /// Resolves shots striking rocks: the rock splits into two faster fragments (a
-    /// small into none) and the shot is spent. Scoring comes with accretion.
+    /// Flies every enemy: each rides the wells' pull, then adds its own behaviour on
+    /// top — a Mine wakes and rushes the ship, a Diver burns down its life. Divers
+    /// whose run is spent leave the field. Once moved, the settled enemies act (fire
+    /// or herd) on their cadences, but only with a ship on the field to aim at.
+    fn advance_enemies(&mut self, events: &mut Events) {
+        let (ship_x, ship_y) = (self.ship.x, self.ship.y);
+        let ship_alive = self.ship_alive;
+        for e in &mut self.enemies {
+            let (gx, gy) = gravity_at(&self.wells, e.x, e.y);
+            e.vx += gx * TIMESTEP;
+            e.vy += gy * TIMESTEP;
+            match e.kind {
+                EnemyKind::Mine if ship_alive => {
+                    let dx = ring_delta(ship_x, e.x, LOGICAL_WIDTH);
+                    let dy = ring_delta(ship_y, e.y, LOGICAL_HEIGHT);
+                    let d2 = dx * dx + dy * dy;
+                    if d2 <= MINE_WAKE_RADIUS * MINE_WAKE_RADIUS {
+                        e.awake = true;
+                    }
+                    if e.awake {
+                        let d = d2.sqrt().max(1.0);
+                        e.vx += MINE_THRUST * dx / d * TIMESTEP;
+                        e.vy += MINE_THRUST * dy / d * TIMESTEP;
+                    }
+                }
+                EnemyKind::Diver => e.life -= TIMESTEP,
+                _ => {}
+            }
+            e.x = wrap(e.x + e.vx * TIMESTEP, LOGICAL_WIDTH);
+            e.y = wrap(e.y + e.vy * TIMESTEP, LOGICAL_HEIGHT);
+        }
+        self.enemies
+            .retain(|e| e.kind != EnemyKind::Diver || e.life > 0.0);
+
+        self.enemy_actions(events);
+    }
+
+    /// Every settled enemy acts on its own cadence — the pattern zoo. An Orbiter fires
+    /// an aimed shot, a Diver fires ahead along its dive, and a Shepherd herds the
+    /// rock nearest it toward the ship. A Mine has no cadence — it only ever rushes.
+    /// Enemies keep firing through the brief pause after a death; they aim wherever the
+    /// ship last was.
+    fn enemy_actions(&mut self, events: &mut Events) {
+        let (ship_x, ship_y) = (self.ship.x, self.ship.y);
+        for i in 0..self.enemies.len() {
+            let kind = self.enemies[i].kind;
+            let cadence = self.enemy_cadence(kind);
+            if cadence == 0 {
+                continue;
+            }
+            let ready = {
+                let e = &mut self.enemies[i];
+                e.fire_tick += 1;
+                if e.fire_tick < cadence {
+                    false
+                } else {
+                    e.fire_tick = 0;
+                    true
+                }
+            };
+            if !ready {
+                continue;
+            }
+            let (ex, ey, evx, evy) = {
+                let e = &self.enemies[i];
+                (e.x, e.y, e.vx, e.vy)
+            };
+            match kind {
+                EnemyKind::Orbiter => {
+                    self.spawn_enemy_shot(ex, ey, ring_aim(ex, ey, ship_x, ship_y));
+                    events.enemy_fired = true;
+                }
+                EnemyKind::Diver => {
+                    self.spawn_enemy_shot(ex, ey, evy.atan2(evx));
+                    events.enemy_fired = true;
+                }
+                EnemyKind::Shepherd => self.herd_nearest_rock(ex, ey, ship_x, ship_y),
+                EnemyKind::Mine => {}
+            }
+        }
+    }
+
+    /// Looses an enemy shot from `(x, y)` on `heading`, at a speed that quickens as the
+    /// run escalates. Like the player's fire, it then feels the gravity and curves.
+    fn spawn_enemy_shot(&mut self, x: f32, y: f32, heading: f32) {
+        let speed = ENEMY_SHOT_SPEED + self.escalation() as f32 * ENEMY_SHOT_SPEED_PER_WAVE;
+        self.enemy_bullets.push(EnemyBulletState {
+            x,
+            y,
+            vx: heading.cos() * speed,
+            vy: heading.sin() * speed,
+            life: ENEMY_SHOT_LIFE,
+        });
+    }
+
+    /// Nudges the rock nearest `(ex, ey)` toward the ship — a Shepherd herding the
+    /// field at the player. Does nothing if no rocks remain.
+    fn herd_nearest_rock(&mut self, ex: f32, ey: f32, ship_x: f32, ship_y: f32) {
+        let nearest = self
+            .asteroids
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                ring_dist_sq(ex, ey, a.x, a.y).total_cmp(&ring_dist_sq(ex, ey, b.x, b.y))
+            })
+            .map(|(i, _)| i);
+        if let Some(i) = nearest {
+            let rock = &mut self.asteroids[i];
+            let heading = ring_aim(rock.x, rock.y, ship_x, ship_y);
+            rock.vx += heading.cos() * SHEPHERD_NUDGE;
+            rock.vy += heading.sin() * SHEPHERD_NUDGE;
+        }
+    }
+
+    /// Flies every enemy shot under the wells' pull, wrapping it, and drops the ones
+    /// that burn out or are swallowed by a well's core.
+    fn advance_enemy_bullets(&mut self) {
+        for b in &mut self.enemy_bullets {
+            let (gx, gy) = gravity_at(&self.wells, b.x, b.y);
+            b.vx += gx * TIMESTEP;
+            b.vy += gy * TIMESTEP;
+            b.x = wrap(b.x + b.vx * TIMESTEP, LOGICAL_WIDTH);
+            b.y = wrap(b.y + b.vy * TIMESTEP, LOGICAL_HEIGHT);
+            b.life -= TIMESTEP;
+        }
+        let wells = &self.wells;
+        self.enemy_bullets
+            .retain(|b| b.life > 0.0 && !in_any_core(wells, b.x, b.y));
+    }
+
+    /// Enemies that cross a well's core are devoured like rocks — removed and scored,
+    /// though a kill the well made pays the player only half.
+    fn resolve_enemy_accretion(&mut self, events: &mut Events) {
+        let mut i = 0;
+        while i < self.enemies.len() {
+            let e = self.enemies[i];
+            if in_any_core(&self.wells, e.x, e.y) {
+                self.score += e.kind.score() / 2;
+                events.enemy_destroyed = true;
+                self.enemies.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Runs the wave clock: the field of enemies must be cleared, then after a gap the
+    /// next wave flies in — rotated through the zoo and escalated. A living wave holds
+    /// the gap open, so waves never overlap.
+    fn manage_waves(&mut self) {
+        if !self.enemies.is_empty() {
+            self.wave_timer = ENEMY_WAVE_GAP;
+            return;
+        }
+        if self.wave_timer > 0.0 {
+            self.wave_timer -= TIMESTEP;
+            return;
+        }
+        self.spawn_wave();
+    }
+
+    /// Sends in a fresh wave: as many enemies as [`Game::wave_size`], their kinds
+    /// rotated through the zoo from a per-wave offset so the mix turns over run to run.
+    fn spawn_wave(&mut self) {
+        self.waves_spawned += 1;
+        self.wave_timer = ENEMY_WAVE_GAP;
+        let count = self.wave_size();
+        let offset = self.waves_spawned.saturating_sub(1) as usize;
+        for k in 0..count {
+            let kind = ENEMY_ZOO[(offset + k) % ENEMY_ZOO.len()];
+            self.spawn_enemy(kind);
+        }
+    }
+
+    /// How many enemies this wave carries — growing with the waves flown, capped so a
+    /// late field never floods.
+    fn wave_size(&self) -> usize {
+        (WAVE_BASE_COUNT + self.waves_spawned.saturating_sub(1) as usize / 2).min(WAVE_COUNT_CAP)
+    }
+
+    /// How far the run has escalated — climbing with each wave, then holding at a cap
+    /// so the pressure plateaus rather than runs away.
+    fn escalation(&self) -> u32 {
+        self.waves_spawned.saturating_sub(1).min(ESCALATION_CAP)
+    }
+
+    /// How often `kind` fires (or herds), tightening as the run escalates but never
+    /// past its own floor. A [`Mine`](EnemyKind::Mine) returns zero — it never fires.
+    fn enemy_cadence(&self, kind: EnemyKind) -> u32 {
+        let base = kind.base_cadence();
+        if base == 0 {
+            return 0;
+        }
+        base.saturating_sub(self.escalation() * CADENCE_PER_WAVE)
+            .max(kind.min_cadence())
+    }
+
+    /// Places one enemy of `kind` on the field, riding the gravity from the off: an
+    /// Orbiter or Shepherd is dropped into an orbit of a chosen well (with the
+    /// tangential velocity a near-circular orbit needs); a Diver enters at an edge,
+    /// aimed just off a well so it slings by; a Mine is scattered into the field at a
+    /// creep. Its fire is phased so a wave staggers rather than volleys as one.
+    fn spawn_enemy(&mut self, kind: EnemyKind) {
+        let anchor = self.wells[self.rng.below(self.wells.len() as u64) as usize];
+        let (wx, wy) = (anchor.x, anchor.y);
+        let fire_tick = self.rng.below(30) as u32;
+        let (x, y, vx, vy) = match kind {
+            EnemyKind::Orbiter | EnemyKind::Shepherd => {
+                let (r, frac) = if kind == EnemyKind::Orbiter {
+                    (ORBITER_RADIUS, 1.0)
+                } else {
+                    (SHEPHERD_RADIUS, SHEPHERD_ORBIT_FRACTION)
+                };
+                let a = self.rng.range(0.0, TAU);
+                let (rx, ry) = (a.cos(), a.sin());
+                let sign = if self.rng.below(2) == 0 { 1.0 } else { -1.0 };
+                let v = orbital_speed(r) * frac;
+                // The tangent to the orbit, its handedness set by `sign`.
+                (wx + rx * r, wy + ry * r, -ry * sign * v, rx * sign * v)
+            }
+            EnemyKind::Diver => {
+                let (ex, ey) = self.random_edge_point();
+                let off = if self.rng.below(2) == 0 {
+                    DIVER_AIM_OFFSET
+                } else {
+                    -DIVER_AIM_OFFSET
+                };
+                let h = ring_aim(ex, ey, wx, wy) + off;
+                (ex, ey, h.cos() * DIVER_SPEED, h.sin() * DIVER_SPEED)
+            }
+            EnemyKind::Mine => {
+                let (mx, my) = self.random_ring_point(wx, wy, MINE_SPAWN_MIN, MINE_SPAWN_MAX);
+                let a = self.rng.range(0.0, TAU);
+                (
+                    mx,
+                    my,
+                    a.cos() * MINE_DRIFT_SPEED,
+                    a.sin() * MINE_DRIFT_SPEED,
+                )
+            }
+        };
+        self.enemies.push(EnemyState {
+            kind,
+            x,
+            y,
+            vx,
+            vy,
+            fire_tick,
+            life: if kind == EnemyKind::Diver {
+                DIVER_LIFE
+            } else {
+                f32::INFINITY
+            },
+            awake: false,
+        });
+    }
+
+    /// A seeded point on one of the four field edges — where a Diver enters.
+    fn random_edge_point(&mut self) -> (f32, f32) {
+        match self.rng.below(4) {
+            0 => (self.rng.range(0.0, LOGICAL_WIDTH), 0.0),
+            1 => (self.rng.range(0.0, LOGICAL_WIDTH), LOGICAL_HEIGHT),
+            2 => (0.0, self.rng.range(0.0, LOGICAL_HEIGHT)),
+            _ => (LOGICAL_WIDTH, self.rng.range(0.0, LOGICAL_HEIGHT)),
+        }
+    }
+
+    /// A seeded point whose distance from `(wx, wy)` falls in `[lo, hi]` — a band
+    /// clear of the well's core but short of the field edge.
+    fn random_ring_point(&mut self, wx: f32, wy: f32, lo: f32, hi: f32) -> (f32, f32) {
+        loop {
+            let x = self.rng.range(0.0, LOGICAL_WIDTH);
+            let y = self.rng.range(0.0, LOGICAL_HEIGHT);
+            let d2 = ring_dist_sq(wx, wy, x, y);
+            if d2 >= lo * lo && d2 <= hi * hi {
+                break (x, y);
+            }
+        }
+    }
+
+    /// Resolves shots striking rocks and enemies. A struck rock splits into two faster
+    /// fragments (a small into none); a struck enemy is downed and scored. Either way
+    /// the shot is spent. Rock scoring proper still comes from accretion.
     fn resolve_shot_hits(&mut self, events: &mut Events) {
         let mut fragments = Vec::new();
         let mut i = 0;
         while i < self.shots.len() {
             let (sx, sy) = (self.shots[i].x, self.shots[i].y);
-            let hit = self
+            let rock_hit = self
                 .asteroids
                 .iter()
                 .position(|a| overlap((sx, sy, SHOT_RADIUS), (a.x, a.y, a.size.radius())));
-            if let Some(j) = hit {
+            if let Some(j) = rock_hit {
                 let rock = self.asteroids.swap_remove(j);
                 events.rock_split = true;
                 if let Some(child) = rock.size.child() {
@@ -655,9 +1141,20 @@ impl Game {
                     }
                 }
                 self.shots.swap_remove(i);
-            } else {
-                i += 1;
+                continue;
             }
+            let enemy_hit = self
+                .enemies
+                .iter()
+                .position(|e| overlap((sx, sy, SHOT_RADIUS), (e.x, e.y, ENEMY_RADIUS)));
+            if let Some(j) = enemy_hit {
+                let enemy = self.enemies.swap_remove(j);
+                self.score += enemy.kind.score();
+                events.enemy_destroyed = true;
+                self.shots.swap_remove(i);
+                continue;
+            }
+            i += 1;
         }
         self.asteroids.append(&mut fragments);
     }
@@ -734,6 +1231,27 @@ impl Game {
     /// The shots in flight, as the shell should draw them.
     pub fn shots(&self) -> impl Iterator<Item = Shot> + '_ {
         self.shots.iter().map(|s| Shot { x: s.x, y: s.y })
+    }
+
+    /// The enemies riding the field, as the shell should draw them.
+    pub fn enemies(&self) -> impl Iterator<Item = Enemy> + '_ {
+        self.enemies.iter().map(|e| Enemy {
+            x: e.x,
+            y: e.y,
+            kind: e.kind,
+        })
+    }
+
+    /// How many enemies are on the field.
+    pub fn enemy_count(&self) -> usize {
+        self.enemies.len()
+    }
+
+    /// The enemy shots in flight, as the shell should draw them.
+    pub fn enemy_bullets(&self) -> impl Iterator<Item = EnemyBullet> + '_ {
+        self.enemy_bullets
+            .iter()
+            .map(|b| EnemyBullet { x: b.x, y: b.y })
     }
 
     /// The explosions in progress, as the shell should draw them.
@@ -839,6 +1357,21 @@ fn ring_dist_sq(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     dx * dx + dy * dy
 }
 
+/// The heading from `(fx, fy)` toward the nearest image of `(tx, ty)` across the
+/// toroidal field — how an enemy aims at the ship, or a Shepherd points a rock at it.
+fn ring_aim(fx: f32, fy: f32, tx: f32, ty: f32) -> f32 {
+    let dx = ring_delta(tx, fx, LOGICAL_WIDTH);
+    let dy = ring_delta(ty, fy, LOGICAL_HEIGHT);
+    dy.atan2(dx)
+}
+
+/// The speed of a near-circular orbit at radius `r` in the well's field — from
+/// `v²/r = GRAVITY/r²`, the balance of centripetal need against the inverse-square
+/// pull, so an enemy dropped there with this tangential speed rides the gravity round.
+fn orbital_speed(r: f32) -> f32 {
+    (GRAVITY / r).sqrt()
+}
+
 /// Whether two circles — each a `(centre-x, centre-y, radius)` — overlap, measured
 /// across the toroidal field.
 fn overlap(a: (f32, f32, f32), b: (f32, f32, f32)) -> bool {
@@ -879,6 +1412,12 @@ impl Rng {
     fn range(&mut self, lo: f32, hi: f32) -> f32 {
         let unit = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
         lo + (hi - lo) * unit
+    }
+
+    /// A uniform integer in `0..n` — for a seeded choice among a handful of options
+    /// (which well to anchor to, which edge to enter from, which way to orbit).
+    fn below(&mut self, n: u64) -> u64 {
+        self.next_u64() % n.max(1)
     }
 }
 
@@ -952,6 +1491,35 @@ mod tests {
             vx: 0.0,
             vy: 0.0,
             life: SHOT_LIFE,
+        });
+    }
+
+    /// Drops an enemy of `kind` at `(x, y)`, at rest, and hands back its index.
+    fn plant_enemy(game: &mut Game, kind: EnemyKind, x: f32, y: f32) -> usize {
+        game.enemies.push(EnemyState {
+            kind,
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            fire_tick: 0,
+            life: if kind == EnemyKind::Diver {
+                DIVER_LIFE
+            } else {
+                f32::INFINITY
+            },
+            awake: false,
+        });
+        game.enemies.len() - 1
+    }
+
+    fn plant_enemy_bullet(game: &mut Game, x: f32, y: f32) {
+        game.enemy_bullets.push(EnemyBulletState {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            life: ENEMY_SHOT_LIFE,
         });
     }
 
@@ -1272,5 +1840,238 @@ mod tests {
             game.collapse_meter() > 0.0,
             "the pass charges once it turns risky"
         );
+    }
+
+    // The enemy zoo. A wave arriving, rotating and firing is reachable by honest play
+    // (see `tests/enemies.rs`); the combats below need an enemy set exactly against the
+    // ship, a shot or the well — which honest play cannot practically stage — so they
+    // plant the piece and then drive it through the real `step` path.
+
+    #[test]
+    fn a_shot_downs_an_enemy_and_scores_it() {
+        let mut game = empty_field(1);
+        plant_enemy(&mut game, EnemyKind::Orbiter, 300.0, 300.0);
+        plant_shot(&mut game, 300.0, 300.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.enemy_destroyed);
+        assert_eq!(game.enemy_count(), 0);
+        assert_eq!(game.score(), EnemyKind::Orbiter.score());
+    }
+
+    #[test]
+    fn enemy_fire_destroys_the_ship() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        plant_enemy_bullet(&mut game, sx, sy);
+
+        let events = game.step(Input::default());
+
+        assert!(events.ship_destroyed);
+        assert_eq!(game.lives(), LIVES_START - 1);
+    }
+
+    #[test]
+    fn running_into_a_mine_detonates_both() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        plant_enemy(&mut game, EnemyKind::Mine, sx, sy);
+
+        let events = game.step(Input::default());
+
+        assert!(events.ship_destroyed);
+        assert_eq!(game.enemy_count(), 0, "the mine detonates with the ship");
+    }
+
+    #[test]
+    fn a_collapse_sweeps_the_enemies() {
+        let mut game = empty_field(1);
+        game.collapse_meter = 1.0;
+        plant_enemy(&mut game, EnemyKind::Orbiter, 300.0, 300.0);
+        plant_enemy(&mut game, EnemyKind::Mine, 700.0, 500.0);
+
+        let events = game.step(Input {
+            collapse: true,
+            ..Default::default()
+        });
+
+        assert!(events.collapse_fired);
+        assert!(events.enemy_destroyed);
+        assert_eq!(game.enemy_count(), 0, "the shockwave clears the field");
+        assert_eq!(
+            game.score(),
+            EnemyKind::Orbiter.score() + EnemyKind::Mine.score()
+        );
+    }
+
+    #[test]
+    fn the_well_accretes_an_enemy_that_falls_in() {
+        let mut game = empty_field(1);
+        plant_enemy(&mut game, EnemyKind::Mine, CENTER_X, CENTER_Y);
+
+        let events = game.step(Input::default());
+
+        assert!(events.enemy_destroyed);
+        assert_eq!(game.enemy_count(), 0);
+        assert_eq!(
+            game.score(),
+            EnemyKind::Mine.score() / 2,
+            "a kill the well made pays half"
+        );
+    }
+
+    #[test]
+    fn a_mine_wakes_and_rushes_a_nearing_ship() {
+        let mut game = empty_field(1);
+        // A mine just inside its wake radius, the ship off to its left.
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        let i = plant_enemy(&mut game, EnemyKind::Mine, sx + MINE_WAKE_RADIUS - 20.0, sy);
+
+        game.step(Input::default());
+
+        let mine = game.enemies[i];
+        assert!(mine.awake, "the mine wakes when the ship comes near");
+        assert!(mine.vx < 0.0, "and thrusts toward the ship (to its left)");
+    }
+
+    #[test]
+    fn a_mine_stays_inert_while_the_ship_is_far() {
+        let mut game = empty_field(1);
+        // Well clear of the wake radius, in a still spot away from the ship and well.
+        let i = plant_enemy(&mut game, EnemyKind::Mine, 120.0, 120.0);
+
+        game.step(Input::default());
+
+        assert!(!game.enemies[i].awake, "a distant mine drifts on, inert");
+    }
+
+    #[test]
+    fn a_shepherd_herds_the_nearest_rock_at_the_ship() {
+        let mut game = empty_field(1);
+        plant_enemy(&mut game, EnemyKind::Shepherd, 300.0, 400.0);
+        plant_rock(&mut game, AsteroidSize::Large, 340.0, 400.0, 0.0);
+        // Arm the shepherd so its herd comes round on the next step.
+        game.enemies[0].fire_tick = game.enemy_cadence(EnemyKind::Shepherd) - 1;
+
+        let ship = game.ship();
+        // The rock's speed along the heading toward the ship, before and after.
+        let toward = |a: &AsteroidState| {
+            let h = ring_aim(a.x, a.y, ship.x, ship.y);
+            a.vx * h.cos() + a.vy * h.sin()
+        };
+        let before = toward(&game.asteroids[0]);
+        game.step(Input::default());
+        let after = toward(&game.asteroids[0]);
+
+        assert!(
+            after - before > SHEPHERD_NUDGE * 0.5,
+            "the herd shoves the rock at the ship (Δ {})",
+            after - before
+        );
+    }
+
+    #[test]
+    fn an_orbiter_holds_its_orbit() {
+        // Dropped at the orbit radius with the tangential speed the model gives, an
+        // orbiter circles the well — never falling into the core, never flung away.
+        let mut game = empty_field(1);
+        let r = ORBITER_RADIUS;
+        let v = orbital_speed(r);
+        game.enemies.push(EnemyState {
+            kind: EnemyKind::Orbiter,
+            x: CENTER_X + r,
+            y: CENTER_Y,
+            vx: 0.0,
+            vy: v, // tangential to the +x radius
+            fire_tick: 0,
+            life: f32::INFINITY,
+            awake: false,
+        });
+
+        let (mut min_d, mut max_d, mut min_x) = (f32::INFINITY, 0.0_f32, f32::INFINITY);
+        for _ in 0..1200 {
+            game.step(Input::default());
+            let e = game.enemies[0];
+            let d = ((e.x - CENTER_X).powi(2) + (e.y - CENTER_Y).powi(2)).sqrt();
+            min_d = min_d.min(d);
+            max_d = max_d.max(d);
+            min_x = min_x.min(e.x);
+        }
+        assert!(
+            min_d > WELL_CORE_RADIUS * 2.0,
+            "the orbiter never falls into the core (min {min_d})"
+        );
+        assert!(max_d < r * 1.8, "and never escapes (max {max_d})");
+        assert!(
+            min_x < CENTER_X,
+            "and it truly swings around, reaching the far side"
+        );
+    }
+
+    #[test]
+    fn a_diver_leaves_when_its_run_is_spent() {
+        let mut game = empty_field(1);
+        game.enemies.push(EnemyState {
+            kind: EnemyKind::Diver,
+            x: 120.0,
+            y: 120.0,
+            vx: -40.0,
+            vy: -40.0, // heading away from the central well, so it is not accreted first
+            fire_tick: 0,
+            life: 3.0 * TIMESTEP,
+            awake: false,
+        });
+
+        for _ in 0..4 {
+            game.step(Input::default());
+        }
+
+        assert!(
+            game.enemies().all(|e| e.kind != EnemyKind::Diver),
+            "a spent diver leaves the field"
+        );
+        assert_eq!(game.enemy_count(), 0, "and no fresh wave has arrived yet");
+    }
+
+    #[test]
+    fn waves_rotate_through_the_whole_zoo() {
+        // Clearing the field between waves (in play, the collapse or the guns) cycles
+        // the kinds: over a run of waves, every kind in the zoo turns up.
+        let mut game = empty_field(1);
+        let mut seen: Vec<EnemyKind> = Vec::new();
+        for _ in 0..(ENEMY_ZOO.len() * 3) {
+            game.enemies.clear();
+            game.spawn_wave();
+            for e in &game.enemies {
+                if !seen.contains(&e.kind) {
+                    seen.push(e.kind);
+                }
+            }
+        }
+        for kind in ENEMY_ZOO {
+            assert!(seen.contains(&kind), "every kind appears: missing {kind:?}");
+        }
+    }
+
+    #[test]
+    fn waves_escalate_in_size_and_tighten_fire() {
+        // Reaching a late wave by honest play means clearing every wave before it — a
+        // long, aim-perfect run — so the wave counter is set directly and the size and
+        // cadence read straight off it.
+        let mut game = empty_field(1);
+        game.waves_spawned = 1;
+        let early_size = game.wave_size();
+        let early_cadence = game.enemy_cadence(EnemyKind::Orbiter);
+
+        game.waves_spawned = ESCALATION_CAP + 1;
+        let late_size = game.wave_size();
+        let late_cadence = game.enemy_cadence(EnemyKind::Orbiter);
+
+        assert!(late_size > early_size, "later waves bring more enemies");
+        assert!(late_cadence < early_cadence, "and fire tighter");
+        assert!(late_size <= WAVE_COUNT_CAP, "but never past the cap");
     }
 }
