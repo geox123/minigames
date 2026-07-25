@@ -331,7 +331,7 @@ pub fn mode_select(highlight: Mode) {
     );
     font::draw_centred(
         LOGICAL_WIDTH,
-        "TURN LEFT RIGHT   THRUST UP   F FULLSCREEN",
+        "ARROWS FLY   SPACE FIRE   SHIFT HYPERSPACE   F FULLSCREEN",
         510.0,
         HINT_SCALE,
         GRAY,

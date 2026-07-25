@@ -26,9 +26,12 @@
 //! small into nothing, the fragments faster than their parent — scoring 20 / 50 / 100
 //! by size. Colliding with a rock **destroys the ship**: a life is lost, an
 //! explosion plays, and the ship reappears in the centre once the centre is clear;
-//! the game ends when the last ship is gone. Saucers, hyperspace, waves and the
-//! bonus ship arrive in the later tickets; everything hangs off the single
-//! [`Game::step`] seam.
+//! the game ends when the last ship is gone. **Saucers**
+//! ([T4](https://github.com/geox123/minigames/issues/114)) cross the field on a
+//! score-scaled cadence — a large one spraying random fire, a small one aiming — and
+//! **hyperspace** ([T5](https://github.com/geox123/minigames/issues/115)) blinks the
+//! ship to a random spot at the risk of arriving on a rock. Waves and the bonus ship
+//! arrive in the later tickets; everything hangs off the single [`Game::step`] seam.
 
 use core::f32::consts::TAU;
 
@@ -69,6 +72,13 @@ pub const LIVES_START: u32 = 3;
 const DEATH_PAUSE: f32 = 1.2;
 const SPAWN_INVULN: f32 = 2.0;
 const RESPAWN_CLEAR_RADIUS: f32 = 180.0;
+
+/// Hyperspace: how long the ship is gone mid-jump, and the flat chance the jump
+/// malfunctions and destroys it on arrival — on top of the risk of materialising on
+/// a rock, which the ordinary collision pass then punishes because the ship arrives
+/// unprotected.
+const HYPERSPACE_BLINK: f32 = 0.3;
+const HYPERSPACE_MALFUNCTION_CHANCE: f32 = 0.12;
 
 /// The player's shots: how fast one flies (a fixed *world* speed — the ship's
 /// velocity is deliberately not added), how long it lives before expiring, how many
@@ -194,8 +204,7 @@ impl SaucerSize {
     }
 }
 
-/// What the player is doing this step. `hyperspace` is wired now so the input shape
-/// stays stable across tickets, but the core ignores it until the teleport lands.
+/// What the player is doing this step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Input {
     /// Rotate anticlockwise (to the ship's left).
@@ -207,7 +216,8 @@ pub struct Input {
     /// Fire a shot. A shot is loosed on the press, not while the button is held, so
     /// firing is a matter of tapping — one shot per press, up to the on-screen cap.
     pub fire: bool,
-    /// Jump to hyperspace. *(Ignored until hyperspace lands.)*
+    /// Jump to hyperspace — on the press, the ship blinks out and reappears at a
+    /// random spot, at the risk of arriving on a rock or malfunctioning.
     pub hyperspace: bool,
 }
 
@@ -278,6 +288,8 @@ pub struct Events {
     pub rock_destroyed: bool,
     /// A shot destroyed the saucer this step.
     pub saucer_destroyed: bool,
+    /// The ship jumped to hyperspace this step.
+    pub hyperspaced: bool,
     /// The ship was destroyed this step and a life was lost.
     pub ship_destroyed: bool,
     /// The last ship was spent this step — the game is over.
@@ -377,6 +389,12 @@ pub struct Game {
     ending: bool,
     /// Whether the fire button was down last step, so firing triggers on the press.
     fire_was_down: bool,
+    /// Whether the hyperspace button was down last step, so a jump triggers on the
+    /// press.
+    hyperspace_was_down: bool,
+    /// Seconds left in a hyperspace jump — while it counts down the ship is gone,
+    /// reappearing (at its risk) when it reaches zero.
+    hyperspace_timer: f32,
     asteroids: Vec<AsteroidState>,
     shots: Vec<ShotState>,
     blasts: Vec<BlastState>,
@@ -416,6 +434,8 @@ impl Game {
             invuln: SPAWN_INVULN,
             ending: false,
             fire_was_down: false,
+            hyperspace_was_down: false,
+            hyperspace_timer: 0.0,
             asteroids: Vec::with_capacity(INITIAL_ASTEROIDS),
             shots: Vec::new(),
             blasts: Vec::new(),
@@ -467,16 +487,24 @@ impl Game {
             return events;
         }
 
-        // Firing triggers on a fresh press, so tapping fires one shot at a time.
+        // Firing and hyperspace both trigger on a fresh press, not a held button.
         let fire_pressed = input.fire && !self.fire_was_down;
         self.fire_was_down = input.fire;
+        let hyperspace_pressed = input.hyperspace && !self.hyperspace_was_down;
+        self.hyperspace_was_down = input.hyperspace;
 
         if self.ship_alive {
-            self.advance_ship(input);
-            if fire_pressed && self.shots.len() < MAX_SHOTS {
-                self.fire();
-                events.fired = true;
+            if hyperspace_pressed {
+                self.enter_hyperspace(&mut events);
+            } else {
+                self.advance_ship(input);
+                if fire_pressed && self.shots.len() < MAX_SHOTS {
+                    self.fire();
+                    events.fired = true;
+                }
             }
+        } else if self.hyperspace_timer > 0.0 {
+            self.advance_hyperspace(&mut events);
         } else {
             self.advance_death(&mut events);
         }
@@ -568,6 +596,34 @@ impl Game {
             };
             self.ship_alive = true;
             self.invuln = SPAWN_INVULN;
+        }
+    }
+
+    /// Begins a hyperspace jump: the ship blinks out for a moment, at rest.
+    fn enter_hyperspace(&mut self, events: &mut Events) {
+        self.ship_alive = false;
+        self.thrusting = false;
+        self.ship.vx = 0.0;
+        self.ship.vy = 0.0;
+        self.hyperspace_timer = HYPERSPACE_BLINK;
+        events.hyperspaced = true;
+    }
+
+    /// Runs a hyperspace jump. When the blink is over the ship drops at a seeded
+    /// random spot, **unprotected** — so a rock waiting there (punished by the
+    /// ordinary collision pass) destroys it — and on a flat chance the jump
+    /// malfunctions and destroys it outright.
+    fn advance_hyperspace(&mut self, events: &mut Events) {
+        self.hyperspace_timer -= TIMESTEP;
+        if self.hyperspace_timer > 0.0 {
+            return;
+        }
+        self.ship.x = self.rng.range(0.0, LOGICAL_WIDTH);
+        self.ship.y = self.rng.range(0.0, LOGICAL_HEIGHT);
+        self.ship_alive = true;
+        self.invuln = 0.0;
+        if self.rng.range(0.0, 1.0) < HYPERSPACE_MALFUNCTION_CHANCE {
+            self.destroy_ship(events);
         }
     }
 
@@ -798,9 +854,14 @@ impl Game {
             .saucer_bullets
             .iter()
             .any(|b| overlap(ship, (b.x, b.y, SAUCER_BULLET_RADIUS)));
-        if !(hit_rock || hit_saucer || hit_bullet) {
-            return;
+        if hit_rock || hit_saucer || hit_bullet {
+            self.destroy_ship(events);
         }
+    }
+
+    /// Destroys the ship: a life lost, an explosion, the sky cleared, and the pause
+    /// before it returns — or the game's end, on the last life.
+    fn destroy_ship(&mut self, events: &mut Events) {
         self.lives = self.lives.saturating_sub(1);
         self.ship_alive = false;
         self.thrusting = false;
@@ -1041,6 +1102,18 @@ mod tests {
             vy: 0.0,
             life: SAUCER_BULLET_LIFE,
         });
+    }
+
+    /// Triggers a hyperspace jump and runs it to completion — the ship reappears, or
+    /// is destroyed on arrival.
+    fn do_hyperspace(game: &mut Game) {
+        game.step(Input {
+            hyperspace: true,
+            ..Default::default()
+        });
+        for _ in 0..(HYPERSPACE_BLINK / TIMESTEP) as usize + 2 {
+            game.step(Input::default());
+        }
     }
 
     fn speed_of(a: &AsteroidState) -> f32 {
@@ -1401,5 +1474,81 @@ mod tests {
             assert_eq!(a.saucer_bullets.len(), b.saucer_bullets.len());
         }
         assert!(saw_saucer, "a saucer was exercised in the run");
+    }
+
+    #[test]
+    fn hyperspace_moves_the_ship_to_a_new_spot() {
+        let mut game = empty_game();
+        let before = game.ship();
+        do_hyperspace(&mut game);
+        let after = game.ship();
+        assert!(
+            (after.x - before.x).abs() > 1.0 || (after.y - before.y).abs() > 1.0,
+            "the ship reappears somewhere new"
+        );
+        assert!(
+            (0.0..LOGICAL_WIDTH).contains(&after.x) && (0.0..LOGICAL_HEIGHT).contains(&after.y),
+            "and inside the field"
+        );
+    }
+
+    #[test]
+    fn hyperspace_replays_deterministically() {
+        let mut a = Game::new(9);
+        let mut b = Game::new(9);
+        a.asteroids.clear();
+        b.asteroids.clear();
+        do_hyperspace(&mut a);
+        do_hyperspace(&mut b);
+        assert_eq!(a.ship(), b.ship(), "the destination replays");
+        assert_eq!(a.ship_alive(), b.ship_alive());
+        assert_eq!(a.lives(), b.lives(), "and so does the malfunction roll");
+    }
+
+    #[test]
+    fn hyperspace_sometimes_malfunctions_on_an_empty_field() {
+        // On a cleared field a jump can only be fatal by malfunction. Over many
+        // seeds some jumps malfunction and some are safe.
+        let seeds = 300;
+        let mut fatal = 0;
+        for seed in 0..seeds {
+            let mut game = Game::new(seed);
+            game.asteroids.clear();
+            do_hyperspace(&mut game);
+            if game.lives() < LIVES_START {
+                fatal += 1;
+            }
+        }
+        assert!(fatal > 0, "some jumps malfunction");
+        assert!(fatal < seeds, "and some are safe");
+    }
+
+    #[test]
+    fn reappearing_on_a_rock_destroys_the_ship() {
+        // Find a seed whose empty-field jump is safe (no malfunction) and learn where
+        // it lands.
+        let mut calm = None;
+        for seed in 0..300 {
+            let mut game = Game::new(seed);
+            game.asteroids.clear();
+            do_hyperspace(&mut game);
+            if game.ship_alive() && game.lives() == LIVES_START {
+                calm = Some((seed, game.ship().x, game.ship().y));
+                break;
+            }
+        }
+        let (seed, lx, ly) = calm.expect("some jump is safe on an empty field");
+
+        // The same seed lands in the same spot — park a rock there, and the jump is
+        // fatal (the malfunction roll is the safe one for this seed, so the death is
+        // the rock's).
+        let mut game = Game::new(seed);
+        game.asteroids.clear();
+        plant_rock(&mut game, AsteroidSize::Large, lx, ly, 0.0);
+        do_hyperspace(&mut game);
+        assert!(
+            game.lives() < LIVES_START,
+            "materialising on a rock is fatal"
+        );
     }
 }
