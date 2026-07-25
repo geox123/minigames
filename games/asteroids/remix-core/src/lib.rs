@@ -20,9 +20,12 @@
 //! an **orbital enemy zoo** that rides the same gravity — Orbiters that settle into an
 //! orbit and fire, Divers that fall in on a bent path, Mines that drift inert until
 //! the ship nears, and Shepherds that herd rocks at the player — arriving in waves
-//! that rotate through the kinds and escalate (A5). Bosses, the modes and the meta
+//! that rotate through the kinds and escalate (A5); and **power-ups** that downed
+//! enemies sometimes drop — a weapon step up a fire ladder, a shield that soaks a hit,
+//! or a charge that fills the collapse meter (A6). Bosses, the modes and the meta
 //! arrive in the later tickets; the ship's **loadout** is handed *in* at construction,
-//! so the core never knows the word "unlock" — it only ever flies what it is given.
+//! so the core never knows the word "unlock" — it only ever flies what it is given, and
+//! for now it is handed nothing (the run starts kitless).
 
 use core::f32::consts::TAU;
 
@@ -164,6 +167,24 @@ const ENEMY_ZOO: [EnemyKind; 4] = [
     EnemyKind::Mine,
     EnemyKind::Shepherd,
 ];
+
+/// Power-ups. The ship's weapon climbs a capped ladder — single, then a **spread**
+/// fan, then **piercing** shots, then **rapid** fire — each rung folding in the last.
+/// The tightest fire interval (rapid), and how wide the spread fan leans, in radians.
+const WEAPON_MAX: u32 = 3;
+const RAPID_FIRE_INTERVAL: u64 = 5;
+const SPREAD_ANGLE: f32 = 0.20;
+
+/// A downed enemy drops a pickup this often (a one-in-`DROP_CHANCE` roll), the pickup
+/// then rides the gravity like everything else and is caught within this radius of the
+/// ship, fading after this long if it is neither caught nor swallowed by a well.
+const DROP_CHANCE: u64 = 3;
+const PICKUP_CATCH_RADIUS: f32 = 14.0;
+const PICKUP_LIFE: f32 = 12.0;
+
+/// Breaking a shield leaves the ship a brief beat of protection — just enough to slip
+/// clear of the hazard that spent it, not a second life.
+const SHIELD_INVULN: f32 = 0.6;
 
 /// Which run this is. Inert for now — every mode plays the same until the modes
 /// ticket shapes their ends.
@@ -356,6 +377,27 @@ pub struct EnemyBullet {
     pub y: f32,
 }
 
+/// What a power-up grants when the ship catches it — earned in a run by downing
+/// enemies, never handed down (that is Phase B's loadout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PowerUp {
+    /// Steps the ship's weapon up its ladder (spread → pierce → rapid), capping.
+    Weapon,
+    /// Raises a shield that soaks the next hit.
+    Shield,
+    /// Fills the collapse meter, a collapse ready to spend.
+    Collapse,
+}
+
+/// A power-up adrift on the gravity field, as the shell should draw it. `x`/`y` are
+/// its centre; `kind` is what it grants.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pickup {
+    pub x: f32,
+    pub y: f32,
+    pub kind: PowerUp,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It grows
 /// as the collapse and the rest arrive in the later tickets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -374,6 +416,10 @@ pub struct Events {
     pub enemy_fired: bool,
     /// An enemy was destroyed this step — by a shot, the collapse, or the well.
     pub enemy_destroyed: bool,
+    /// The ship caught a power-up this step.
+    pub power_up_taken: bool,
+    /// A shield soaked a hit this step, sparing a life.
+    pub shield_broke: bool,
     /// The ship was destroyed this step and a life was lost.
     pub ship_destroyed: bool,
     /// The last ship was spent this step — the run is over.
@@ -417,7 +463,9 @@ struct AsteroidState {
     size: AsteroidSize,
 }
 
-/// A shot's live state: its centre, its velocity, and the seconds of life it has left.
+/// A shot's live state: its centre, its velocity, the seconds of life it has left, and
+/// whether it **pierces** — flies on through what it hits rather than being spent (the
+/// weapon ladder's third rung).
 #[derive(Clone, Copy)]
 struct ShotState {
     x: f32,
@@ -425,6 +473,7 @@ struct ShotState {
     vx: f32,
     vy: f32,
     life: f32,
+    pierce: bool,
 }
 
 /// An explosion in progress, with the seconds it has left to burn.
@@ -465,6 +514,18 @@ struct EnemyBulletState {
     life: f32,
 }
 
+/// A power-up's live state: its centre, its velocity (it rides the gravity like the
+/// rest of the field), the seconds of life it has left, and what it grants.
+#[derive(Clone, Copy)]
+struct PickupState {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    life: f32,
+    kind: PowerUp,
+}
+
 /// The whole run: the ship, the gravity wells that pull on it, and the seed the run
 /// began on. Advanced only through [`Game::step`]; everything else is read-only.
 pub struct Game {
@@ -477,6 +538,12 @@ pub struct Game {
     /// The enemies riding the field, and the shots they have loosed.
     enemies: Vec<EnemyState>,
     enemy_bullets: Vec<EnemyBulletState>,
+    /// The power-ups adrift on the field, waiting to be caught.
+    pickups: Vec<PickupState>,
+    /// The ship's weapon tier, `0..=WEAPON_MAX`, stepped up by weapon pickups.
+    weapon_level: u32,
+    /// Whether a shield is up to soak the next hit.
+    shield: bool,
     /// Seconds until the next wave flies in, once the field of enemies is clear.
     wave_timer: f32,
     /// How many waves have flown in so far — drives the rotation through the zoo and
@@ -537,6 +604,10 @@ impl Game {
             blasts: Vec::new(),
             enemies: Vec::new(),
             enemy_bullets: Vec::new(),
+            pickups: Vec::new(),
+            // The run starts kitless — the loadout is inert until Phase B.
+            weapon_level: 0,
+            shield: false,
             wave_timer: ENEMY_WAVE_GAP,
             waves_spawned: 0,
             fire_cooldown: 0,
@@ -603,7 +674,7 @@ impl Game {
             if input.fire && self.fire_cooldown == 0 {
                 self.fire();
                 events.fired = true;
-                self.fire_cooldown = FIRE_INTERVAL;
+                self.fire_cooldown = self.fire_interval();
             }
             self.resolve_skim(&mut events);
             self.try_collapse(collapse_pressed, &mut events);
@@ -617,6 +688,7 @@ impl Game {
         self.advance_asteroids();
         self.advance_enemies(&mut events);
         self.advance_enemy_bullets();
+        self.advance_pickups(&mut events);
         self.advance_blasts();
         if self.invuln > 0.0 {
             self.invuln = (self.invuln - TIMESTEP).max(0.0);
@@ -698,9 +770,15 @@ impl Game {
     /// threat: a Mine is the contact hazard (it detonates on the ship), an Orbiter and
     /// Diver menace with their fire, a Shepherd with the rocks it herds — so the other
     /// craft can be flown past, only their shots (and the rocks) bite.
+    ///
+    /// A **shield** soaks one such hit, sparing the life and leaving a beat of grace —
+    /// but the well's core is absolute: falling in ends the ship, shield or no.
     fn resolve_ship_death(&mut self, events: &mut Events) {
         let ship = (self.ship.x, self.ship.y, SHIP_RADIUS);
-        let into_well = in_any_core(&self.wells, self.ship.x, self.ship.y);
+        if in_any_core(&self.wells, self.ship.x, self.ship.y) {
+            self.destroy_ship(events);
+            return;
+        }
         let hit_rock = self
             .asteroids
             .iter()
@@ -713,11 +791,17 @@ impl Game {
             .enemy_bullets
             .iter()
             .any(|b| overlap(ship, (b.x, b.y, ENEMY_SHOT_RADIUS)));
-        if into_well || hit_rock || hit_mine || hit_bullet {
-            // The Mine the ship ran into detonates with it.
+        if hit_rock || hit_mine || hit_bullet {
+            // The Mine the ship ran into detonates with it, hit or shield.
             self.enemies
                 .retain(|e| e.kind != EnemyKind::Mine || !overlap(ship, (e.x, e.y, ENEMY_RADIUS)));
-            self.destroy_ship(events);
+            if self.shield {
+                self.shield = false;
+                self.invuln = SHIELD_INVULN;
+                events.shield_broke = true;
+            } else {
+                self.destroy_ship(events);
+            }
         }
     }
 
@@ -776,6 +860,8 @@ impl Game {
 
     /// Destroys the ship: a life lost, an explosion, the sky cleared, the streak
     /// broken, and the pause before it returns — or the run's end, on the last life.
+    /// The earned weapon and shield carry across the death (only the *run* starts
+    /// kitless); the pickups already on the field remain to be caught.
     fn destroy_ship(&mut self, events: &mut Events) {
         self.lives = self.lives.saturating_sub(1);
         self.ship_alive = false;
@@ -793,17 +879,41 @@ impl Game {
         events.ship_destroyed = true;
     }
 
-    /// Loosens a shot from the ship's nose along its facing. The shot flies at a fixed
-    /// world speed and then feels the gravity like everything else, so it curves.
+    /// Looses fire from the ship's nose along its facing, shaped by the weapon ladder:
+    /// a single shot at the base, a three-way **spread** fan from the first rung, and
+    /// **piercing** shots from the second. (The third rung, rapid fire, is the shorter
+    /// interval in [`Game::fire_interval`].) Each shot then feels the gravity and curves.
     fn fire(&mut self) {
-        let (fx, fy) = facing(self.ship.angle);
+        let pierce = self.weapon_level >= 2;
+        let angle = self.ship.angle;
+        self.push_shot(angle, pierce);
+        if self.weapon_level >= 1 {
+            self.push_shot(angle - SPREAD_ANGLE, pierce);
+            self.push_shot(angle + SPREAD_ANGLE, pierce);
+        }
+    }
+
+    /// Pushes one shot from the ship's nose along `angle`, marked `pierce` or not.
+    fn push_shot(&mut self, angle: f32, pierce: bool) {
+        let (fx, fy) = facing(angle);
         self.shots.push(ShotState {
             x: self.ship.x + fx * SHIP_RADIUS * 1.3,
             y: self.ship.y + fy * SHIP_RADIUS * 1.3,
             vx: fx * SHOT_SPEED,
             vy: fy * SHOT_SPEED,
             life: SHOT_LIFE,
+            pierce,
         });
+    }
+
+    /// The steps between shots while fire is held — the rapid interval once the weapon
+    /// tops its ladder, the base interval otherwise.
+    fn fire_interval(&self) -> u64 {
+        if self.weapon_level >= WEAPON_MAX {
+            RAPID_FIRE_INTERVAL
+        } else {
+            FIRE_INTERVAL
+        }
     }
 
     /// Flies every shot under the wells' pull, wrapping it, and drops the spent ones.
@@ -1111,52 +1221,123 @@ impl Game {
     }
 
     /// Resolves shots striking rocks and enemies. A struck rock splits into two faster
-    /// fragments (a small into none); a struck enemy is downed and scored. Either way
-    /// the shot is spent. Rock scoring proper still comes from accretion.
+    /// fragments (a small into none); a struck enemy is downed, scored, and may drop a
+    /// power-up. An ordinary shot is spent on its hit; a **piercing** shot flies on
+    /// through (one target per step, so it strikes more along its path over the steps
+    /// it lives). Rock scoring proper still comes from accretion.
     fn resolve_shot_hits(&mut self, events: &mut Events) {
         let mut fragments = Vec::new();
         let mut i = 0;
         while i < self.shots.len() {
-            let (sx, sy) = (self.shots[i].x, self.shots[i].y);
-            let rock_hit = self
-                .asteroids
-                .iter()
-                .position(|a| overlap((sx, sy, SHOT_RADIUS), (a.x, a.y, a.size.radius())));
-            if let Some(j) = rock_hit {
-                let rock = self.asteroids.swap_remove(j);
-                events.rock_split = true;
-                if let Some(child) = rock.size.child() {
-                    let parent_speed = (rock.vx * rock.vx + rock.vy * rock.vy).sqrt();
-                    for _ in 0..2 {
-                        let heading = self.rng.range(0.0, TAU);
-                        let speed =
-                            parent_speed * self.rng.range(FRAGMENT_SPEED_MIN, FRAGMENT_SPEED_MAX);
-                        fragments.push(AsteroidState {
-                            x: rock.x,
-                            y: rock.y,
-                            vx: heading.cos() * speed,
-                            vy: heading.sin() * speed,
-                            size: child,
-                        });
+            let shot = self.shots[i];
+            // A shot strikes at most one target a step — a rock first, else an enemy.
+            let hit =
+                if let Some(j) = self.asteroids.iter().position(|a| {
+                    overlap((shot.x, shot.y, SHOT_RADIUS), (a.x, a.y, a.size.radius()))
+                }) {
+                    let rock = self.asteroids.swap_remove(j);
+                    events.rock_split = true;
+                    if let Some(child) = rock.size.child() {
+                        let parent_speed = (rock.vx * rock.vx + rock.vy * rock.vy).sqrt();
+                        for _ in 0..2 {
+                            let heading = self.rng.range(0.0, TAU);
+                            let speed = parent_speed
+                                * self.rng.range(FRAGMENT_SPEED_MIN, FRAGMENT_SPEED_MAX);
+                            fragments.push(AsteroidState {
+                                x: rock.x,
+                                y: rock.y,
+                                vx: heading.cos() * speed,
+                                vy: heading.sin() * speed,
+                                size: child,
+                            });
+                        }
                     }
-                }
+                    true
+                } else if let Some(j) = self
+                    .enemies
+                    .iter()
+                    .position(|e| overlap((shot.x, shot.y, SHOT_RADIUS), (e.x, e.y, ENEMY_RADIUS)))
+                {
+                    let enemy = self.enemies.swap_remove(j);
+                    self.score += enemy.kind.score();
+                    events.enemy_destroyed = true;
+                    self.maybe_drop_pickup(enemy.x, enemy.y);
+                    true
+                } else {
+                    false
+                };
+            // A shot that struck is spent — unless it pierces, when it flies on.
+            if hit && !shot.pierce {
                 self.shots.swap_remove(i);
-                continue;
+            } else {
+                i += 1;
             }
-            let enemy_hit = self
-                .enemies
-                .iter()
-                .position(|e| overlap((sx, sy, SHOT_RADIUS), (e.x, e.y, ENEMY_RADIUS)));
-            if let Some(j) = enemy_hit {
-                let enemy = self.enemies.swap_remove(j);
-                self.score += enemy.kind.score();
-                events.enemy_destroyed = true;
-                self.shots.swap_remove(i);
-                continue;
-            }
-            i += 1;
         }
         self.asteroids.append(&mut fragments);
+    }
+
+    /// A downed enemy sometimes leaves a power-up where it fell — a weapon step most
+    /// often, a collapse charge less so, a shield least. (A collapse-cleared enemy
+    /// drops nothing; the collapse is reward enough.) The pickup then rides the gravity.
+    fn maybe_drop_pickup(&mut self, x: f32, y: f32) {
+        if self.rng.below(DROP_CHANCE) != 0 {
+            return;
+        }
+        let kind = match self.rng.below(100) {
+            0..=54 => PowerUp::Weapon,
+            55..=84 => PowerUp::Collapse,
+            _ => PowerUp::Shield,
+        };
+        self.pickups.push(PickupState {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            life: PICKUP_LIFE,
+            kind,
+        });
+    }
+
+    /// Drifts every power-up under the wells' pull, wrapping it; drops the ones that
+    /// fade or are swallowed by a well's core; and lets a living ship catch any it
+    /// touches, applying what they grant.
+    fn advance_pickups(&mut self, events: &mut Events) {
+        for p in &mut self.pickups {
+            let (gx, gy) = gravity_at(&self.wells, p.x, p.y);
+            p.vx += gx * TIMESTEP;
+            p.vy += gy * TIMESTEP;
+            p.x = wrap(p.x + p.vx * TIMESTEP, LOGICAL_WIDTH);
+            p.y = wrap(p.y + p.vy * TIMESTEP, LOGICAL_HEIGHT);
+            p.life -= TIMESTEP;
+        }
+        let wells = &self.wells;
+        self.pickups
+            .retain(|p| p.life > 0.0 && !in_any_core(wells, p.x, p.y));
+
+        if self.ship_alive {
+            let ship = (self.ship.x, self.ship.y, SHIP_RADIUS);
+            let mut i = 0;
+            while i < self.pickups.len() {
+                let p = self.pickups[i];
+                if overlap(ship, (p.x, p.y, PICKUP_CATCH_RADIUS)) {
+                    self.take_power_up(p.kind, events);
+                    self.pickups.swap_remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+
+    /// Applies a caught power-up: steps the weapon up its capped ladder, raises a
+    /// shield, or fills the collapse meter.
+    fn take_power_up(&mut self, kind: PowerUp, events: &mut Events) {
+        match kind {
+            PowerUp::Weapon => self.weapon_level = (self.weapon_level + 1).min(WEAPON_MAX),
+            PowerUp::Shield => self.shield = true,
+            PowerUp::Collapse => self.collapse_meter = 1.0,
+        }
+        events.power_up_taken = true;
     }
 
     /// Turns, thrusts and moves the ship, under the wells' pull, wrapping it at the
@@ -1252,6 +1433,25 @@ impl Game {
         self.enemy_bullets
             .iter()
             .map(|b| EnemyBullet { x: b.x, y: b.y })
+    }
+
+    /// The power-ups adrift on the field, as the shell should draw them.
+    pub fn pickups(&self) -> impl Iterator<Item = Pickup> + '_ {
+        self.pickups.iter().map(|p| Pickup {
+            x: p.x,
+            y: p.y,
+            kind: p.kind,
+        })
+    }
+
+    /// The ship's weapon tier, `0` (single) up to [`WEAPON_MAX`] (rapid).
+    pub fn weapon_level(&self) -> u32 {
+        self.weapon_level
+    }
+
+    /// Whether a shield is up to soak the next hit.
+    pub fn has_shield(&self) -> bool {
+        self.shield
     }
 
     /// The explosions in progress, as the shell should draw them.
@@ -1491,6 +1691,7 @@ mod tests {
             vx: 0.0,
             vy: 0.0,
             life: SHOT_LIFE,
+            pierce: false,
         });
     }
 
@@ -1523,6 +1724,17 @@ mod tests {
         });
     }
 
+    fn plant_pickup(game: &mut Game, kind: PowerUp, x: f32, y: f32) {
+        game.pickups.push(PickupState {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            life: PICKUP_LIFE,
+            kind,
+        });
+    }
+
     #[test]
     fn a_shot_curves_under_gravity() {
         let mut game = empty_field(1);
@@ -1533,6 +1745,7 @@ mod tests {
             vx: 300.0,
             vy: 0.0,
             life: SHOT_LIFE,
+            pierce: false,
         });
         game.step(Input::default());
         assert!(
@@ -2073,5 +2286,181 @@ mod tests {
         assert!(late_size > early_size, "later waves bring more enemies");
         assert!(late_cadence < early_cadence, "and fire tighter");
         assert!(late_size <= WAVE_COUNT_CAP, "but never past the cap");
+    }
+
+    // Power-ups. Catching a pickup means flying the ship onto it, and dropping one means
+    // downing an enemy on a random roll — neither cheap to stage by honest play — so
+    // these plant the pickup or drive the downed-enemy path directly, through `step`.
+
+    #[test]
+    fn a_downed_enemy_sometimes_drops_a_pickup() {
+        // Over enough kills the one-in-DROP_CHANCE roll comes up, and a pickup is left.
+        let mut game = empty_field(1);
+        let mut dropped = false;
+        for _ in 0..40 {
+            plant_enemy(&mut game, EnemyKind::Orbiter, 300.0, 300.0);
+            plant_shot(&mut game, 300.0, 300.0);
+            game.step(Input::default());
+            if game.pickups().count() > 0 {
+                dropped = true;
+                break;
+            }
+        }
+        assert!(dropped, "a downed enemy eventually drops a pickup");
+    }
+
+    #[test]
+    fn catching_a_weapon_pickup_steps_the_ladder() {
+        let mut game = empty_field(1);
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        plant_pickup(&mut game, PowerUp::Weapon, sx, sy);
+        assert_eq!(game.weapon_level(), 0, "the run begins kitless");
+
+        let events = game.step(Input::default());
+
+        assert!(events.power_up_taken);
+        assert_eq!(game.weapon_level(), 1);
+    }
+
+    #[test]
+    fn the_weapon_ladder_caps() {
+        let mut game = empty_field(1);
+        for _ in 0..(WEAPON_MAX + 3) {
+            let (sx, sy) = (game.ship.x, game.ship.y);
+            plant_pickup(&mut game, PowerUp::Weapon, sx, sy);
+            game.step(Input::default());
+        }
+        assert_eq!(game.weapon_level(), WEAPON_MAX, "the ladder tops out");
+    }
+
+    #[test]
+    fn a_collapse_pickup_fills_the_meter() {
+        let mut game = empty_field(1);
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        plant_pickup(&mut game, PowerUp::Collapse, sx, sy);
+
+        game.step(Input::default());
+
+        assert_eq!(game.collapse_meter(), 1.0, "the charge fills the meter");
+    }
+
+    #[test]
+    fn a_shield_soaks_exactly_one_hit() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        game.shield = true;
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        plant_rock(&mut game, AsteroidSize::Large, sx, sy, 0.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.shield_broke, "the shield soaks the hit");
+        assert!(game.ship_alive(), "and the ship lives");
+        assert_eq!(game.lives(), LIVES_START, "no life lost");
+        assert!(!game.has_shield(), "but the shield is spent");
+
+        // A second hit, once the grace lapses, now costs a life.
+        game.invuln = 0.0;
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        plant_rock(&mut game, AsteroidSize::Large, sx, sy, 0.0);
+        let events = game.step(Input::default());
+        assert!(events.ship_destroyed, "the next hit is not soaked");
+    }
+
+    #[test]
+    fn the_core_ignores_the_shield() {
+        // The well's core is absolute: a shield does not save a ship that falls in.
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        game.shield = true;
+        game.ship.x = CENTER_X;
+        game.ship.y = CENTER_Y;
+
+        let events = game.step(Input::default());
+
+        assert!(
+            events.ship_destroyed,
+            "the core takes the ship, shield or no"
+        );
+    }
+
+    #[test]
+    fn the_spread_rung_fires_a_fan() {
+        let mut game = empty_field(1);
+        game.weapon_level = 1;
+        game.step(Input {
+            fire: true,
+            ..Default::default()
+        });
+        assert_eq!(game.shots().count(), 3, "the spread looses a three-way fan");
+    }
+
+    #[test]
+    fn a_piercing_shot_flies_on_through_a_rock() {
+        let mut game = empty_field(1);
+        // A piercing shot splits the rock but is not spent — it flies on.
+        game.shots.push(ShotState {
+            x: 300.0,
+            y: 300.0,
+            vx: 0.0,
+            vy: 0.0,
+            life: SHOT_LIFE,
+            pierce: true,
+        });
+        plant_rock(&mut game, AsteroidSize::Large, 300.0, 300.0, 0.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.rock_split);
+        assert_eq!(
+            game.shots().count(),
+            1,
+            "the piercing shot survives its hit"
+        );
+    }
+
+    #[test]
+    fn an_uncaught_pickup_is_swallowed_by_the_well() {
+        let mut game = empty_field(1);
+        // Planted in the core, with the ship at its distant start — the well eats it.
+        plant_pickup(&mut game, PowerUp::Weapon, CENTER_X, CENTER_Y);
+
+        game.step(Input::default());
+
+        assert_eq!(
+            game.pickups().count(),
+            0,
+            "the well swallows a stray pickup"
+        );
+        assert_eq!(game.weapon_level(), 0, "and it was not caught");
+    }
+
+    #[test]
+    fn the_ship_catches_a_pickup_it_flies_onto() {
+        // The catch is a contact, not a coincidence: place a pickup a little ahead of
+        // the ship, aim at it, and thrust — the ship flies onto it and takes it.
+        let mut game = empty_field(1);
+        let ship = game.ship();
+        let (fx, fy) = facing(ship.angle);
+        plant_pickup(
+            &mut game,
+            PowerUp::Weapon,
+            ship.x + fx * 40.0,
+            ship.y + fy * 40.0,
+        );
+
+        let mut caught = false;
+        for _ in 0..120 {
+            let events = game.step(Input {
+                thrust: true,
+                ..Default::default()
+            });
+            if events.power_up_taken {
+                caught = true;
+                break;
+            }
+        }
+        assert!(caught, "the ship flies onto the pickup and catches it");
+        assert_eq!(game.weapon_level(), 1);
     }
 }
