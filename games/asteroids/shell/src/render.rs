@@ -9,8 +9,9 @@ use asteroids_core::{
     SaucerBullet, Ship, Shot,
 };
 use asteroids_remix_core::{
-    Asteroid as RemixAsteroid, Enemy as RemixEnemy, EnemyBullet as RemixEnemyBullet, EnemyKind,
-    Game as RemixGame, Pickup as RemixPickup, PowerUp, Ship as RemixShip, Well,
+    Asteroid as RemixAsteroid, Boss as RemixBoss, Enemy as RemixEnemy,
+    EnemyBullet as RemixEnemyBullet, EnemyKind, Game as RemixGame, Pickup as RemixPickup, PowerUp,
+    Ship as RemixShip, Well,
 };
 use macroquad::prelude::*;
 use shell_kit::font;
@@ -42,6 +43,11 @@ const ENEMY_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
 /// individual pickups tint from it by kind. Also the shield's protective ring.
 const PICKUP_COLOR: Color = color_u8!(120, 255, 180, 255);
 const SHIELD_COLOR: Color = color_u8!(120, 220, 255, 255);
+
+/// The boss — a rival well — in a hot hostile red, its weak-point cores in a bright
+/// warning yellow that says "strike here."
+const BOSS_COLOR: Color = color_u8!(255, 90, 70, 255);
+const WEAK_POINT_COLOR: Color = color_u8!(255, 230, 90, 255);
 
 /// One irregular rock silhouette per size: radius multipliers at evenly spaced
 /// angles, so each size reads as its own lumpy polygon. Authored in code, nothing
@@ -440,6 +446,9 @@ pub fn draw_remix(game: &RemixGame) {
     for enemy in game.enemies() {
         draw_remix_enemy(enemy);
     }
+    if let Some(boss) = game.boss() {
+        draw_remix_boss(boss, game);
+    }
     for bullet in game.enemy_bullets() {
         draw_remix_enemy_bullet(bullet);
     }
@@ -463,10 +472,18 @@ pub fn draw_remix(game: &RemixGame) {
     draw_remix_hud(game);
 }
 
-/// ACCRETE's HUD: the score, the ships left, the accretion feed streak, and the
-/// earned weapon tier while it is running.
+/// ACCRETE's HUD: the score, the ships left, the accretion feed streak, the current
+/// system, and the earned weapon tier while it is running.
 fn draw_remix_hud(game: &RemixGame) {
     font::draw(&game.score().to_string(), 20.0, 20.0, OPTION_SCALE, WHITE);
+    let system = format!("SYSTEM {}", game.stage());
+    font::draw(
+        &system,
+        LOGICAL_WIDTH - font::text_width(&system, HINT_SCALE) - 20.0,
+        24.0,
+        HINT_SCALE,
+        GRAY,
+    );
     for i in 0..game.lives() {
         draw_ship_icon(28.0 + i as f32 * 24.0, 60.0);
     }
@@ -659,4 +676,28 @@ fn draw_shield(ship: RemixShip) {
     let r = asteroids_remix_core::SHIP_RADIUS * 1.7;
     draw_circle(ship.x, ship.y, r + STROKE, dim(SHIELD_COLOR));
     draw_circle_lines(ship.x, ship.y, r, STROKE, SHIELD_COLOR);
+}
+
+/// The boss: a rival well — a hostile glow, an armoured hull ring with a bright core,
+/// its rotating weak-point cores picked out in warning yellow, and a health bar above.
+fn draw_remix_boss(boss: RemixBoss, game: &RemixGame) {
+    let hull = asteroids_remix_core::BOSS_HULL_RADIUS;
+    draw_circle(boss.x, boss.y, hull * 1.4, dim(BOSS_COLOR));
+    draw_circle_lines(boss.x, boss.y, hull, STROKE, BOSS_COLOR);
+    draw_circle(boss.x, boss.y, 5.0, BOSS_COLOR);
+
+    let wr = asteroids_remix_core::WEAK_POINT_RADIUS;
+    for wp in game.weak_points() {
+        draw_circle(wp.x, wp.y, wr * 1.6, dim(WEAK_POINT_COLOR));
+        draw_circle_lines(wp.x, wp.y, wr, STROKE, WEAK_POINT_COLOR);
+        draw_circle(wp.x, wp.y, 2.5, WEAK_POINT_COLOR);
+    }
+
+    // A health bar riding above the hull.
+    let (bw, bh) = (hull * 2.0, 6.0);
+    let bx = boss.x - bw / 2.0;
+    let by = boss.y - hull - 16.0;
+    let frac = boss.hp as f32 / boss.max_hp.max(1) as f32;
+    draw_rectangle_lines(bx, by, bw, bh, STROKE, dim(BOSS_COLOR));
+    draw_rectangle(bx, by, bw * frac.clamp(0.0, 1.0), bh, BOSS_COLOR);
 }

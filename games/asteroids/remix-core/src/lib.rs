@@ -20,12 +20,15 @@
 //! an **orbital enemy zoo** that rides the same gravity — Orbiters that settle into an
 //! orbit and fire, Divers that fall in on a bent path, Mines that drift inert until
 //! the ship nears, and Shepherds that herd rocks at the player — arriving in waves
-//! that rotate through the kinds and escalate (A5); and **power-ups** that downed
-//! enemies sometimes drop — a weapon step up a fire ladder, a shield that soaks a hit,
-//! or a charge that fills the collapse meter (A6). Bosses, the modes and the meta
-//! arrive in the later tickets; the ship's **loadout** is handed *in* at construction,
-//! so the core never knows the word "unlock" — it only ever flies what it is given, and
-//! for now it is handed nothing (the run starts kitless).
+//! that rotate through the kinds and escalate (A5); **power-ups** that downed enemies
+//! sometimes drop — a weapon step up a fire ladder, a shield that soaks a hit, or a
+//! charge that fills the collapse meter (A6); and a **boss** — a rival well whose own
+//! pull joins the field — that caps each **system**, armouring shots off its hull while
+//! its rotating weak-point cores take fire, moving through phases as its health falls,
+//! and, when felled, advancing the system to deepen the gravity and the fire (A7). The
+//! modes and the meta arrive in the later tickets; the ship's **loadout** is handed *in*
+//! at construction, so the core never knows the word "unlock" — it only ever flies what
+//! it is given, and for now it is handed nothing (the run starts kitless).
 
 use core::f32::consts::TAU;
 
@@ -185,6 +188,40 @@ const PICKUP_LIFE: f32 = 12.0;
 /// Breaking a shield leaves the ship a brief beat of protection — just enough to slip
 /// clear of the hazard that spent it, not a second life.
 const SHIELD_INVULN: f32 = 0.6;
+
+/// The boss that caps a system. After this many waves a boss — a **rival well** —
+/// ignites instead of another wave; its own pull joins the field. Its health, and how
+/// much each system deepens it.
+const WAVES_PER_SYSTEM: u32 = 3;
+const BOSS_BASE_HP: u32 = 30;
+const BOSS_HP_PER_SYSTEM: u32 = 12;
+/// The rival well's own pull, relative to the field's — a genuine second well, a touch
+/// weaker than the heart of the field so the fight stays flyable.
+const BOSS_WELL_STRENGTH: f32 = 0.8;
+/// The boss's hull armours off shots within this radius; only the weak-point cores,
+/// orbiting at this radius and hit within this reach, take damage. The cores rotate
+/// about the hull at this rate. The hull and core radii are public so the shell draws
+/// the boss at the scale the rules fight it.
+pub const BOSS_HULL_RADIUS: f32 = 68.0;
+const WEAK_POINT_COUNT: usize = 3;
+const WEAK_POINT_ORBIT: f32 = 68.0;
+pub const WEAK_POINT_RADIUS: f32 = 15.0;
+const WEAK_POINT_ROTATE: f32 = 0.7;
+/// A collapse's shockwave tears this many cores'-worth of health off a boss it catches.
+const BOSS_COLLAPSE_DAMAGE: u32 = 8;
+/// The turn the boss's spiral arm takes each shot, the health fractions at which it
+/// re-phases (calm → pressing → enraged), and its fire pattern shapes (the aimed
+/// spread's lean, the pressing ring's count and its per-salvo twist).
+const BOSS_SPIN_STEP: f32 = 0.42;
+const BOSS_PHASE_PRESS_HP: f32 = 0.66;
+const BOSS_PHASE_RAGE_HP: f32 = 0.33;
+const BOSS_SPREAD_ANGLE: f32 = 0.2;
+const BOSS_RING_COUNT: usize = 10;
+const BOSS_RING_TWIST: f32 = 0.13;
+/// How much each felled boss deepens the field's own pull, and how many steps of enemy
+/// escalation it adds — the system advance carried by the gravity and the fire alike.
+const GRAVITY_PER_SYSTEM: f32 = 0.15;
+const ESCALATION_PER_SYSTEM: u32 = 2;
 
 /// Which run this is. Inert for now — every mode plays the same until the modes
 /// ticket shapes their ends.
@@ -398,6 +435,26 @@ pub struct Pickup {
     pub kind: PowerUp,
 }
 
+/// The boss capping a system — a rival well — as the shell should draw it. `x`/`y` are
+/// its centre; `hp`/`max_hp` its health (for a bar); `phase` (0 calm, 1 pressing, 2
+/// enraged) the fight it is running. Its weak points come from [`Game::weak_points`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Boss {
+    pub x: f32,
+    pub y: f32,
+    pub hp: u32,
+    pub max_hp: u32,
+    pub phase: u8,
+}
+
+/// One of a boss's weak-point cores, as the shell should draw it — the only place its
+/// hull can be hurt. `x`/`y` are its centre.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeakPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It grows
 /// as the collapse and the rest arrive in the later tickets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -420,6 +477,12 @@ pub struct Events {
     pub power_up_taken: bool,
     /// A shield soaked a hit this step, sparing a life.
     pub shield_broke: bool,
+    /// A boss weak point took a hit this step.
+    pub boss_hit: bool,
+    /// The boss changed phase this step as its health fell.
+    pub boss_phase_changed: bool,
+    /// The boss was felled this step — the system is cleared and advances.
+    pub boss_cleared: bool,
     /// The ship was destroyed this step and a life was lost.
     pub ship_destroyed: bool,
     /// The last ship was spent this step — the run is over.
@@ -445,11 +508,13 @@ struct ShipState {
     angle: f32,
 }
 
-/// A well's live state.
+/// A well's live state: its centre and its `strength` — a multiplier on its pull, `1.0`
+/// for the field's own well, deepened each system as the run advances (A7).
 #[derive(Clone, Copy)]
 struct WellState {
     x: f32,
     y: f32,
+    strength: f32,
 }
 
 /// A rock's live state: its centre, its velocity (drift plus whatever the gravity has
@@ -526,6 +591,22 @@ struct PickupState {
     kind: PowerUp,
 }
 
+/// The boss's live state: where its (stationary) hull sits, its health, the phase it is
+/// running, the steps since it last fired, the angle its weak-point cores have rotated
+/// to, and the salvo counter that cycles its fire. Its own well is kept in `wells`.
+#[derive(Clone, Copy)]
+struct BossState {
+    x: f32,
+    y: f32,
+    hp: u32,
+    max_hp: u32,
+    phase: u8,
+    fire_tick: u32,
+    core_angle: f32,
+    spin: f32,
+    salvo: u32,
+}
+
 /// The whole run: the ship, the gravity wells that pull on it, and the seed the run
 /// began on. Advanced only through [`Game::step`]; everything else is read-only.
 pub struct Game {
@@ -549,6 +630,14 @@ pub struct Game {
     /// How many waves have flown in so far — drives the rotation through the zoo and
     /// the escalation (size, cadence, fire speed).
     waves_spawned: u32,
+    /// How many waves have been cleared in the current system; at [`WAVES_PER_SYSTEM`]
+    /// the boss ignites instead of another wave.
+    waves_this_system: u32,
+    /// The system (stage) the run is on, from `1`; each felled boss advances it and
+    /// deepens the gravity and the fire.
+    stage: u32,
+    /// The boss, present only while one caps the current system.
+    boss: Option<BossState>,
     /// Steps until the held stream may loose its next shot.
     fire_cooldown: u64,
     /// Whether the ship is on the field; false during the pause after a destruction.
@@ -598,6 +687,7 @@ impl Game {
             wells: vec![WellState {
                 x: CENTER_X,
                 y: CENTER_Y,
+                strength: 1.0,
             }],
             asteroids: Vec::with_capacity(INITIAL_ROCKS),
             shots: Vec::new(),
@@ -610,6 +700,9 @@ impl Game {
             shield: false,
             wave_timer: ENEMY_WAVE_GAP,
             waves_spawned: 0,
+            waves_this_system: 0,
+            stage: 1,
+            boss: None,
             fire_cooldown: 0,
             ship_alive: true,
             dead_timer: 0.0,
@@ -687,6 +780,7 @@ impl Game {
         self.advance_shots();
         self.advance_asteroids();
         self.advance_enemies(&mut events);
+        self.advance_boss(&mut events);
         self.advance_enemy_bullets();
         self.advance_pickups(&mut events);
         self.advance_blasts();
@@ -696,6 +790,7 @@ impl Game {
         self.decay_feed_streak();
 
         self.resolve_shot_hits(&mut events);
+        self.resolve_boss_hits(&mut events);
         self.resolve_accretion(&mut events);
         self.resolve_enemy_accretion(&mut events);
         if self.ship_alive && self.invuln <= 0.0 {
@@ -856,6 +951,10 @@ impl Game {
         self.enemy_bullets.clear();
         self.collapse_meter = 0.0;
         events.collapse_fired = true;
+        // And it tears a chunk of health off a boss caught in the field.
+        if self.boss.is_some() {
+            self.damage_boss(BOSS_COLLAPSE_DAMAGE, events);
+        }
     }
 
     /// Destroys the ship: a life lost, an explosion, the sky cleared, the streak
@@ -1087,10 +1186,10 @@ impl Game {
     }
 
     /// Runs the wave clock: the field of enemies must be cleared, then after a gap the
-    /// next wave flies in — rotated through the zoo and escalated. A living wave holds
-    /// the gap open, so waves never overlap.
+    /// next wave flies in — rotated through the zoo and escalated. Once a system's waves
+    /// are done the boss ignites instead; the boss holds the clock until it is felled.
     fn manage_waves(&mut self) {
-        if !self.enemies.is_empty() {
+        if self.boss.is_some() || !self.enemies.is_empty() {
             self.wave_timer = ENEMY_WAVE_GAP;
             return;
         }
@@ -1098,7 +1197,176 @@ impl Game {
             self.wave_timer -= TIMESTEP;
             return;
         }
-        self.spawn_wave();
+        if self.waves_this_system >= WAVES_PER_SYSTEM {
+            self.spawn_boss();
+            self.waves_this_system = 0;
+        } else {
+            self.spawn_wave();
+            self.waves_this_system += 1;
+        }
+    }
+
+    /// Ignites the boss capping this system — a rival well, its own pull joining the
+    /// field, its health deepening each system. Placed out in the field, clear of the
+    /// heart, with a clean sky (its bullets and any stray fire swept away).
+    fn spawn_boss(&mut self) {
+        let (x, y) = self.random_ring_point(CENTER_X, CENTER_Y, 220.0, 300.0);
+        let max_hp = BOSS_BASE_HP + (self.stage - 1) * BOSS_HP_PER_SYSTEM;
+        self.boss = Some(BossState {
+            x,
+            y,
+            hp: max_hp,
+            max_hp,
+            phase: 0,
+            fire_tick: 0,
+            core_angle: 0.0,
+            spin: 0.0,
+            salvo: 0,
+        });
+        self.wells.push(WellState {
+            x,
+            y,
+            strength: BOSS_WELL_STRENGTH,
+        });
+        self.enemy_bullets.clear();
+    }
+
+    /// Rotates the boss's weak-point cores, re-phases it as its health falls, and runs
+    /// its phase's fire pattern on a cadence. (Damage is dealt in [`Game::resolve_boss_hits`].)
+    fn advance_boss(&mut self, events: &mut Events) {
+        let (fire, phase, bx, by, spin, salvo) = {
+            let Some(boss) = self.boss.as_mut() else {
+                return;
+            };
+            boss.core_angle += WEAK_POINT_ROTATE * TIMESTEP;
+            let new_phase = boss_phase_for(boss.hp, boss.max_hp);
+            if new_phase != boss.phase {
+                boss.phase = new_phase;
+                events.boss_phase_changed = true;
+            }
+            boss.fire_tick += 1;
+            let fire = boss.fire_tick >= boss_cadence(boss.phase);
+            let (spin, salvo) = (boss.spin, boss.salvo);
+            if fire {
+                boss.fire_tick = 0;
+                boss.spin += BOSS_SPIN_STEP;
+                boss.salvo = boss.salvo.wrapping_add(1);
+            }
+            (fire, boss.phase, boss.x, boss.y, spin, salvo)
+        };
+        if fire {
+            self.boss_fire(phase, bx, by, spin, salvo);
+        }
+    }
+
+    /// Runs the boss's fire for `phase`: an aimed spread while calm, a spinning ring as
+    /// it presses, twin spiral arms and a fast aimed shot enraged. Reuses the enemy
+    /// bullet stream, so the shots feel the gravity like all the rest.
+    fn boss_fire(&mut self, phase: u8, bx: f32, by: f32, spin: f32, salvo: u32) {
+        let aim = ring_aim(bx, by, self.ship.x, self.ship.y);
+        match phase {
+            0 => {
+                for k in -1..=1 {
+                    self.boss_shot(bx, by, aim + k as f32 * BOSS_SPREAD_ANGLE);
+                }
+            }
+            1 => {
+                let twist = salvo as f32 * BOSS_RING_TWIST;
+                for k in 0..BOSS_RING_COUNT {
+                    self.boss_shot(bx, by, twist + TAU * k as f32 / BOSS_RING_COUNT as f32);
+                }
+            }
+            _ => {
+                self.boss_shot(bx, by, spin);
+                self.boss_shot(bx, by, spin + TAU / 2.0);
+                self.boss_shot(bx, by, aim);
+            }
+        }
+    }
+
+    /// Looses one boss shot on `heading` — emitted from beyond the hull, so it clears
+    /// the boss's own core rather than being swallowed the instant it is born.
+    fn boss_shot(&mut self, bx: f32, by: f32, heading: f32) {
+        let r = BOSS_HULL_RADIUS + 4.0;
+        self.spawn_enemy_shot(bx + heading.cos() * r, by + heading.sin() * r, heading);
+    }
+
+    /// The live positions of the boss's weak-point cores — evenly spaced around the
+    /// hull, turned by its accumulated core angle. Empty when no boss is on the field.
+    fn weak_point_positions(&self) -> Vec<(f32, f32)> {
+        match &self.boss {
+            Some(b) => (0..WEAK_POINT_COUNT)
+                .map(|k| {
+                    let a = b.core_angle + TAU * k as f32 / WEAK_POINT_COUNT as f32;
+                    (
+                        b.x + a.cos() * WEAK_POINT_ORBIT,
+                        b.y + a.sin() * WEAK_POINT_ORBIT,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Resolves the ship's shots against the boss: a shot on a weak-point core damages
+    /// it; a shot on the armoured hull is stopped dead. Either stops the shot — the
+    /// hull is solid, so even a piercing shot cannot punch through.
+    fn resolve_boss_hits(&mut self, events: &mut Events) {
+        let Some((bx, by)) = self.boss.as_ref().map(|b| (b.x, b.y)) else {
+            return;
+        };
+        let weak = self.weak_point_positions();
+        let mut i = 0;
+        while i < self.shots.len() {
+            let s = self.shots[i];
+            let on_weak = weak
+                .iter()
+                .any(|&(wx, wy)| overlap((s.x, s.y, SHOT_RADIUS), (wx, wy, WEAK_POINT_RADIUS)));
+            if on_weak {
+                self.shots.swap_remove(i);
+                events.boss_hit = true;
+                self.damage_boss(1, events);
+            } else if overlap((s.x, s.y, SHOT_RADIUS), (bx, by, BOSS_HULL_RADIUS)) {
+                self.shots.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Takes `dmg` off the boss's health, and fells it if that empties it. (The
+    /// weak-point / collapse cue is raised at the call site — this only deals damage.)
+    fn damage_boss(&mut self, dmg: u32, events: &mut Events) {
+        if let Some(boss) = self.boss.as_mut() {
+            boss.hp = boss.hp.saturating_sub(dmg);
+        }
+        self.fell_boss_if_dead(events);
+    }
+
+    /// Fells a boss whose health has run out: its rival well leaves the field, the
+    /// system advances — deepening the field's own pull and, through the escalation, the
+    /// enemies' fire — and the waves resume after a beat.
+    fn fell_boss_if_dead(&mut self, events: &mut Events) {
+        let Some(boss) = self.boss.as_ref() else {
+            return;
+        };
+        if boss.hp > 0 {
+            return;
+        }
+        let (bx, by) = (boss.x, boss.y);
+        self.boss = None;
+        // The rival well was pushed last when the boss ignited, and nothing else touches
+        // `wells` during the fight, so it is always the tail — pop it off.
+        self.wells.pop();
+        self.wells[0].strength += GRAVITY_PER_SYSTEM;
+        self.stage += 1;
+        self.wave_timer = ENEMY_WAVE_GAP;
+        self.blasts.push(BlastState {
+            x: bx,
+            y: by,
+            timer: BLAST_LIFE,
+        });
+        events.boss_cleared = true;
     }
 
     /// Sends in a fresh wave: as many enemies as [`Game::wave_size`], their kinds
@@ -1120,10 +1388,13 @@ impl Game {
         (WAVE_BASE_COUNT + self.waves_spawned.saturating_sub(1) as usize / 2).min(WAVE_COUNT_CAP)
     }
 
-    /// How far the run has escalated — climbing with each wave, then holding at a cap
-    /// so the pressure plateaus rather than runs away.
+    /// How far the run has escalated — climbing with each wave *and* each system felled
+    /// (so a boss's fall deepens the fire, not only the gravity), then holding at a cap
+    /// so the pressure plateaus rather than runs away. Folded into one figure, no
+    /// per-stage special-casing.
     fn escalation(&self) -> u32 {
-        self.waves_spawned.saturating_sub(1).min(ESCALATION_CAP)
+        (self.waves_spawned.saturating_sub(1) + (self.stage - 1) * ESCALATION_PER_SYSTEM)
+            .min(ESCALATION_CAP)
     }
 
     /// How often `kind` fires (or herds), tightening as the run escalates but never
@@ -1156,7 +1427,9 @@ impl Game {
                 let a = self.rng.range(0.0, TAU);
                 let (rx, ry) = (a.cos(), a.sin());
                 let sign = if self.rng.below(2) == 0 { 1.0 } else { -1.0 };
-                let v = orbital_speed(r) * frac;
+                // Scaled by the anchor's strength so the orbit stays near-circular as
+                // the system's gravity deepens.
+                let v = orbital_speed(r) * frac * anchor.strength.sqrt();
                 // The tangent to the orbit, its handedness set by `sign`.
                 (wx + rx * r, wy + ry * r, -ry * sign * v, rx * sign * v)
             }
@@ -1454,6 +1727,30 @@ impl Game {
         self.shield
     }
 
+    /// The boss capping the current system, if one is on the field.
+    pub fn boss(&self) -> Option<Boss> {
+        self.boss.as_ref().map(|b| Boss {
+            x: b.x,
+            y: b.y,
+            hp: b.hp,
+            max_hp: b.max_hp,
+            phase: b.phase,
+        })
+    }
+
+    /// The boss's weak-point cores, as the shell should draw them — empty when no boss
+    /// is on the field.
+    pub fn weak_points(&self) -> impl Iterator<Item = WeakPoint> + '_ {
+        self.weak_point_positions()
+            .into_iter()
+            .map(|(x, y)| WeakPoint { x, y })
+    }
+
+    /// Which system (stage) the run is on, from `1` — each felled boss advances it.
+    pub fn stage(&self) -> u32 {
+        self.stage
+    }
+
     /// The explosions in progress, as the shell should draw them.
     pub fn blasts(&self) -> impl Iterator<Item = Blast> + '_ {
         self.blasts.iter().map(|b| Blast {
@@ -1543,7 +1840,7 @@ fn gravity_at(wells: &[WellState], x: f32, y: f32) -> (f32, f32) {
         let dy = ring_delta(well.y, y, LOGICAL_HEIGHT);
         let dist_sq = (dx * dx + dy * dy).max(SOFTENING * SOFTENING);
         let dist = dist_sq.sqrt();
-        let accel = GRAVITY / dist_sq;
+        let accel = GRAVITY * well.strength / dist_sq;
         ax += accel * dx / dist;
         ay += accel * dy / dist;
     }
@@ -1570,6 +1867,28 @@ fn ring_aim(fx: f32, fy: f32, tx: f32, ty: f32) -> f32 {
 /// pull, so an enemy dropped there with this tangential speed rides the gravity round.
 fn orbital_speed(r: f32) -> f32 {
     (GRAVITY / r).sqrt()
+}
+
+/// The boss's phase for a given health: `0` calm, `1` pressing, `2` enraged — each with
+/// its own fire (see [`Game::boss_fire`]) and its own cadence ([`boss_cadence`]).
+fn boss_phase_for(hp: u32, max_hp: u32) -> u8 {
+    let frac = hp as f32 / max_hp as f32;
+    if frac > BOSS_PHASE_PRESS_HP {
+        0
+    } else if frac > BOSS_PHASE_RAGE_HP {
+        1
+    } else {
+        2
+    }
+}
+
+/// The boss's fire cadence, in steps, for a phase — tighter as its health falls.
+fn boss_cadence(phase: u8) -> u32 {
+    match phase {
+        0 => 70,
+        1 => 55,
+        _ => 40,
+    }
 }
 
 /// Whether two circles — each a `(centre-x, centre-y, radius)` — overlap, measured
@@ -2462,5 +2781,147 @@ mod tests {
         }
         assert!(caught, "the ship flies onto the pickup and catches it");
         assert_eq!(game.weapon_level(), 1);
+    }
+
+    // The boss. Reaching one by honest play means clearing WAVES_PER_SYSTEM whole waves
+    // first — impractical to stage — so these ignite the boss directly (or via the wave
+    // clock) and then drive it through the real `step` path.
+
+    #[test]
+    fn a_boss_ignites_after_a_systems_waves() {
+        let mut game = empty_field(1);
+        assert!(game.boss().is_none(), "no boss at the system's open");
+        // The waves are done and the field is clear — the next beat brings the boss.
+        game.waves_this_system = WAVES_PER_SYSTEM;
+        game.wave_timer = 0.0;
+
+        game.step(Input::default());
+
+        assert!(game.boss().is_some(), "the boss ignites");
+        assert_eq!(game.wells.len(), 2, "its rival well joins the field");
+        assert_eq!(game.stage(), 1, "the system has not advanced yet");
+    }
+
+    #[test]
+    fn the_hull_armours_shots_and_only_weak_points_take_damage() {
+        let mut game = empty_field(1);
+        game.spawn_boss();
+        let boss = game.boss().unwrap();
+        let full = boss.hp;
+
+        // A shot on the armoured hull (its centre) is stopped, does no damage.
+        plant_shot(&mut game, boss.x, boss.y);
+        game.step(Input::default());
+        assert_eq!(game.boss().unwrap().hp, full, "the hull armours the shot");
+        assert!(game.shots().count() == 0, "and stops it dead");
+
+        // A shot on a weak-point core damages the boss.
+        let wp = game.weak_points().next().expect("a weak point");
+        plant_shot(&mut game, wp.x, wp.y);
+        let events = game.step(Input::default());
+        assert!(events.boss_hit);
+        assert!(game.boss().unwrap().hp < full, "a weak-point hit bites");
+    }
+
+    #[test]
+    fn a_piercing_shot_cannot_punch_through_the_hull() {
+        let mut game = empty_field(1);
+        game.spawn_boss();
+        let boss = game.boss().unwrap();
+        game.shots.push(ShotState {
+            x: boss.x,
+            y: boss.y,
+            vx: 0.0,
+            vy: 0.0,
+            life: SHOT_LIFE,
+            pierce: true,
+        });
+
+        game.step(Input::default());
+
+        assert_eq!(
+            game.shots().count(),
+            0,
+            "the solid hull stops even a pierce"
+        );
+        assert_eq!(game.boss().unwrap().hp, boss.hp, "and takes no damage");
+    }
+
+    #[test]
+    fn the_boss_moves_through_its_phases() {
+        let mut game = empty_field(1);
+        game.spawn_boss();
+        assert_eq!(game.boss().unwrap().phase, 0, "it opens calm");
+
+        // Health into the pressing band → phase 1, on the change.
+        let max = game.boss().unwrap().max_hp;
+        game.boss.as_mut().unwrap().hp = max / 2;
+        let events = game.step(Input::default());
+        assert!(events.boss_phase_changed);
+        assert_eq!(game.boss().unwrap().phase, 1);
+
+        // Health into the enraged band → phase 2.
+        game.boss.as_mut().unwrap().hp = max / 10;
+        game.step(Input::default());
+        assert_eq!(game.boss().unwrap().phase, 2);
+    }
+
+    #[test]
+    fn the_boss_opens_fire() {
+        let mut game = empty_field(1);
+        game.spawn_boss();
+        let mut fired = false;
+        for _ in 0..(boss_cadence(0) as usize + 2) {
+            game.step(Input::default());
+            if game.enemy_bullets().count() > 0 {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "the boss looses fire on its cadence");
+    }
+
+    #[test]
+    fn a_collapse_damages_the_boss() {
+        let mut game = empty_field(1);
+        game.spawn_boss();
+        let full = game.boss().unwrap().hp;
+        game.collapse_meter = 1.0;
+
+        let events = game.step(Input {
+            collapse: true,
+            ..Default::default()
+        });
+
+        assert!(events.collapse_fired);
+        assert_eq!(
+            game.boss().unwrap().hp,
+            full - BOSS_COLLAPSE_DAMAGE,
+            "the shockwave tears a chunk off the boss"
+        );
+    }
+
+    #[test]
+    fn felling_the_boss_advances_the_system_and_deepens_gravity() {
+        let mut game = empty_field(1);
+        game.spawn_boss();
+        let strength_before = game.wells[0].strength;
+        // On the brink, one collapse fells it.
+        game.boss.as_mut().unwrap().hp = 1;
+        game.collapse_meter = 1.0;
+
+        let events = game.step(Input {
+            collapse: true,
+            ..Default::default()
+        });
+
+        assert!(events.boss_cleared, "the boss is felled");
+        assert!(game.boss().is_none());
+        assert_eq!(game.wells.len(), 1, "the rival well leaves the field");
+        assert_eq!(game.stage(), 2, "the system advances");
+        assert!(
+            game.wells[0].strength > strength_before,
+            "and the field's pull deepens"
+        );
     }
 }
