@@ -86,6 +86,29 @@ const FRAGMENT_SPEED_MAX: f32 = 1.6;
 /// How long an explosion lingers for the shell to draw, in seconds.
 const BLAST_LIFE: f32 = 0.4;
 
+/// The saucer: how fast it crosses the field, how far off its lane it may veer per
+/// lane change and how often it changes lane, and how often it fires.
+const SAUCER_SPEED: f32 = 130.0;
+const SAUCER_VEER: f32 = 60.0;
+const SAUCER_LANE_INTERVAL: f32 = 0.8;
+const SAUCER_FIRE_INTERVAL: f32 = 1.2;
+
+/// The saucer's bullets: their speed, how long they live, and their radius.
+const SAUCER_BULLET_SPEED: f32 = 300.0;
+const SAUCER_BULLET_LIFE: f32 = 2.2;
+const SAUCER_BULLET_RADIUS: f32 = 2.5;
+
+/// How long between saucer runs — long when the score is low, tightening as it
+/// climbs — and the score past which only the small, aimed saucer comes.
+const SAUCER_SPAWN_SLOW: f32 = 16.0;
+const SAUCER_SPAWN_FAST: f32 = 7.0;
+const SMALL_SAUCER_ONLY_SCORE: u32 = 10_000;
+
+/// The small saucer's aim error, in radians: wide when the score is low, tightening
+/// to near-perfect as it climbs to the small-only score.
+const SAUCER_AIM_ERROR_WIDE: f32 = 0.5;
+const SAUCER_AIM_ERROR_TIGHT: f32 = 0.05;
+
 /// How many large rocks a fresh field opens with. (Waves add more from
 /// [ticket T6](https://github.com/geox123/minigames/issues/116); here it is just
 /// the opening field.)
@@ -140,6 +163,33 @@ impl AsteroidSize {
             AsteroidSize::Large => Some(AsteroidSize::Medium),
             AsteroidSize::Medium => Some(AsteroidSize::Small),
             AsteroidSize::Small => None,
+        }
+    }
+}
+
+/// The two sizes of saucer that cross the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaucerSize {
+    /// Fires in random directions; the lesser prize.
+    Large,
+    /// Fires aimed shots that sharpen with the score; the real prize.
+    Small,
+}
+
+impl SaucerSize {
+    /// The saucer's collision radius, in logical units.
+    pub fn radius(self) -> f32 {
+        match self {
+            SaucerSize::Large => 20.0,
+            SaucerSize::Small => 12.0,
+        }
+    }
+
+    /// What shooting the saucer scores.
+    fn score(self) -> u32 {
+        match self {
+            SaucerSize::Large => 200,
+            SaucerSize::Small => 1000,
         }
     }
 }
@@ -201,6 +251,22 @@ pub struct Blast {
     pub y: f32,
 }
 
+/// The saucer crossing the field, as the shell should draw it. `x`/`y` are its
+/// centre.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Saucer {
+    pub x: f32,
+    pub y: f32,
+    pub size: SaucerSize,
+}
+
+/// One of the saucer's bullets in flight, as the shell should draw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SaucerBullet {
+    pub x: f32,
+    pub y: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to (its
 /// sounds and juice). The authoritative score, lives and phase are read from the
 /// game's accessors; these are the one-step cues.
@@ -210,6 +276,8 @@ pub struct Events {
     pub fired: bool,
     /// A shot destroyed a rock this step.
     pub rock_destroyed: bool,
+    /// A shot destroyed the saucer this step.
+    pub saucer_destroyed: bool,
     /// The ship was destroyed this step and a life was lost.
     pub ship_destroyed: bool,
     /// The last ship was spent this step — the game is over.
@@ -264,6 +332,31 @@ struct BlastState {
     timer: f32,
 }
 
+/// The saucer's live state: its centre, its velocity (`vx` fixed to its crossing
+/// direction, `vy` its current lane drift), its size, and the timers that pace its
+/// fire and its lane changes.
+#[derive(Clone, Copy)]
+struct SaucerState {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    size: SaucerSize,
+    fire_timer: f32,
+    lane_timer: f32,
+}
+
+/// A saucer bullet's live state: its centre, its velocity, and the seconds of life
+/// it has left.
+#[derive(Clone, Copy)]
+struct SaucerBulletState {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    life: f32,
+}
+
 /// The whole game: the ship, the rocks, the shots and explosions, the score and
 /// lives, and the seeded RNG that lays out the field and scatters the fragments.
 /// Advanced only through [`Game::step`]; everything else is read-only.
@@ -287,6 +380,12 @@ pub struct Game {
     asteroids: Vec<AsteroidState>,
     shots: Vec<ShotState>,
     blasts: Vec<BlastState>,
+    /// The saucer crossing the field, if one is out.
+    saucer: Option<SaucerState>,
+    /// The saucer's bullets in flight.
+    saucer_bullets: Vec<SaucerBulletState>,
+    /// Seconds until the next saucer appears (counts down only while none is out).
+    saucer_timer: f32,
     score: u32,
     lives: u32,
     rng: Rng,
@@ -320,6 +419,9 @@ impl Game {
             asteroids: Vec::with_capacity(INITIAL_ASTEROIDS),
             shots: Vec::new(),
             blasts: Vec::new(),
+            saucer: None,
+            saucer_bullets: Vec::new(),
+            saucer_timer: SAUCER_SPAWN_SLOW,
             score: 0,
             lives: LIVES_START,
             rng: Rng::new(seed),
@@ -381,6 +483,8 @@ impl Game {
 
         self.advance_shots();
         self.advance_asteroids();
+        self.advance_saucer();
+        self.advance_saucer_bullets();
         self.advance_blasts();
         if self.invuln > 0.0 {
             self.invuln = (self.invuln - TIMESTEP).max(0.0);
@@ -503,6 +607,118 @@ impl Game {
         self.blasts.retain(|b| b.timer > 0.0);
     }
 
+    /// Advances the saucer: moves it across (wrapping vertically but leaving at the
+    /// far horizontal edge, never wrapping round), veers its lane now and then, and
+    /// fires on its cadence. When none is out, counts down to the next run.
+    fn advance_saucer(&mut self) {
+        let Some(mut s) = self.saucer.take() else {
+            self.saucer_timer -= TIMESTEP;
+            if self.saucer_timer <= 0.0 {
+                self.spawn_saucer();
+            }
+            return;
+        };
+
+        s.x += s.vx * TIMESTEP;
+        s.y = wrap(s.y + s.vy * TIMESTEP, LOGICAL_HEIGHT);
+
+        s.lane_timer -= TIMESTEP;
+        if s.lane_timer <= 0.0 {
+            s.lane_timer = SAUCER_LANE_INTERVAL;
+            s.vy = match self.rng.next_u64() % 3 {
+                0 => -SAUCER_VEER,
+                1 => 0.0,
+                _ => SAUCER_VEER,
+            };
+        }
+
+        s.fire_timer -= TIMESTEP;
+        let firing = s.fire_timer <= 0.0;
+        if firing {
+            s.fire_timer = SAUCER_FIRE_INTERVAL;
+        }
+
+        // Leaving the field at the far edge ends the run — a saucer never wraps
+        // round. When it stays, it goes back into `self.saucer` (already taken out).
+        let gone = s.x < -s.size.radius() || s.x > LOGICAL_WIDTH + s.size.radius();
+        if !gone {
+            if firing {
+                self.saucer_fire(s);
+            }
+            self.saucer = Some(s);
+        }
+    }
+
+    /// Brings a saucer on: from a seeded side, at a seeded lane, its size chosen by
+    /// the score (only the small one past the small-only score). Sets the timer for
+    /// the run after this one.
+    fn spawn_saucer(&mut self) {
+        let from_left = self.rng.next_u64().is_multiple_of(2);
+        let (x, vx) = if from_left {
+            (0.0, SAUCER_SPEED)
+        } else {
+            (LOGICAL_WIDTH, -SAUCER_SPEED)
+        };
+        let size = if self.score >= SMALL_SAUCER_ONLY_SCORE
+            || self.rng.range(0.0, 1.0) < self.small_saucer_chance()
+        {
+            SaucerSize::Small
+        } else {
+            SaucerSize::Large
+        };
+        self.saucer = Some(SaucerState {
+            x,
+            y: self.rng.range(80.0, LOGICAL_HEIGHT - 80.0),
+            vx,
+            vy: 0.0,
+            size,
+            fire_timer: SAUCER_FIRE_INTERVAL,
+            lane_timer: SAUCER_LANE_INTERVAL,
+        });
+        self.saucer_timer = self.next_saucer_delay();
+    }
+
+    /// Fires a saucer bullet: a large saucer sprays a random direction, a small one
+    /// aims at the ship with an error that tightens as the score climbs.
+    fn saucer_fire(&mut self, s: SaucerState) {
+        let angle = if s.size == SaucerSize::Small && self.ship_alive {
+            let dx = ring_delta(self.ship.x, s.x, LOGICAL_WIDTH);
+            let dy = ring_delta(self.ship.y, s.y, LOGICAL_HEIGHT);
+            let error = lerp_by_score(SAUCER_AIM_ERROR_WIDE, SAUCER_AIM_ERROR_TIGHT, self.score);
+            dy.atan2(dx) + self.rng.range(-error, error)
+        } else {
+            self.rng.range(0.0, TAU)
+        };
+        self.saucer_bullets.push(SaucerBulletState {
+            x: s.x,
+            y: s.y,
+            vx: angle.cos() * SAUCER_BULLET_SPEED,
+            vy: angle.sin() * SAUCER_BULLET_SPEED,
+            life: SAUCER_BULLET_LIFE,
+        });
+    }
+
+    /// Flies every saucer bullet, wrapping it, and drops the spent ones.
+    fn advance_saucer_bullets(&mut self) {
+        for b in &mut self.saucer_bullets {
+            b.x = wrap(b.x + b.vx * TIMESTEP, LOGICAL_WIDTH);
+            b.y = wrap(b.y + b.vy * TIMESTEP, LOGICAL_HEIGHT);
+            b.life -= TIMESTEP;
+        }
+        self.saucer_bullets.retain(|b| b.life > 0.0);
+    }
+
+    /// How likely a spawning saucer is the small one — rising with the score.
+    fn small_saucer_chance(&self) -> f32 {
+        score_ramp(self.score)
+    }
+
+    /// The delay before the next saucer run — long early, tightening with the score,
+    /// with a little seeded jitter.
+    fn next_saucer_delay(&mut self) -> f32 {
+        lerp_by_score(SAUCER_SPAWN_SLOW, SAUCER_SPAWN_FAST, self.score) + self.rng.range(-2.0, 2.0)
+    }
+
     /// Resolves shots striking rocks: the rock is scored and destroyed, its
     /// fragments (if any) scattered faster than it drifted, and the shot spent.
     fn resolve_shot_hits(&mut self, events: &mut Events) {
@@ -510,6 +726,24 @@ impl Game {
         let mut i = 0;
         while i < self.shots.len() {
             let (sx, sy) = (self.shots[i].x, self.shots[i].y);
+
+            // A shot may strike the saucer...
+            if let Some(s) = self.saucer
+                && overlap((sx, sy, SHOT_RADIUS), (s.x, s.y, s.size.radius()))
+            {
+                self.score += s.size.score();
+                events.saucer_destroyed = true;
+                self.blasts.push(BlastState {
+                    x: s.x,
+                    y: s.y,
+                    timer: BLAST_LIFE,
+                });
+                self.saucer = None;
+                self.shots.swap_remove(i);
+                continue;
+            }
+
+            // ...or a rock.
             let hit = self
                 .asteroids
                 .iter()
@@ -552,13 +786,19 @@ impl Game {
     /// the ship leaves the field to return from the centre — or, if that was the
     /// last life, the game begins to end.
     fn resolve_ship_hits(&mut self, events: &mut Events) {
-        let struck = self.asteroids.iter().any(|a| {
-            overlap(
-                (self.ship.x, self.ship.y, SHIP_RADIUS),
-                (a.x, a.y, a.size.radius()),
-            )
-        });
-        if !struck {
+        let ship = (self.ship.x, self.ship.y, SHIP_RADIUS);
+        let hit_rock = self
+            .asteroids
+            .iter()
+            .any(|a| overlap(ship, (a.x, a.y, a.size.radius())));
+        let hit_saucer = self
+            .saucer
+            .is_some_and(|s| overlap(ship, (s.x, s.y, s.size.radius())));
+        let hit_bullet = self
+            .saucer_bullets
+            .iter()
+            .any(|b| overlap(ship, (b.x, b.y, SAUCER_BULLET_RADIUS)));
+        if !(hit_rock || hit_saucer || hit_bullet) {
             return;
         }
         self.lives = self.lives.saturating_sub(1);
@@ -567,6 +807,7 @@ impl Game {
         self.dead_timer = DEATH_PAUSE;
         self.ending = self.lives == 0;
         self.shots.clear();
+        self.saucer_bullets.clear();
         self.blasts.push(BlastState {
             x: self.ship.x,
             y: self.ship.y,
@@ -623,6 +864,22 @@ impl Game {
         self.blasts.iter().map(|b| Blast { x: b.x, y: b.y })
     }
 
+    /// The saucer crossing the field, if one is out.
+    pub fn saucer(&self) -> Option<Saucer> {
+        self.saucer.map(|s| Saucer {
+            x: s.x,
+            y: s.y,
+            size: s.size,
+        })
+    }
+
+    /// The saucer's bullets in flight, as the shell should draw them.
+    pub fn saucer_bullets(&self) -> impl Iterator<Item = SaucerBullet> + '_ {
+        self.saucer_bullets
+            .iter()
+            .map(|b| SaucerBullet { x: b.x, y: b.y })
+    }
+
     /// The running score.
     pub fn score(&self) -> u32 {
         self.score
@@ -647,6 +904,18 @@ impl Game {
 /// The unit facing vector for `angle` (angle 0 points up, increasing clockwise).
 fn facing(angle: f32) -> (f32, f32) {
     (angle.sin(), -angle.cos())
+}
+
+/// How far the score has climbed toward the small-only score, in `0.0..=1.0` — the
+/// ramp that tightens the saucer's cadence, aim and size choice with the score.
+fn score_ramp(score: u32) -> f32 {
+    (score as f32 / SMALL_SAUCER_ONLY_SCORE as f32).min(1.0)
+}
+
+/// Interpolates from `at_zero` (score 0) to `at_cap` (the small-only score) along
+/// [`score_ramp`] — used to tighten the saucer's cadence and its aim with the score.
+fn lerp_by_score(at_zero: f32, at_cap: f32, score: u32) -> f32 {
+    at_zero + (at_cap - at_zero) * score_ramp(score)
 }
 
 /// Wraps a coordinate into `[0, max)` — the field's toroidal topology.
@@ -746,6 +1015,31 @@ mod tests {
             vx: 0.0,
             vy: 0.0,
             life: SHOT_LIFE,
+        });
+    }
+
+    /// Plants a saucer of `size` at `(x, y)` crossing at `vx`, with `fire_timer`
+    /// seconds until it next fires (0 to fire on the next step).
+    fn plant_saucer(game: &mut Game, size: SaucerSize, x: f32, y: f32, vx: f32, fire_timer: f32) {
+        game.saucer = Some(SaucerState {
+            x,
+            y,
+            vx,
+            vy: 0.0,
+            size,
+            fire_timer,
+            lane_timer: SAUCER_LANE_INTERVAL,
+        });
+    }
+
+    /// Plants a saucer bullet sitting on `(x, y)`.
+    fn plant_saucer_bullet(game: &mut Game, x: f32, y: f32) {
+        game.saucer_bullets.push(SaucerBulletState {
+            x,
+            y,
+            vx: 0.0,
+            vy: 0.0,
+            life: SAUCER_BULLET_LIFE,
         });
     }
 
@@ -931,5 +1225,181 @@ mod tests {
         assert!(over, "the last life ends the game");
         assert_eq!(game.phase(), Phase::GameOver);
         assert_eq!(game.lives(), 0);
+    }
+
+    #[test]
+    fn a_player_shot_destroys_a_large_saucer_and_scores_two_hundred() {
+        let mut game = empty_game();
+        plant_saucer(
+            &mut game,
+            SaucerSize::Large,
+            300.0,
+            300.0,
+            0.0,
+            SAUCER_FIRE_INTERVAL,
+        );
+        plant_shot(&mut game, 300.0, 300.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.saucer_destroyed);
+        assert_eq!(game.score(), 200);
+        assert!(game.saucer().is_none());
+    }
+
+    #[test]
+    fn a_player_shot_destroys_a_small_saucer_and_scores_a_thousand() {
+        let mut game = empty_game();
+        plant_saucer(
+            &mut game,
+            SaucerSize::Small,
+            300.0,
+            300.0,
+            0.0,
+            SAUCER_FIRE_INTERVAL,
+        );
+        plant_shot(&mut game, 300.0, 300.0);
+
+        game.step(Input::default());
+
+        assert_eq!(game.score(), 1000);
+        assert!(game.saucer().is_none());
+    }
+
+    #[test]
+    fn the_saucer_body_destroys_the_ship() {
+        let mut game = empty_game();
+        game.invuln = 0.0;
+        plant_saucer(
+            &mut game,
+            SaucerSize::Large,
+            CENTER_X,
+            CENTER_Y,
+            0.0,
+            SAUCER_FIRE_INTERVAL,
+        );
+
+        let events = game.step(Input::default());
+
+        assert!(events.ship_destroyed);
+        assert_eq!(game.lives(), LIVES_START - 1);
+        assert!(!game.ship_alive());
+    }
+
+    #[test]
+    fn a_saucer_bullet_destroys_the_ship() {
+        let mut game = empty_game();
+        game.invuln = 0.0;
+        plant_saucer_bullet(&mut game, CENTER_X, CENTER_Y);
+
+        let events = game.step(Input::default());
+
+        assert!(events.ship_destroyed);
+        assert_eq!(game.lives(), LIVES_START - 1);
+    }
+
+    #[test]
+    fn the_saucer_leaves_at_the_far_edge_without_wrapping() {
+        let mut game = empty_game();
+        plant_saucer(
+            &mut game,
+            SaucerSize::Large,
+            LOGICAL_WIDTH - 10.0,
+            300.0,
+            SAUCER_SPEED,
+            SAUCER_FIRE_INTERVAL,
+        );
+
+        let mut prev = LOGICAL_WIDTH - 10.0;
+        for _ in 0..120 {
+            game.step(Input::default());
+            if let Some(s) = game.saucer() {
+                assert!(s.x >= prev - 1.0, "a crossing saucer never wraps backwards");
+                prev = s.x;
+            }
+        }
+        assert!(game.saucer().is_none(), "it leaves at the far edge");
+    }
+
+    #[test]
+    fn a_small_saucer_aims_at_the_ship() {
+        let mut game = empty_game();
+        // Saucer to the left of the ship, firing at once.
+        plant_saucer(
+            &mut game,
+            SaucerSize::Small,
+            200.0,
+            CENTER_Y,
+            SAUCER_SPEED,
+            0.0,
+        );
+
+        game.step(Input::default());
+
+        let bullet = game.saucer_bullets().next().expect("the saucer fired");
+        // The ship sits to the right, so an aimed shot flies rightward.
+        let flew_right = bullet.x > 200.0;
+        assert!(flew_right, "the aimed shot heads toward the ship");
+    }
+
+    #[test]
+    fn a_large_saucer_fires_when_its_cadence_comes() {
+        let mut game = empty_game();
+        plant_saucer(
+            &mut game,
+            SaucerSize::Large,
+            400.0,
+            300.0,
+            SAUCER_SPEED,
+            0.0,
+        );
+
+        game.step(Input::default());
+
+        assert_eq!(
+            game.saucer_bullets().count(),
+            1,
+            "the large saucer sprays a shot"
+        );
+    }
+
+    #[test]
+    fn only_the_small_saucer_comes_at_a_high_score() {
+        let mut game = empty_game();
+        game.score = 20_000;
+        game.spawn_saucer();
+        assert_eq!(game.saucer().unwrap().size, SaucerSize::Small);
+    }
+
+    #[test]
+    fn a_saucer_appears_when_its_run_timer_runs_out() {
+        let mut game = empty_game();
+        game.saucer_timer = TIMESTEP;
+        assert!(game.saucer().is_none());
+
+        game.step(Input::default());
+
+        assert!(game.saucer().is_some(), "a saucer appears on its cadence");
+    }
+
+    #[test]
+    fn the_saucer_replays_deterministically() {
+        // Force saucers early so the run really exercises their seeded spawn, aim
+        // and fire, then confirm two games on one seed track each other exactly.
+        let mut a = Game::new(5);
+        let mut b = Game::new(5);
+        a.saucer_timer = 0.5;
+        b.saucer_timer = 0.5;
+
+        let mut saw_saucer = false;
+        for _ in 0..1500 {
+            a.step(Input::default());
+            b.step(Input::default());
+            saw_saucer |= a.saucer.is_some();
+            let seen = |g: &Game| g.saucer.map(|s| (s.x, s.y, s.size));
+            assert_eq!(seen(&a), seen(&b), "the saucer replays identically");
+            assert_eq!(a.saucer_bullets.len(), b.saucer_bullets.len());
+        }
+        assert!(saw_saucer, "a saucer was exercised in the run");
     }
 }

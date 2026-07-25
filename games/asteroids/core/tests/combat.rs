@@ -117,4 +117,8 @@ fn firing_replays_deterministically() {
     assert_eq!(a.asteroid_count(), b.asteroid_count());
     assert_eq!(a.ship(), b.ship());
     assert_eq!(a.lives(), b.lives());
+    assert_eq!(a.saucer(), b.saucer());
+    let a_bullets: Vec<_> = a.saucer_bullets().collect();
+    let b_bullets: Vec<_> = b.saucer_bullets().collect();
+    assert_eq!(a_bullets, b_bullets);
 }
