@@ -27,8 +27,8 @@ const SAUCER_COLOR: Color = color_u8!(140, 220, 255, 255);
 const SAUCER_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
 
 /// Draws a live game: the rocks, shots and explosions, the ship (while it is on the
-/// field), and the HUD.
-pub fn draw(game: &Game) {
+/// field), and the HUD (with the session `best`).
+pub fn draw(game: &Game, best: u32) {
     clear_background(BLACK);
     for rock in game.asteroids() {
         draw_asteroid(rock);
@@ -48,7 +48,7 @@ pub fn draw(game: &Game) {
     if game.ship_alive() && ship_visible(game) {
         draw_ship(game.ship());
     }
-    draw_hud(game);
+    draw_hud(game, best);
 }
 
 /// Whether to draw the ship this frame — a fresh, protected ship blinks to show it
@@ -130,9 +130,25 @@ fn draw_blast(blast: Blast) {
     }
 }
 
-/// The HUD: the running score, and the ships in reserve drawn as little icons.
-fn draw_hud(game: &Game) {
+/// The HUD: the running score and session best, the wave, and the ships left drawn
+/// as little icons.
+fn draw_hud(game: &Game, best: u32) {
     font::draw(&game.score().to_string(), 20.0, 20.0, OPTION_SCALE, WHITE);
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        &format!("BEST {best}"),
+        24.0,
+        HINT_SCALE,
+        GRAY,
+    );
+    let wave = format!("WAVE {}", game.wave());
+    font::draw(
+        &wave,
+        LOGICAL_WIDTH - font::text_width(&wave, HINT_SCALE) - 20.0,
+        24.0,
+        HINT_SCALE,
+        GRAY,
+    );
     for i in 0..game.lives() {
         draw_ship_icon(28.0 + i as f32 * 24.0, 60.0);
     }
@@ -153,26 +169,34 @@ fn draw_ship_icon(x: f32, y: f32) {
     );
 }
 
-/// Draws the game-over banner over the final field.
-pub fn game_over(game: &Game) {
+/// Draws the game-over banner over the final field, with the run's score and the
+/// session best.
+pub fn game_over(game: &Game, best: u32) {
     font::draw_centred(
         LOGICAL_WIDTH,
         "GAME OVER",
-        LOGICAL_HEIGHT / 2.0 - 40.0,
+        LOGICAL_HEIGHT / 2.0 - 44.0,
         TITLE_SCALE,
         WHITE,
     );
     font::draw_centred(
         LOGICAL_WIDTH,
         &format!("SCORE {}", game.score()),
-        LOGICAL_HEIGHT / 2.0 + 24.0,
+        LOGICAL_HEIGHT / 2.0 + 20.0,
         OPTION_SCALE,
         WHITE,
     );
     font::draw_centred(
         LOGICAL_WIDTH,
+        &format!("BEST {best}"),
+        LOGICAL_HEIGHT / 2.0 + 50.0,
+        HINT_SCALE,
+        GRAY,
+    );
+    font::draw_centred(
+        LOGICAL_WIDTH,
         "R RESTART   ESC QUIT",
-        LOGICAL_HEIGHT / 2.0 + 60.0,
+        LOGICAL_HEIGHT / 2.0 + 72.0,
         HINT_SCALE,
         GRAY,
     );

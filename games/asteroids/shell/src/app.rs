@@ -38,12 +38,15 @@ enum Screen {
     },
 }
 
-/// The whole shell: the current screen, the seed source for new games, and
-/// whether the window is fullscreen.
+/// The whole shell: the current screen, the seed source for new games, whether the
+/// window is fullscreen, and the best score this session (not persisted — it resets
+/// with the session, as the original's did with the cabinet).
 pub struct App {
     screen: Screen,
     next_seed: u64,
     fullscreen: bool,
+    /// The best score this session, carried across games and restarts; not saved.
+    best: u32,
 }
 
 impl App {
@@ -55,6 +58,7 @@ impl App {
             },
             next_seed: seed_from_clock(),
             fullscreen: false,
+            best: 0,
         }
     }
 
@@ -110,9 +114,10 @@ impl App {
                     accumulator.reset();
                 }
 
-                render::draw(game);
+                self.best = self.best.max(game.score());
+                render::draw(game, self.best);
                 if game.phase() == Phase::GameOver {
-                    render::game_over(game);
+                    render::game_over(game, self.best);
                 } else if *paused {
                     render::paused_overlay();
                 }
