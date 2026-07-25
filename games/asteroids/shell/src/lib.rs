@@ -4,9 +4,11 @@
 //! out of the pure `asteroids_core`.
 
 pub mod app;
+pub mod audio;
 pub mod render;
 
 pub use app::App;
+pub use audio::Audio;
 
 use asteroids_core::{Input, LOGICAL_HEIGHT, LOGICAL_WIDTH};
 use macroquad::prelude::*;
