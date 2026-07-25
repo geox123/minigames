@@ -440,6 +440,26 @@ fn draw_remix_hud(game: &RemixGame) {
             WELL_COLOR,
         );
     }
+    draw_collapse_meter(game.collapse_meter());
+}
+
+/// The collapse meter, a bar along the foot of the field; full and bright when a
+/// collapse is ready to spend.
+fn draw_collapse_meter(meter: f32) {
+    let (bw, bh) = (240.0, 10.0);
+    let bx = (LOGICAL_WIDTH - bw) / 2.0;
+    let by = LOGICAL_HEIGHT - 28.0;
+    draw_rectangle_lines(bx, by, bw, bh, STROKE, dim(WELL_COLOR));
+    draw_rectangle(bx, by, bw * meter.clamp(0.0, 1.0), bh, WELL_COLOR);
+    if meter >= 1.0 {
+        font::draw_centred(
+            LOGICAL_WIDTH,
+            "COLLAPSE READY",
+            by - 16.0,
+            HINT_SCALE,
+            WELL_COLOR,
+        );
+    }
 }
 
 /// Draws ACCRETE's run-over banner. (The victory summary arrives with the modes and

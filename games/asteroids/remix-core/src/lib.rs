@@ -93,6 +93,14 @@ const FEED_WINDOW: f32 = 2.0;
 const FEED_STREAK_CAP: u32 = 16;
 const FEED_PER_MULTIPLE: u32 = 4;
 
+/// The collapse: how wide a band beyond a well's core the ship skims to charge the
+/// meter, how much one pass through that band charges it (so a few skims fill it),
+/// and how hard a collapse flings the rocks outward. Skimming only counts while the
+/// ship is vulnerable — flirting with the core is the price of the charge.
+const SKIM_BAND: f32 = 46.0;
+const SKIM_CHARGE: f32 = 0.34;
+const COLLAPSE_IMPULSE: f32 = 440.0;
+
 /// Which run this is. Inert for now — every mode plays the same until the modes
 /// ticket shapes their ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -225,6 +233,10 @@ pub struct Events {
     pub rock_split: bool,
     /// The well accreted a rock this step.
     pub accreted: bool,
+    /// The ship skimmed a well's edge this step, charging the collapse meter.
+    pub skimmed: bool,
+    /// A collapse was fired this step.
+    pub collapse_fired: bool,
     /// The ship was destroyed this step and a life was lost.
     pub ship_destroyed: bool,
     /// The last ship was spent this step — the run is over.
@@ -312,6 +324,12 @@ pub struct Game {
     /// steady feed of the well ramps the score.
     feed_streak: u32,
     feed_timer: f32,
+    /// The collapse meter (0..=1), whether the ship was skimming a band last step (so
+    /// a skim charges once per pass), and whether collapse was held last step (so it
+    /// fires on the press).
+    collapse_meter: f32,
+    skimming: bool,
+    collapse_was_down: bool,
     lives: u32,
     mode: Mode,
     /// The loadout the run was built with — inert now, but stored so a restart
@@ -352,6 +370,9 @@ impl Game {
             ending: false,
             feed_streak: 0,
             feed_timer: 0.0,
+            collapse_meter: 0.0,
+            skimming: false,
+            collapse_was_down: false,
             lives: LIVES_START,
             mode,
             loadout,
@@ -398,6 +419,9 @@ impl Game {
         if self.phase == Phase::Over {
             return events;
         }
+        let collapse_pressed = input.collapse && !self.collapse_was_down;
+        self.collapse_was_down = input.collapse;
+
         if self.ship_alive {
             self.advance_ship(input);
             if input.fire && self.fire_cooldown == 0 {
@@ -405,8 +429,11 @@ impl Game {
                 events.fired = true;
                 self.fire_cooldown = FIRE_INTERVAL;
             }
+            self.resolve_skim(&mut events);
+            self.try_collapse(collapse_pressed, &mut events);
         } else {
             self.advance_death(&mut events);
+            self.skimming = false;
         }
         self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
 
@@ -497,6 +524,50 @@ impl Game {
         if into_well || hit_rock {
             self.destroy_ship(events);
         }
+    }
+
+    /// Charges the collapse meter when the ship enters a well's skim band — once per
+    /// pass, and only while it is vulnerable, so the charge is earned by real risk.
+    /// The "charging" latch folds in the vulnerability gate, so a pass that only
+    /// becomes at-risk part-way through still earns its charge on that fresh edge.
+    fn resolve_skim(&mut self, events: &mut Events) {
+        let charging = self.ship_in_skim_band() && self.invuln <= 0.0;
+        if charging && !self.skimming {
+            self.collapse_meter = (self.collapse_meter + SKIM_CHARGE).min(1.0);
+            events.skimmed = true;
+        }
+        self.skimming = charging;
+    }
+
+    /// Whether the ship is within a well's skim band — just outside a core, not in it.
+    fn ship_in_skim_band(&self) -> bool {
+        let inner = WELL_CORE_RADIUS;
+        let outer = WELL_CORE_RADIUS + SKIM_BAND;
+        self.wells.iter().any(|w| {
+            let d2 = ring_dist_sq(w.x, w.y, self.ship.x, self.ship.y);
+            d2 >= inner * inner && d2 <= outer * outer
+        })
+    }
+
+    /// Spends a full meter, on the press, on a collapse: a shockwave from the wells
+    /// that destroys the fine debris it catches and flings the rest of the rocks
+    /// outward. (It also destroys the enemies it catches, once they arrive.)
+    fn try_collapse(&mut self, pressed: bool, events: &mut Events) {
+        if !pressed || self.collapse_meter < 1.0 {
+            return;
+        }
+        // The shockwave shatters the small, fast debris and blows the rest outward.
+        self.asteroids.retain(|a| a.size != AsteroidSize::Small);
+        for a in &mut self.asteroids {
+            let (gx, gy) = gravity_at(&self.wells, a.x, a.y);
+            let mag = (gx * gx + gy * gy).sqrt();
+            if mag > 0.0 {
+                a.vx -= gx / mag * COLLAPSE_IMPULSE;
+                a.vy -= gy / mag * COLLAPSE_IMPULSE;
+            }
+        }
+        self.collapse_meter = 0.0;
+        events.collapse_fired = true;
     }
 
     /// Destroys the ship: a life lost, an explosion, the sky cleared, the streak
@@ -694,6 +765,11 @@ impl Game {
         self.feed_streak
     }
 
+    /// The collapse meter, `0.0..=1.0` — a full meter can be spent on a collapse.
+    pub fn collapse_meter(&self) -> f32 {
+        self.collapse_meter
+    }
+
     /// The running score.
     pub fn score(&self) -> u32 {
         self.score
@@ -756,22 +832,25 @@ fn gravity_at(wells: &[WellState], x: f32, y: f32) -> (f32, f32) {
     (ax, ay)
 }
 
+/// The squared distance between `(ax, ay)` and `(bx, by)` across the toroidal field.
+fn ring_dist_sq(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let dx = ring_delta(ax, bx, LOGICAL_WIDTH);
+    let dy = ring_delta(ay, by, LOGICAL_HEIGHT);
+    dx * dx + dy * dy
+}
+
 /// Whether two circles — each a `(centre-x, centre-y, radius)` — overlap, measured
 /// across the toroidal field.
 fn overlap(a: (f32, f32, f32), b: (f32, f32, f32)) -> bool {
-    let dx = ring_delta(a.0, b.0, LOGICAL_WIDTH);
-    let dy = ring_delta(a.1, b.1, LOGICAL_HEIGHT);
     let r = a.2 + b.2;
-    dx * dx + dy * dy < r * r
+    ring_dist_sq(a.0, a.1, b.0, b.1) < r * r
 }
 
 /// Whether `(x, y)` is inside any well's consuming core, across the toroidal field.
 fn in_any_core(wells: &[WellState], x: f32, y: f32) -> bool {
-    wells.iter().any(|w| {
-        let dx = ring_delta(w.x, x, LOGICAL_WIDTH);
-        let dy = ring_delta(w.y, y, LOGICAL_HEIGHT);
-        dx * dx + dy * dy < WELL_CORE_RADIUS * WELL_CORE_RADIUS
-    })
+    wells
+        .iter()
+        .any(|w| ring_dist_sq(w.x, w.y, x, y) < WELL_CORE_RADIUS * WELL_CORE_RADIUS)
 }
 
 /// The Collection's small deterministic PRNG: splitmix64 to spread the seed, then
@@ -1043,5 +1122,155 @@ mod tests {
         assert!(over, "the last life ends the run");
         assert_eq!(game.phase(), Phase::Over);
         assert_eq!(game.lives(), 0);
+    }
+
+    /// Pins the ship, at rest, inside a well's skim band.
+    fn park_in_band(game: &mut Game) {
+        game.ship.x = CENTER_X;
+        game.ship.y = CENTER_Y - (WELL_CORE_RADIUS + SKIM_BAND / 2.0);
+        game.ship.vx = 0.0;
+        game.ship.vy = 0.0;
+    }
+
+    #[test]
+    fn skimming_a_well_charges_the_meter() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        park_in_band(&mut game);
+
+        let events = game.step(Input::default());
+
+        assert!(events.skimmed);
+        assert!(game.collapse_meter() > 0.0);
+    }
+
+    #[test]
+    fn a_skim_charges_once_per_pass() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+
+        park_in_band(&mut game);
+        game.step(Input::default());
+        let after_first = game.collapse_meter();
+        assert!(after_first > 0.0, "entering the band charges");
+
+        park_in_band(&mut game);
+        game.step(Input::default());
+        assert_eq!(
+            game.collapse_meter(),
+            after_first,
+            "staying in the band does not re-charge"
+        );
+
+        // Leave the band, then return — a fresh pass charges again.
+        game.ship.x = CENTER_X;
+        game.ship.y = 40.0;
+        game.ship.vx = 0.0;
+        game.ship.vy = 0.0;
+        game.step(Input::default());
+        park_in_band(&mut game);
+        game.step(Input::default());
+        assert!(
+            game.collapse_meter() > after_first,
+            "a fresh pass charges again"
+        );
+    }
+
+    #[test]
+    fn a_full_meter_fires_a_collapse_that_flings_rocks() {
+        let mut game = empty_field(1);
+        game.collapse_meter = 1.0;
+        plant_rock(
+            &mut game,
+            AsteroidSize::Large,
+            CENTER_X + 150.0,
+            CENTER_Y,
+            0.0,
+        );
+        let before = {
+            let a = game.asteroids[0];
+            (a.vx * a.vx + a.vy * a.vy).sqrt()
+        };
+
+        let events = game.step(Input {
+            collapse: true,
+            ..Default::default()
+        });
+
+        assert!(events.collapse_fired);
+        assert_eq!(game.collapse_meter(), 0.0, "the meter is spent");
+        let after = {
+            let a = game.asteroids[0];
+            (a.vx * a.vx + a.vy * a.vy).sqrt()
+        };
+        assert!(
+            after > before + 200.0,
+            "the collapse flings the rock outward"
+        );
+    }
+
+    #[test]
+    fn a_collapse_needs_a_full_meter() {
+        let mut game = empty_field(1);
+        game.collapse_meter = 0.5;
+
+        let events = game.step(Input {
+            collapse: true,
+            ..Default::default()
+        });
+
+        assert!(!events.collapse_fired);
+        assert_eq!(game.collapse_meter(), 0.5, "a partial meter cannot fire");
+    }
+
+    #[test]
+    fn a_collapse_shatters_the_fine_debris() {
+        let mut game = empty_field(1);
+        game.collapse_meter = 1.0;
+        plant_rock(
+            &mut game,
+            AsteroidSize::Small,
+            CENTER_X + 150.0,
+            CENTER_Y,
+            0.0,
+        );
+        plant_rock(
+            &mut game,
+            AsteroidSize::Large,
+            CENTER_X - 150.0,
+            CENTER_Y,
+            0.0,
+        );
+
+        game.step(Input {
+            collapse: true,
+            ..Default::default()
+        });
+
+        assert_eq!(
+            game.asteroid_count(),
+            1,
+            "the small debris is caught, the large flung"
+        );
+        assert!(game.asteroids().all(|a| a.size == AsteroidSize::Large));
+    }
+
+    #[test]
+    fn a_skim_charges_when_the_pass_turns_risky() {
+        let mut game = empty_field(1);
+        // In the band, but still protected — no charge yet.
+        game.invuln = 1.0;
+        park_in_band(&mut game);
+        game.step(Input::default());
+        assert_eq!(game.collapse_meter(), 0.0, "no charge while protected");
+
+        // Protection lapses while still in the band: the fresh at-risk edge charges.
+        game.invuln = 0.0;
+        park_in_band(&mut game);
+        game.step(Input::default());
+        assert!(
+            game.collapse_meter() > 0.0,
+            "the pass charges once it turns risky"
+        );
     }
 }
