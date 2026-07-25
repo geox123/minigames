@@ -32,22 +32,26 @@ in [`docs/adr/`](docs/adr).
 | [Pong](games/pong) | 1972 | ✅ playable | ✅ [PULSE](games/pong/PULSE.md) | **Done** |
 | [Breakout](games/breakout) | 1976 | ✅ playable | ✅ [RIFT](games/breakout/RIFT.md) | **Done** |
 | [STEPFALL](games/stepfall) | 1978 | ✅ playable | ✅ [HAILFALL](games/stepfall/HAILFALL.md) | **Done** |
-| [Asteroids](games/asteroids) | 1979 | ✅ playable | ⏳ coming | In progress |
+| [Asteroids](games/asteroids) | 1979 | ✅ playable | ✅ [ACCRETE](games/asteroids/ACCRETE.md) | **Done** |
 
-**Pong, Breakout and STEPFALL are Done** — each has shipped both takes. Pong
-pairs its Faithful with [PULSE](games/pong/PULSE.md); Breakout pairs its Faithful
-with [RIFT](games/breakout/RIFT.md), a roguelike descent with a brick zoo, a boon
-draft and three modes. The third Game, **[STEPFALL](games/stepfall)** — the 1978
-arcade invasion game, shipped under a name of its own — pairs its Faithful with
+**Pong, Breakout, STEPFALL and Asteroids are Done** — each has shipped both takes.
+Pong pairs its Faithful with [PULSE](games/pong/PULSE.md); Breakout pairs its
+Faithful with [RIFT](games/breakout/RIFT.md), a roguelike descent with a brick zoo,
+a boon draft and three modes. The third Game, **[STEPFALL](games/stepfall)** — the
+1978 arcade invasion game, shipped under a name of its own — pairs its Faithful with
 [HAILFALL](games/stepfall/HAILFALL.md), a bullet-hell that cuts the swarm loose
 into sweeping squadrons, a nimble ship with a dash, focus and a graze-fed
 overdrive nova, power-ups, multi-phase motherships and three modes.
 
 The fourth Game, **[Asteroids](games/asteroids)** (1979 · Atari, under its real
-name), is **in progress**: its **Faithful** is live — a Newtonian ship that
-rotates, thrusts and drifts on a screen-wrapped vector field, rocks that split
-into faster fragments, a large and a small mystery saucer, hyperspace, escalating
-waves and a quickening heartbeat — with its Remix still to come.
+name), pairs its **Faithful** — a Newtonian ship that rotates, thrusts and drifts
+on a screen-wrapped vector field, rocks that split into faster fragments, a large
+and a small mystery saucer, hyperspace, escalating waves and a quickening heartbeat
+— with [ACCRETE](games/asteroids/ACCRETE.md), a **gravity** reimagining: a well at
+the heart of the field pulls on everything, and you fly against it, slingshotting
+on close passes, feeding rocks into the star for accretion score, skimming its edge
+to charge a screen-clearing collapse, dodging orbital enemies and a rival-well boss
+across three modes.
 
 ## How it's built
 

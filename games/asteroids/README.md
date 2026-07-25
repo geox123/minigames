@@ -10,8 +10,10 @@ synthesized, nothing sampled or traced.
 - **Faithful** — the vector original recreated: a ship that rotates, thrusts and
   drifts with real inertia on a screen-wrapped field, rocks that split as you break
   them, two mystery saucers, hyperspace, and escalating waves. Documented below.
-- **Remix** — still to come. A Game is **Done** only once both takes ship; the
-  Remix gets its own invented name and its own spec once the Faithful is out.
+- **Remix** — [**ACCRETE**](ACCRETE.md), a gravity reimagining: a well at the heart
+  of the field pulls on everything, and you fly the Newtonian cannon against it —
+  slingshot, feed the star, skim to charge a collapse, fight orbital enemies and a
+  rival-well boss across three modes. **Asteroids is Done — both takes ship.**
 
 **▶ Play: https://geox123.github.io/minigames/asteroids/**
 
@@ -38,8 +40,8 @@ crosses to hunt you. Clear the field to bring the next, bigger one.
 | **F** | Toggle fullscreen |
 | **Esc** | Back out to mode-select |
 
-The Game opens on a **mode-select** screen — the Faithful, or its Remix (locked
-until it ships) — then drops you into the first field.
+The Game opens on a **mode-select** screen — the Faithful, or its Remix
+[**ACCRETE**](ACCRETE.md) — then drops you into the first field.
 
 ## What makes it faithful
 
