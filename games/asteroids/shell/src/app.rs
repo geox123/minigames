@@ -7,6 +7,7 @@ use asteroids_remix_core::{Game as RemixGame, Loadout, Mode as RunMode, Phase as
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
+use crate::fx::Fx;
 use crate::{Audio, read_input, read_remix_input, render};
 
 /// ACCRETE's three modes, top to bottom on its picker.
@@ -62,6 +63,10 @@ enum Screen {
         best: u32,
         /// Whether this run's result has been saved yet (saved once, on run-over).
         saved: bool,
+        /// The run's feel: trails, particles, collapse rings, shake and hit-stop.
+        fx: Fx,
+        /// The gravity-hum depth currently sounding, so it re-pitches only on a change.
+        hum_level: Option<usize>,
     },
 }
 
@@ -74,6 +79,8 @@ pub struct App {
     fullscreen: bool,
     /// The best score this session, carried across games and restarts; not saved.
     best: u32,
+    /// How far to nudge the blit this frame — ACCRETE's screen shake, else zero.
+    blit_shake: Vec2,
     audio: Audio,
 }
 
@@ -87,13 +94,22 @@ impl App {
             next_seed: seed_from_clock(),
             fullscreen: false,
             best: 0,
+            blit_shake: Vec2::ZERO,
             audio,
         }
+    }
+
+    /// How far to nudge the canvas when it is blitted this frame.
+    pub fn blit_shake(&self) -> Vec2 {
+        self.blit_shake
     }
 
     /// Advances the shell by one real frame: reads input, runs whatever the
     /// current screen does, and draws it to the logical canvas.
     pub fn frame(&mut self) {
+        // Any shake is set anew each frame by the run that is playing.
+        self.blit_shake = Vec2::ZERO;
+
         // Fullscreen can be toggled from anywhere in the shell.
         if is_key_pressed(KeyCode::F) {
             self.fullscreen = !self.fullscreen;
@@ -210,31 +226,60 @@ impl App {
                 day,
                 best,
                 saved,
+                fx,
+                hum_level,
             } => {
                 if is_key_pressed(KeyCode::Escape) {
+                    self.audio.set_gravity_hum(None);
                     self.return_to_mode_select();
                     return;
                 }
                 // A fresh run of the same mode, from the summary or mid-run.
                 if is_key_pressed(KeyCode::R) {
                     let mode = *mode;
+                    self.audio.set_gravity_hum(None);
                     self.start_remix_match(mode);
                     return;
                 }
+
+                let dt = get_frame_time();
+                fx.update(dt);
 
                 let over = game.phase() == RemixPhase::Over;
                 if !over {
                     if is_key_pressed(KeyCode::P) {
                         *paused = !*paused;
                     }
-                    if !*paused {
+                    // Hit-stop holds the sim still for a beat on the big impacts.
+                    if !*paused && !fx.frozen() {
                         let input = read_remix_input();
-                        for _ in 0..accumulator.steps(get_frame_time()) {
-                            game.step(input);
+                        for _ in 0..accumulator.steps(dt) {
+                            let events = game.step(input);
+                            self.audio.play_remix(&events);
+                            let ship = game.ship();
+                            let boss = game.boss().map(|b| (b.x, b.y));
+                            fx.on_step(
+                                events,
+                                (ship.x, ship.y),
+                                boss,
+                                game.phase() == RemixPhase::Playing,
+                            );
                         }
                     } else {
                         accumulator.reset();
                     }
+                }
+
+                // The gravity hum deepens a band each system; toggle only on a change so
+                // the drone does not restart every frame, and rest it once the run ends.
+                let want_hum = if over || *paused {
+                    None
+                } else {
+                    Some((game.stage().saturating_sub(1) as usize).min(2))
+                };
+                if want_hum != *hum_level {
+                    *hum_level = want_hum;
+                    self.audio.set_gravity_hum(want_hum);
                 }
 
                 // On run-over, save the mode's best once, only when beaten. The guard
@@ -256,7 +301,9 @@ impl App {
                     }
                 }
 
+                self.blit_shake = Vec2::from(fx.shake_offset());
                 render::draw_remix(game, *best);
+                fx.draw();
                 if over {
                     render::remix_summary(game, *best);
                 } else if *paused {
@@ -320,6 +367,8 @@ impl App {
             day,
             best,
             saved: false,
+            fx: Fx::default(),
+            hum_level: None,
         };
     }
 }
