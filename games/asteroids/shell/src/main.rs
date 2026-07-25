@@ -3,7 +3,7 @@
 //! This binary is the shell: it owns the window, the real clock, real input and
 //! rendering. Every rule of the game lives in `asteroids_core`.
 
-use asteroids::{App, blit_canvas, logical_camera, logical_canvas};
+use asteroids::{App, Audio, blit_canvas, logical_camera, logical_canvas};
 use asteroids_core::{LOGICAL_HEIGHT, LOGICAL_WIDTH};
 use macroquad::prelude::*;
 
@@ -26,7 +26,7 @@ fn window_conf() -> Conf {
 async fn main() {
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
-    let mut app = App::new();
+    let mut app = App::new(Audio::load().await);
 
     loop {
         // Everything the game draws goes onto the logical canvas...

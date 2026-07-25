@@ -6,7 +6,7 @@ use asteroids_core::{Game, Phase, TIMESTEP};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
-use crate::{read_input, render};
+use crate::{Audio, read_input, render};
 
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make the
@@ -35,6 +35,13 @@ enum Screen {
         accumulator: Accumulator,
         /// Whether the game is paused.
         paused: bool,
+        /// Whether the thrust rumble and saucer warble loops are sounding, so each
+        /// toggles only on change.
+        thrust_sounding: bool,
+        saucer_sounding: bool,
+        /// The heartbeat: seconds until the next thump, and which of the two it is.
+        beat_timer: f32,
+        beat_high: bool,
     },
 }
 
@@ -47,11 +54,12 @@ pub struct App {
     fullscreen: bool,
     /// The best score this session, carried across games and restarts; not saved.
     best: u32,
+    audio: Audio,
 }
 
 impl App {
     /// Opens the shell on the mode-select screen.
-    pub fn new() -> Self {
+    pub fn new(audio: Audio) -> Self {
         Self {
             screen: Screen::ModeSelect {
                 highlight: Mode::Faithful,
@@ -59,6 +67,7 @@ impl App {
             next_seed: seed_from_clock(),
             fullscreen: false,
             best: 0,
+            audio,
         }
     }
 
@@ -90,9 +99,15 @@ impl App {
                 game,
                 accumulator,
                 paused,
+                thrust_sounding,
+                saucer_sounding,
+                beat_timer,
+                beat_high,
             } => {
                 // Backing out of a game returns to the Collection's mode-select.
                 if is_key_pressed(KeyCode::Escape) {
+                    self.audio.set_thrust(false);
+                    self.audio.set_saucer(false);
                     self.return_to_mode_select();
                     return;
                 }
@@ -102,16 +117,47 @@ impl App {
                 if is_key_pressed(KeyCode::R) {
                     game.restart();
                     *paused = false;
+                    *beat_timer = 0.0;
+                    *beat_high = false;
                 }
 
+                let dt = get_frame_time();
                 if !*paused {
                     let input = read_input();
-                    for _ in 0..accumulator.steps(get_frame_time()) {
-                        game.step(input);
+                    for _ in 0..accumulator.steps(dt) {
+                        self.audio.play(&game.step(input));
                     }
                 } else {
                     // Don't let paused wall-time pile up and fast-forward on resume.
                     accumulator.reset();
+                }
+
+                let playing = !*paused && game.phase() == Phase::Playing;
+
+                // The thrust rumble and the saucer warble loop while they apply.
+                let want_thrust = playing && game.ship_alive() && game.ship().thrusting;
+                if want_thrust != *thrust_sounding {
+                    *thrust_sounding = want_thrust;
+                    self.audio.set_thrust(want_thrust);
+                }
+                let want_saucer = playing && game.saucer().is_some();
+                if want_saucer != *saucer_sounding {
+                    *saucer_sounding = want_saucer;
+                    self.audio.set_saucer(want_saucer);
+                }
+
+                // The heartbeat: two thumps alternating on a tempo that quickens as
+                // the field thins; it rests between fields and when not playing.
+                let rocks = game.asteroid_count();
+                if playing && rocks > 0 {
+                    *beat_timer -= dt;
+                    if *beat_timer <= 0.0 {
+                        self.audio.beat(*beat_high);
+                        *beat_high = !*beat_high;
+                        *beat_timer = heartbeat_interval(rocks);
+                    }
+                } else {
+                    *beat_timer = 0.0;
                 }
 
                 self.best = self.best.max(game.score());
@@ -144,14 +190,18 @@ impl App {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
             paused: false,
+            thrust_sounding: false,
+            saucer_sounding: false,
+            beat_timer: 0.0,
+            beat_high: false,
         };
     }
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
-    }
+/// The seconds between heartbeat thumps for a field of `rocks` — a fuller field
+/// beats slower, a thinning one quicker.
+fn heartbeat_interval(rocks: usize) -> f32 {
+    (0.22 + 0.045 * rocks as f32).min(0.7)
 }
 
 /// Whether the player committed to the highlighted option this frame.
