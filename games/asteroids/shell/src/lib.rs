@@ -12,8 +12,7 @@ use asteroids_core::{Input, LOGICAL_HEIGHT, LOGICAL_WIDTH};
 use macroquad::prelude::*;
 
 /// Reads the ship off the keyboard: left/right arrows or A/D to turn, up or W to
-/// thrust, Space to fire, and down/Shift for hyperspace. (Only turning and thrust
-/// do anything until the later tickets wire firing and the teleport.)
+/// thrust, Space to fire, and down/Shift for hyperspace.
 pub fn read_input() -> Input {
     Input {
         turn_left: is_key_down(KeyCode::Left) || is_key_down(KeyCode::A),
