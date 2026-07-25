@@ -13,11 +13,13 @@
 //! serves both takes; gravity reaches *across* the wrap, toward the nearest image of
 //! the well.
 //!
-//! This is the first slice ([ticket A1](https://github.com/geox123/minigames/issues/130)):
-//! the gravity field and the ship that flies it. Firing, rocks, accretion, the
-//! collapse, enemies, bosses, the modes and the meta arrive in the later tickets;
-//! the ship's **loadout** is handed *in* at construction, so the core never knows the
-//! word "unlock" — it only ever flies what it is given.
+//! So far: the gravity field and the Newtonian ship (A1); a held stream of fire and
+//! rocks that split and curve under the pull (A2); and the well **accreting** rocks
+//! for a streak-fed score, with a ship that falls into a core — or is struck by a
+//! rock — destroyed (A3). The collapse, enemies, bosses, the modes and the meta
+//! arrive in the later tickets; the ship's **loadout** is handed *in* at
+//! construction, so the core never knows the word "unlock" — it only ever flies what
+//! it is given.
 
 use core::f32::consts::TAU;
 
@@ -77,6 +79,19 @@ const FRAGMENT_SPEED_MIN: f32 = 1.1;
 const FRAGMENT_SPEED_MAX: f32 = 1.6;
 /// No rock spawns within this of the well, so a fresh field never starts inside it.
 const ROCK_SAFE_RADIUS: f32 = 200.0;
+
+/// The player's ships to start, the pause the run holds after one is destroyed, and
+/// how long a fresh ship is protected on arrival.
+pub const LIVES_START: u32 = 3;
+const DEATH_PAUSE: f32 = 1.2;
+const SPAWN_INVULN: f32 = 2.5;
+
+/// Accretion: how long a feed streak lives between rocks (each rock resets it), how
+/// high the streak counts, and how many rocks the streak lifts the score by one
+/// multiple — so a fast, steady feed of the well pays far more than an idle one.
+const FEED_WINDOW: f32 = 2.0;
+const FEED_STREAK_CAP: u32 = 16;
+const FEED_PER_MULTIPLE: u32 = 4;
 
 /// Which run this is. Inert for now — every mode plays the same until the modes
 /// ticket shapes their ends.
@@ -163,6 +178,16 @@ impl AsteroidSize {
             AsteroidSize::Small => None,
         }
     }
+
+    /// What the well scores for devouring a rock of this size — the larger the rock,
+    /// the more it is worth to feed it in whole.
+    fn accrete_score(self) -> u32 {
+        match self {
+            AsteroidSize::Large => 150,
+            AsteroidSize::Medium => 75,
+            AsteroidSize::Small => 30,
+        }
+    }
 }
 
 /// A rock adrift on the gravity field, as the shell should draw it. `x`/`y` are its
@@ -181,6 +206,15 @@ pub struct Shot {
     pub y: f32,
 }
 
+/// An explosion in progress, for the shell to draw where the ship was destroyed.
+/// `progress` runs `0.0` (just born) to `1.0` (done).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Blast {
+    pub x: f32,
+    pub y: f32,
+    pub progress: f32,
+}
+
 /// What happened during a single [`Game::step`], for the shell to react to. It grows
 /// as accretion, the collapse and the rest arrive in the later tickets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -189,6 +223,12 @@ pub struct Events {
     pub fired: bool,
     /// A shot split a rock this step.
     pub rock_split: bool,
+    /// The well accreted a rock this step.
+    pub accreted: bool,
+    /// The ship was destroyed this step and a life was lost.
+    pub ship_destroyed: bool,
+    /// The last ship was spent this step — the run is over.
+    pub game_over: bool,
 }
 
 /// Where a run is.
@@ -238,6 +278,17 @@ struct ShotState {
     life: f32,
 }
 
+/// An explosion in progress, with the seconds it has left to burn.
+#[derive(Clone, Copy)]
+struct BlastState {
+    x: f32,
+    y: f32,
+    timer: f32,
+}
+
+/// How long an explosion lingers for the shell to draw, in seconds.
+const BLAST_LIFE: f32 = 0.5;
+
 /// The whole run: the ship, the gravity wells that pull on it, and the seed the run
 /// began on. Advanced only through [`Game::step`]; everything else is read-only.
 pub struct Game {
@@ -246,8 +297,22 @@ pub struct Game {
     wells: Vec<WellState>,
     asteroids: Vec<AsteroidState>,
     shots: Vec<ShotState>,
+    blasts: Vec<BlastState>,
     /// Steps until the held stream may loose its next shot.
     fire_cooldown: u64,
+    /// Whether the ship is on the field; false during the pause after a destruction.
+    ship_alive: bool,
+    /// Seconds left in the pause after a destruction, before the ship returns.
+    dead_timer: f32,
+    /// Seconds of arrival protection left; while it lasts the ship cannot be hit.
+    invuln: f32,
+    /// Whether the destruction playing out was the last life — the run ends.
+    ending: bool,
+    /// The accretion feed streak, and the seconds it survives before it lapses — a
+    /// steady feed of the well ramps the score.
+    feed_streak: u32,
+    feed_timer: f32,
+    lives: u32,
     mode: Mode,
     /// The loadout the run was built with — inert now, but stored so a restart
     /// replays the very same run once the meta ticket gives it teeth.
@@ -279,7 +344,15 @@ impl Game {
             }],
             asteroids: Vec::with_capacity(INITIAL_ROCKS),
             shots: Vec::new(),
+            blasts: Vec::new(),
             fire_cooldown: 0,
+            ship_alive: true,
+            dead_timer: 0.0,
+            invuln: SPAWN_INVULN,
+            ending: false,
+            feed_streak: 0,
+            feed_timer: 0.0,
+            lives: LIVES_START,
             mode,
             loadout,
             phase: Phase::Playing,
@@ -325,17 +398,123 @@ impl Game {
         if self.phase == Phase::Over {
             return events;
         }
-        self.advance_ship(input);
-        if input.fire && self.fire_cooldown == 0 {
-            self.fire();
-            events.fired = true;
-            self.fire_cooldown = FIRE_INTERVAL;
+        if self.ship_alive {
+            self.advance_ship(input);
+            if input.fire && self.fire_cooldown == 0 {
+                self.fire();
+                events.fired = true;
+                self.fire_cooldown = FIRE_INTERVAL;
+            }
+        } else {
+            self.advance_death(&mut events);
         }
         self.fire_cooldown = self.fire_cooldown.saturating_sub(1);
+
         self.advance_shots();
         self.advance_asteroids();
+        self.advance_blasts();
+        if self.invuln > 0.0 {
+            self.invuln = (self.invuln - TIMESTEP).max(0.0);
+        }
+        self.decay_feed_streak();
+
         self.resolve_shot_hits(&mut events);
+        self.resolve_accretion(&mut events);
+        if self.ship_alive && self.invuln <= 0.0 {
+            self.resolve_ship_death(&mut events);
+        }
         events
+    }
+
+    /// Runs the pause after a destruction: hold for a beat, then either end the run
+    /// (if that was the last life) or return the ship to its start under protection.
+    fn advance_death(&mut self, events: &mut Events) {
+        if self.dead_timer > 0.0 {
+            self.dead_timer -= TIMESTEP;
+            return;
+        }
+        if self.ending {
+            self.phase = Phase::Over;
+            events.game_over = true;
+            return;
+        }
+        self.ship = ShipState {
+            x: CENTER_X,
+            y: CENTER_Y - SHIP_START_OFFSET,
+            vx: 0.0,
+            vy: 0.0,
+            angle: 0.0,
+        };
+        self.ship_alive = true;
+        self.invuln = SPAWN_INVULN;
+    }
+
+    /// Burns down the explosions and drops the ones that have finished.
+    fn advance_blasts(&mut self) {
+        for b in &mut self.blasts {
+            b.timer -= TIMESTEP;
+        }
+        self.blasts.retain(|b| b.timer > 0.0);
+    }
+
+    /// Lapses the accretion feed streak once no rock has fed the well for a while.
+    fn decay_feed_streak(&mut self) {
+        if self.feed_timer > 0.0 {
+            self.feed_timer -= TIMESTEP;
+            if self.feed_timer <= 0.0 {
+                self.feed_streak = 0;
+            }
+        }
+    }
+
+    /// Rocks that cross a well's core are devoured — removed and scored, worth more
+    /// the larger the rock and the steadier the feed (a streak lifts the score).
+    fn resolve_accretion(&mut self, events: &mut Events) {
+        let mut i = 0;
+        while i < self.asteroids.len() {
+            let rock = self.asteroids[i];
+            if in_any_core(&self.wells, rock.x, rock.y) {
+                self.feed_streak = (self.feed_streak + 1).min(FEED_STREAK_CAP);
+                self.feed_timer = FEED_WINDOW;
+                let multiple = 1 + self.feed_streak / FEED_PER_MULTIPLE;
+                self.score += rock.size.accrete_score() * multiple;
+                events.accreted = true;
+                self.asteroids.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// The ship is destroyed if it falls into a well's core or is struck by a rock.
+    fn resolve_ship_death(&mut self, events: &mut Events) {
+        let ship = (self.ship.x, self.ship.y, SHIP_RADIUS);
+        let into_well = in_any_core(&self.wells, self.ship.x, self.ship.y);
+        let hit_rock = self
+            .asteroids
+            .iter()
+            .any(|a| overlap(ship, (a.x, a.y, a.size.radius())));
+        if into_well || hit_rock {
+            self.destroy_ship(events);
+        }
+    }
+
+    /// Destroys the ship: a life lost, an explosion, the sky cleared, the streak
+    /// broken, and the pause before it returns — or the run's end, on the last life.
+    fn destroy_ship(&mut self, events: &mut Events) {
+        self.lives = self.lives.saturating_sub(1);
+        self.ship_alive = false;
+        self.thrusting = false;
+        self.dead_timer = DEATH_PAUSE;
+        self.ending = self.lives == 0;
+        self.shots.clear();
+        self.feed_streak = 0;
+        self.blasts.push(BlastState {
+            x: self.ship.x,
+            y: self.ship.y,
+            timer: BLAST_LIFE,
+        });
+        events.ship_destroyed = true;
     }
 
     /// Loosens a shot from the ship's nose along its facing. The shot flies at a fixed
@@ -486,6 +665,35 @@ impl Game {
         self.shots.iter().map(|s| Shot { x: s.x, y: s.y })
     }
 
+    /// The explosions in progress, as the shell should draw them.
+    pub fn blasts(&self) -> impl Iterator<Item = Blast> + '_ {
+        self.blasts.iter().map(|b| Blast {
+            x: b.x,
+            y: b.y,
+            progress: 1.0 - b.timer / BLAST_LIFE,
+        })
+    }
+
+    /// The ships left, the one in play included.
+    pub fn lives(&self) -> u32 {
+        self.lives
+    }
+
+    /// Whether the ship is on the field this step (false during the death pause).
+    pub fn ship_alive(&self) -> bool {
+        self.ship_alive
+    }
+
+    /// Whether the ship is under arrival protection — the shell may blink it.
+    pub fn ship_invulnerable(&self) -> bool {
+        self.invuln > 0.0
+    }
+
+    /// The accretion feed streak — how many rocks the well has devoured in a row.
+    pub fn feed_streak(&self) -> u32 {
+        self.feed_streak
+    }
+
     /// The running score.
     pub fn score(&self) -> u32 {
         self.score
@@ -555,6 +763,15 @@ fn overlap(a: (f32, f32, f32), b: (f32, f32, f32)) -> bool {
     let dy = ring_delta(a.1, b.1, LOGICAL_HEIGHT);
     let r = a.2 + b.2;
     dx * dx + dy * dy < r * r
+}
+
+/// Whether `(x, y)` is inside any well's consuming core, across the toroidal field.
+fn in_any_core(wells: &[WellState], x: f32, y: f32) -> bool {
+    wells.iter().any(|w| {
+        let dx = ring_delta(w.x, x, LOGICAL_WIDTH);
+        let dy = ring_delta(w.y, y, LOGICAL_HEIGHT);
+        dx * dx + dy * dy < WELL_CORE_RADIUS * WELL_CORE_RADIUS
+    })
 }
 
 /// The Collection's small deterministic PRNG: splitmix64 to spread the seed, then
@@ -714,5 +931,117 @@ mod tests {
             let s = (fragment.vx * fragment.vx + fragment.vy * fragment.vy).sqrt();
             assert!(s > parent_drift, "a fragment ({s}) outruns its parent");
         }
+    }
+
+    #[test]
+    fn a_rock_in_the_core_is_accreted_and_scored() {
+        let mut game = empty_field(1);
+        plant_rock(&mut game, AsteroidSize::Large, CENTER_X, CENTER_Y, 0.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.accreted, "the well devours the rock");
+        assert_eq!(game.asteroid_count(), 0);
+        assert_eq!(game.score(), AsteroidSize::Large.accrete_score());
+    }
+
+    #[test]
+    fn a_steady_feed_ramps_the_score() {
+        let mut game = empty_field(1);
+        for _ in 0..8 {
+            plant_rock(&mut game, AsteroidSize::Large, CENTER_X, CENTER_Y, 0.0);
+        }
+        game.step(Input::default());
+        assert_eq!(game.feed_streak(), 8);
+        assert!(
+            game.score() > 8 * AsteroidSize::Large.accrete_score(),
+            "a streak pays more than a flat rate ({})",
+            game.score()
+        );
+    }
+
+    #[test]
+    fn the_ship_falls_into_the_core_and_dies() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        game.ship.x = CENTER_X;
+        game.ship.y = CENTER_Y;
+
+        let events = game.step(Input::default());
+
+        assert!(events.ship_destroyed);
+        assert_eq!(game.lives(), LIVES_START - 1);
+        assert!(!game.ship_alive());
+        assert!(game.blasts().count() >= 1);
+    }
+
+    #[test]
+    fn a_rock_strikes_the_ship() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        let (sx, sy) = (game.ship.x, game.ship.y);
+        plant_rock(&mut game, AsteroidSize::Large, sx, sy, 0.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.ship_destroyed);
+        assert_eq!(game.lives(), LIVES_START - 1);
+    }
+
+    #[test]
+    fn arrival_protection_shields_a_fresh_ship() {
+        let mut game = empty_field(1);
+        // The ship starts protected, so falling into the core does nothing...
+        game.ship.x = CENTER_X;
+        game.ship.y = CENTER_Y;
+        assert!(!game.step(Input::default()).ship_destroyed);
+        assert_eq!(game.lives(), LIVES_START);
+
+        // ...but once it lapses, the same core destroys it.
+        game.invuln = 0.0;
+        game.ship.x = CENTER_X;
+        game.ship.y = CENTER_Y;
+        game.step(Input::default());
+        assert!(!game.ship_alive());
+    }
+
+    #[test]
+    fn a_downed_ship_returns_after_the_pause() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        game.ship.x = CENTER_X;
+        game.ship.y = CENTER_Y;
+        game.step(Input::default());
+        assert!(!game.ship_alive());
+
+        for _ in 0..(DEATH_PAUSE / TIMESTEP) as usize + 2 {
+            game.step(Input::default());
+        }
+        assert!(game.ship_alive(), "the ship returns after the pause");
+        assert!(game.ship_invulnerable(), "under fresh protection");
+        let ship = game.ship();
+        assert!(
+            (ship.x - CENTER_X).abs() < 1e-3
+                && (ship.y - (CENTER_Y - SHIP_START_OFFSET)).abs() < 1e-3
+        );
+    }
+
+    #[test]
+    fn spending_the_last_life_ends_the_run() {
+        let mut game = empty_field(1);
+        game.invuln = 0.0;
+        game.lives = 1;
+        game.ship.x = CENTER_X;
+        game.ship.y = CENTER_Y;
+
+        let mut over = false;
+        for _ in 0..(2.0 / TIMESTEP) as usize {
+            if game.step(Input::default()).game_over {
+                over = true;
+            }
+        }
+        assert!(over, "the last life ends the run");
+        assert_eq!(game.phase(), Phase::Over);
+        assert_eq!(game.lives(), 0);
     }
 }
