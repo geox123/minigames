@@ -30,8 +30,11 @@
 //! ([T4](https://github.com/geox123/minigames/issues/114)) cross the field on a
 //! score-scaled cadence — a large one spraying random fire, a small one aiming — and
 //! **hyperspace** ([T5](https://github.com/geox123/minigames/issues/115)) blinks the
-//! ship to a random spot at the risk of arriving on a rock. Waves and the bonus ship
-//! arrive in the later tickets; everything hangs off the single [`Game::step`] seam.
+//! ship to a random spot at the risk of arriving on a rock. **Waves**
+//! ([T6](https://github.com/geox123/minigames/issues/116)) escalate the field — four
+//! rocks, then two more each cleared field to a cap — and earn a ship every 10,000
+//! points. The authored look, the sound and the site remain; everything hangs off
+//! the single [`Game::step`] seam.
 
 use core::f32::consts::TAU;
 
@@ -119,10 +122,15 @@ const SMALL_SAUCER_ONLY_SCORE: u32 = 10_000;
 const SAUCER_AIM_ERROR_WIDE: f32 = 0.5;
 const SAUCER_AIM_ERROR_TIGHT: f32 = 0.05;
 
-/// How many large rocks a fresh field opens with. (Waves add more from
-/// [ticket T6](https://github.com/geox123/minigames/issues/116); here it is just
-/// the opening field.)
+/// How many large rocks the first field opens with; each cleared field then adds
+/// [`WAVE_ROCK_STEP`] more, up to [`WAVE_ROCK_CAP`], with a brief respite between.
 pub const INITIAL_ASTEROIDS: usize = 4;
+const WAVE_ROCK_STEP: usize = 2;
+const WAVE_ROCK_CAP: usize = 12;
+const WAVE_DELAY: f32 = 1.5;
+
+/// A ship is earned for every this many points scored.
+const EXTRA_SHIP_EVERY: u32 = 10_000;
 
 /// The slowest and fastest a large rock drifts, in units per second — its speed is
 /// drawn from this range when the field is seeded.
@@ -292,6 +300,10 @@ pub struct Events {
     pub hyperspaced: bool,
     /// The ship was destroyed this step and a life was lost.
     pub ship_destroyed: bool,
+    /// An extra ship was earned this step.
+    pub extra_life: bool,
+    /// The field was cleared this step and a fresh, bigger wave began.
+    pub wave_cleared: bool,
     /// The last ship was spent this step — the game is over.
     pub game_over: bool,
 }
@@ -406,6 +418,12 @@ pub struct Game {
     saucer_timer: f32,
     score: u32,
     lives: u32,
+    /// The wave in play, from 1 — each cleared field brings the next, bigger one.
+    wave: u32,
+    /// The next score at which a ship is earned.
+    next_extra_at: u32,
+    /// Seconds of respite left before the next wave spawns, once the field is clear.
+    wave_timer: f32,
     rng: Rng,
     phase: Phase,
     /// Steps taken so far.
@@ -444,6 +462,9 @@ impl Game {
             saucer_timer: SAUCER_SPAWN_SLOW,
             score: 0,
             lives: LIVES_START,
+            wave: 1,
+            next_extra_at: EXTRA_SHIP_EVERY,
+            wave_timer: WAVE_DELAY,
             rng: Rng::new(seed),
             phase: Phase::Playing,
             steps: 0,
@@ -522,8 +543,37 @@ impl Game {
         if self.ship_alive && self.invuln <= 0.0 {
             self.resolve_ship_hits(&mut events);
         }
+        self.award_extra_lives(&mut events);
+        self.advance_waves(&mut events);
 
         events
+    }
+
+    /// Grants a ship for every [`EXTRA_SHIP_EVERY`] points the score has passed.
+    fn award_extra_lives(&mut self, events: &mut Events) {
+        while self.score >= self.next_extra_at {
+            self.lives += 1;
+            self.next_extra_at += EXTRA_SHIP_EVERY;
+            events.extra_life = true;
+        }
+    }
+
+    /// Brings the next, bigger wave once the field — every rock and any saucer — has
+    /// been cleared for a brief respite. The rock count grows by
+    /// [`WAVE_ROCK_STEP`] each wave, up to [`WAVE_ROCK_CAP`].
+    fn advance_waves(&mut self, events: &mut Events) {
+        if self.asteroids.is_empty() && self.saucer.is_none() {
+            self.wave_timer -= TIMESTEP;
+            if self.wave_timer <= 0.0 {
+                self.wave += 1;
+                self.wave_timer = WAVE_DELAY;
+                self.spawn_field(rocks_for_wave(self.wave));
+                events.wave_cleared = true;
+            }
+        } else {
+            // The field is still busy; hold the respite full for when it clears.
+            self.wave_timer = WAVE_DELAY;
+        }
     }
 
     /// Turns, thrusts, coasts and moves the ship, wrapping it at the field edges.
@@ -951,6 +1001,11 @@ impl Game {
         self.lives
     }
 
+    /// The wave in play, from 1.
+    pub fn wave(&self) -> u32 {
+        self.wave
+    }
+
     /// Where the game is.
     pub fn phase(&self) -> Phase {
         self.phase
@@ -965,6 +1020,13 @@ impl Game {
 /// The unit facing vector for `angle` (angle 0 points up, increasing clockwise).
 fn facing(angle: f32) -> (f32, f32) {
     (angle.sin(), -angle.cos())
+}
+
+/// How many large rocks a wave opens with: [`INITIAL_ASTEROIDS`] plus
+/// [`WAVE_ROCK_STEP`] per wave beyond the first, capped at [`WAVE_ROCK_CAP`].
+fn rocks_for_wave(wave: u32) -> usize {
+    let beyond_first = (wave.max(1) - 1) as usize;
+    (INITIAL_ASTEROIDS + WAVE_ROCK_STEP * beyond_first).min(WAVE_ROCK_CAP)
 }
 
 /// How far the score has climbed toward the small-only score, in `0.0..=1.0` — the
@@ -1550,5 +1612,89 @@ mod tests {
             game.lives() < LIVES_START,
             "materialising on a rock is fatal"
         );
+    }
+
+    #[test]
+    fn the_wave_rock_count_grows_and_caps() {
+        assert_eq!(rocks_for_wave(1), INITIAL_ASTEROIDS);
+        assert_eq!(rocks_for_wave(2), 6);
+        assert_eq!(rocks_for_wave(3), 8);
+        assert_eq!(rocks_for_wave(50), WAVE_ROCK_CAP);
+        assert!(
+            (1..200).all(|w| rocks_for_wave(w) <= WAVE_ROCK_CAP),
+            "no wave ever exceeds the cap"
+        );
+    }
+
+    #[test]
+    fn clearing_the_field_brings_a_bigger_wave() {
+        let mut game = empty_game(); // the field starts cleared, on wave 1
+        let mut cleared = false;
+        for _ in 0..(WAVE_DELAY / TIMESTEP) as usize + 2 {
+            cleared |= game.step(Input::default()).wave_cleared;
+        }
+        assert!(cleared, "the cleared field brings a fresh wave");
+        assert_eq!(game.wave(), 2);
+        assert_eq!(game.asteroid_count(), rocks_for_wave(2));
+    }
+
+    #[test]
+    fn the_next_field_waits_for_the_saucer_to_leave() {
+        let mut game = empty_game();
+        plant_saucer(
+            &mut game,
+            SaucerSize::Large,
+            300.0,
+            300.0,
+            0.0,
+            SAUCER_FIRE_INTERVAL,
+        );
+        for _ in 0..(WAVE_DELAY / TIMESTEP) as usize + 5 {
+            game.step(Input::default());
+        }
+        assert_eq!(
+            game.wave(),
+            1,
+            "a lingering saucer holds the next wave back"
+        );
+        assert_eq!(game.asteroid_count(), 0);
+
+        game.saucer = None;
+        game.saucer_bullets.clear();
+        for _ in 0..(WAVE_DELAY / TIMESTEP) as usize + 5 {
+            game.step(Input::default());
+        }
+        assert_eq!(game.wave(), 2, "once it has gone, the wave comes");
+    }
+
+    #[test]
+    fn an_extra_ship_is_earned_at_ten_thousand() {
+        let mut game = empty_game();
+        game.score = 9_900;
+        plant_saucer(
+            &mut game,
+            SaucerSize::Small,
+            300.0,
+            300.0,
+            0.0,
+            SAUCER_FIRE_INTERVAL,
+        );
+        plant_shot(&mut game, 300.0, 300.0);
+
+        let events = game.step(Input::default());
+
+        assert!(events.extra_life);
+        assert_eq!(game.lives(), LIVES_START + 1);
+        assert_eq!(game.score(), 10_900);
+    }
+
+    #[test]
+    fn extra_ships_stack_for_every_boundary_crossed() {
+        // A big score set up directly, then paid out through the real step path.
+        let mut game = empty_game();
+        game.score = 25_000;
+        let events = game.step(Input::default());
+        assert!(events.extra_life);
+        assert_eq!(game.lives(), LIVES_START + 2, "two boundaries, two ships");
     }
 }
