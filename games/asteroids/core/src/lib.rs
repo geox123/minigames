@@ -262,11 +262,13 @@ pub struct Shot {
 }
 
 /// An explosion in progress, for the shell to draw for a few frames where a rock or
-/// the ship was destroyed.
+/// the ship was destroyed. `progress` runs `0.0` (just born) to `1.0` (done), so the
+/// shell can expand and fade it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Blast {
     pub x: f32,
     pub y: f32,
+    pub progress: f32,
 }
 
 /// The saucer crossing the field, as the shell should draw it. `x`/`y` are its
@@ -972,7 +974,11 @@ impl Game {
 
     /// The explosions in progress, as the shell should draw them.
     pub fn blasts(&self) -> impl Iterator<Item = Blast> + '_ {
-        self.blasts.iter().map(|b| Blast { x: b.x, y: b.y })
+        self.blasts.iter().map(|b| Blast {
+            x: b.x,
+            y: b.y,
+            progress: 1.0 - b.timer / BLAST_LIFE,
+        })
     }
 
     /// The saucer crossing the field, if one is out.
