@@ -228,6 +228,12 @@ const ESCALATION_PER_SYSTEM: u32 = 2;
 /// The length of Orbit's finite ladder — felling the boss of this system wins the run.
 const ORBIT_SYSTEMS: u32 = 5;
 
+/// Ascension: how much each tier deepens an Orbit run, folded into the same escalation
+/// maths — steps of enemy escalation, boss health, and the field's opening pull.
+const ESCALATION_PER_TIER: u32 = 2;
+const BOSS_HP_PER_TIER: u32 = 10;
+const GRAVITY_PER_TIER: f32 = 0.12;
+
 /// Which run this is — the mode shapes how the run ends (A8).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
@@ -671,6 +677,9 @@ pub struct Game {
     /// The system (stage) the run is on, from `1`; each felled boss advances it and
     /// deepens the gravity and the fire.
     stage: u32,
+    /// The Ascension tier this run plays at (`0` for a plain run) — it folds into the
+    /// escalation, the boss health and the opening pull.
+    tier: u32,
     /// The boss, present only while one caps the current system.
     boss: Option<BossState>,
     /// Steps until the held stream may loose its next shot.
@@ -711,9 +720,20 @@ pub struct Game {
 
 impl Game {
     /// Starts a run on `seed` in `mode`, flying `loadout`. The same seed and inputs
-    /// always replay the same run. (The mode and loadout are inert until the later
-    /// tickets give them teeth.)
+    /// always replay the same run.
     pub fn new(seed: u64, mode: Mode, loadout: Loadout) -> Self {
+        Self::with(seed, mode, loadout, 0)
+    }
+
+    /// Starts an **Ascension** run at `tier`: an Orbit run whose gravity, fields and
+    /// bosses escalate with the tier, folded into the same maths. Tier 0 is a plain
+    /// Orbit run.
+    pub fn new_ascension(seed: u64, tier: u32, loadout: Loadout) -> Self {
+        Self::with(seed, Mode::Orbit, loadout, tier)
+    }
+
+    /// The shared constructor behind [`Game::new`] and [`Game::new_ascension`].
+    fn with(seed: u64, mode: Mode, loadout: Loadout, tier: u32) -> Self {
         let mut game = Self {
             ship: ShipState {
                 x: CENTER_X,
@@ -726,7 +746,8 @@ impl Game {
             wells: vec![WellState {
                 x: CENTER_X,
                 y: CENTER_Y,
-                strength: 1.0,
+                // The opening pull deepens with the Ascension tier.
+                strength: 1.0 + tier as f32 * GRAVITY_PER_TIER,
             }],
             asteroids: Vec::with_capacity(INITIAL_ROCKS),
             shots: Vec::new(),
@@ -742,6 +763,7 @@ impl Game {
             waves_spawned: 0,
             waves_this_system: 0,
             stage: 1,
+            tier,
             boss: None,
             fire_cooldown: 0,
             ship_alive: true,
@@ -764,7 +786,8 @@ impl Game {
             steps: 0,
             seed,
         };
-        game.spawn_field(INITIAL_ROCKS);
+        // A denser opening field each Ascension tier, on top of the deeper pull.
+        game.spawn_field(INITIAL_ROCKS + tier as usize);
         game
     }
 
@@ -1255,7 +1278,8 @@ impl Game {
     /// heart, with a clean sky (its bullets and any stray fire swept away).
     fn spawn_boss(&mut self) {
         let (x, y) = self.random_ring_point(CENTER_X, CENTER_Y, 220.0, 300.0);
-        let max_hp = BOSS_BASE_HP + (self.stage - 1) * BOSS_HP_PER_SYSTEM;
+        let max_hp =
+            BOSS_BASE_HP + (self.stage - 1) * BOSS_HP_PER_SYSTEM + self.tier * BOSS_HP_PER_TIER;
         self.boss = Some(BossState {
             x,
             y,
@@ -1443,11 +1467,13 @@ impl Game {
     }
 
     /// How far the run has escalated — climbing with each wave *and* each system felled
-    /// (so a boss's fall deepens the fire, not only the gravity), then holding at a cap
-    /// so the pressure plateaus rather than runs away. Folded into one figure, no
-    /// per-stage special-casing.
+    /// (so a boss's fall deepens the fire, not only the gravity), plus a flat lift from
+    /// the Ascension tier, then holding at a cap so the pressure plateaus rather than
+    /// runs away. Folded into one figure, no per-stage special-casing.
     fn escalation(&self) -> u32 {
-        (self.waves_spawned.saturating_sub(1) + (self.stage - 1) * ESCALATION_PER_SYSTEM)
+        (self.waves_spawned.saturating_sub(1)
+            + (self.stage - 1) * ESCALATION_PER_SYSTEM
+            + self.tier * ESCALATION_PER_TIER)
             .min(ESCALATION_CAP)
     }
 
@@ -1805,6 +1831,11 @@ impl Game {
         self.stage
     }
 
+    /// The Ascension tier this run plays at (`0` for a plain run).
+    pub fn tier(&self) -> u32 {
+        self.tier
+    }
+
     /// The explosions in progress, as the shell should draw them.
     pub fn blasts(&self) -> impl Iterator<Item = Blast> + '_ {
         self.blasts.iter().map(|b| Blast {
@@ -1865,10 +1896,10 @@ impl Game {
         self.outcome
     }
 
-    /// Starts the run over from the beginning; the same seed, mode and loadout replay
-    /// it exactly.
+    /// Starts the run over from the beginning; the same seed, mode, loadout and
+    /// Ascension tier replay it exactly.
     pub fn restart(&mut self) {
-        *self = Self::new(self.seed, self.mode, self.loadout);
+        *self = Self::with(self.seed, self.mode, self.loadout, self.tier);
     }
 }
 
@@ -3069,5 +3100,46 @@ mod tests {
         }
         game.step(Input::default());
         assert_eq!(game.rocks_accreted(), 3, "every devoured rock is counted");
+    }
+
+    // Ascension. A tiered run's escalation of the field and bosses, and a tiered win,
+    // fold into the same maths honest play can't cheaply stage — so they are driven
+    // directly through `new_ascension` and the real fell path.
+
+    #[test]
+    fn a_higher_tier_opens_with_stronger_gravity() {
+        let plain = Game::new_ascension(1, 0, Loadout::default());
+        let ascended = Game::new_ascension(1, 2, Loadout::default());
+        assert!(
+            ascended.wells[0].strength > plain.wells[0].strength,
+            "a tier deepens the opening pull"
+        );
+    }
+
+    #[test]
+    fn a_higher_tier_toughens_the_boss() {
+        let mut plain = Game::new_ascension(1, 0, Loadout::default());
+        plain.spawn_boss();
+        let plain_hp = plain.boss().unwrap().max_hp;
+
+        let mut ascended = Game::new_ascension(1, 2, Loadout::default());
+        ascended.spawn_boss();
+        let ascended_hp = ascended.boss().unwrap().max_hp;
+
+        assert!(
+            ascended_hp > plain_hp,
+            "a higher tier's boss has more health"
+        );
+    }
+
+    #[test]
+    fn an_ascension_win_is_a_tiered_win() {
+        let mut game = Game::new_ascension(1, 1, Loadout::default());
+        game.asteroids.clear();
+        let events = fell_boss_at_stage(&mut game, ORBIT_SYSTEMS);
+
+        assert!(events.game_over, "felling the final boss ends the run");
+        assert_eq!(game.outcome(), Some(Outcome::Won));
+        assert_eq!(game.tier(), 1, "the win is recorded at the run's tier");
     }
 }
