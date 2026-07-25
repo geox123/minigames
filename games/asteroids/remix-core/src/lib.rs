@@ -676,6 +676,8 @@ pub struct Game {
     /// steady feed of the well ramps the score.
     feed_streak: u32,
     feed_timer: f32,
+    /// How many rocks the wells have devoured over the whole run — a run-summary stat.
+    rocks_accreted: u32,
     /// The collapse meter (0..=1), whether the ship was skimming a band last step (so
     /// a skim charges once per pass), and whether collapse was held last step (so it
     /// fires on the press).
@@ -736,6 +738,7 @@ impl Game {
             ending: false,
             feed_streak: 0,
             feed_timer: 0.0,
+            rocks_accreted: 0,
             collapse_meter: 0.0,
             skimming: false,
             collapse_was_down: false,
@@ -880,6 +883,7 @@ impl Game {
                 self.feed_timer = FEED_WINDOW;
                 let multiple = 1 + self.feed_streak / FEED_PER_MULTIPLE;
                 self.score += rock.size.accrete_score() * multiple;
+                self.rocks_accreted += 1;
                 events.accreted = true;
                 self.asteroids.swap_remove(i);
             } else {
@@ -1816,6 +1820,11 @@ impl Game {
     /// The accretion feed streak — how many rocks the well has devoured in a row.
     pub fn feed_streak(&self) -> u32 {
         self.feed_streak
+    }
+
+    /// How many rocks the wells have accreted over the whole run — for the run summary.
+    pub fn rocks_accreted(&self) -> u32 {
+        self.rocks_accreted
     }
 
     /// The collapse meter, `0.0..=1.0` — a full meter can be spent on a collapse.
@@ -3037,5 +3046,16 @@ mod tests {
         assert!(!events.game_over, "the day's run is endless too");
         assert_eq!(game.phase(), Phase::Playing);
         assert!(game.outcome().is_none());
+    }
+
+    #[test]
+    fn accreted_rocks_are_tallied_for_the_summary() {
+        let mut game = empty_field(1);
+        assert_eq!(game.rocks_accreted(), 0);
+        for _ in 0..3 {
+            plant_rock(&mut game, AsteroidSize::Large, CENTER_X, CENTER_Y, 0.0);
+        }
+        game.step(Input::default());
+        assert_eq!(game.rocks_accreted(), 3, "every devoured rock is counted");
     }
 }

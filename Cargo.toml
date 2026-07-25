@@ -16,6 +16,7 @@ members = [
     "games/stepfall/shell",
     "games/asteroids/core",
     "games/asteroids/remix-core",
+    "games/asteroids/storage",
     "games/asteroids/shell",
 ]
 

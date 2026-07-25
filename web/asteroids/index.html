@@ -44,8 +44,10 @@
     <a id="back" href="../">&larr; Collection</a>
     <canvas id="glcanvas" tabindex="1"></canvas>
     <script src="../vendor/mq_js_bundle.js"></script>
-    <!-- Asteroids' Faithful keeps no persistent state (its best is a session
-         best), so it needs no storage plugin — just the wasm. -->
+    <!-- Registers the localStorage plugin the WASM uses for ACCRETE's bests (the
+         Maelstrom best and the Daily day+best); the Faithful never calls it. Must
+         load before the wasm so the plugin is wired into it. -->
+    <script src="../vendor/asteroids-storage.js"></script>
     <script>
       // Hide the back-link the moment the player starts interacting.
       const back = document.getElementById("back");

@@ -9,6 +9,9 @@ use shell_kit::timestep::Accumulator;
 
 use crate::{Audio, read_input, read_remix_input, render};
 
+/// ACCRETE's three modes, top to bottom on its picker.
+pub const REMIX_MODES: [RunMode; 3] = [RunMode::Orbit, RunMode::Maelstrom, RunMode::Daily];
+
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make the
 /// game try to catch up by simulating seconds at once.
@@ -44,11 +47,21 @@ enum Screen {
         beat_timer: f32,
         beat_high: bool,
     },
+    /// ACCRETE's mode picker — Orbit, Maelstrom or Daily.
+    RemixSelect { highlight: RunMode },
     /// An ACCRETE run in progress — the gravity Remix. Boxed like the Faithful's game.
     RemixMatch {
         game: Box<RemixGame>,
         accumulator: Accumulator,
         paused: bool,
+        /// Which mode this run is.
+        mode: RunMode,
+        /// The calendar day a Daily run belongs to (its saved key; 0 otherwise).
+        day: u32,
+        /// The best score to beat and show for this mode (0 for Orbit).
+        best: u32,
+        /// Whether this run's result has been saved yet (saved once, on run-over).
+        saved: bool,
     },
 }
 
@@ -98,10 +111,22 @@ impl App {
                 if committed() {
                     match *highlight {
                         Mode::Faithful => self.start_match(),
-                        Mode::Remix => self.start_remix_match(),
+                        // The Remix opens its own mode picker first.
+                        Mode::Remix => self.open_remix_menu(),
                     }
                 } else {
                     render::mode_select(*highlight);
+                }
+            }
+            Screen::RemixSelect { highlight } => {
+                if is_key_pressed(KeyCode::Escape) {
+                    self.return_to_mode_select();
+                    return;
+                }
+                if let Some(mode) = remix_menu_input(highlight) {
+                    self.start_remix_match(mode);
+                } else {
+                    render::remix_select(*highlight);
                 }
             }
             Screen::Match {
@@ -181,31 +206,59 @@ impl App {
                 game,
                 accumulator,
                 paused,
+                mode,
+                day,
+                best,
+                saved,
             } => {
                 if is_key_pressed(KeyCode::Escape) {
                     self.return_to_mode_select();
                     return;
                 }
-                if is_key_pressed(KeyCode::P) {
-                    *paused = !*paused;
-                }
+                // A fresh run of the same mode, from the summary or mid-run.
                 if is_key_pressed(KeyCode::R) {
-                    game.restart();
-                    *paused = false;
+                    let mode = *mode;
+                    self.start_remix_match(mode);
+                    return;
                 }
 
-                if !*paused {
-                    let input = read_remix_input();
-                    for _ in 0..accumulator.steps(get_frame_time()) {
-                        game.step(input);
+                let over = game.phase() == RemixPhase::Over;
+                if !over {
+                    if is_key_pressed(KeyCode::P) {
+                        *paused = !*paused;
                     }
-                } else {
-                    accumulator.reset();
+                    if !*paused {
+                        let input = read_remix_input();
+                        for _ in 0..accumulator.steps(get_frame_time()) {
+                            game.step(input);
+                        }
+                    } else {
+                        accumulator.reset();
+                    }
                 }
 
-                render::draw_remix(game);
-                if game.phase() == RemixPhase::Over {
-                    render::remix_game_over(game);
+                // On run-over, save the mode's best once, only when beaten. The guard
+                // lives inside each arm so Orbit — which persists nothing — never even
+                // touches `*best` (its best stays 0, so no BEST line shows for it).
+                if over && !*saved {
+                    *saved = true;
+                    let score = game.score();
+                    match mode {
+                        RunMode::Maelstrom if score > *best => {
+                            *best = score;
+                            asteroids_storage::set_maelstrom_best(score);
+                        }
+                        RunMode::Daily if score > *best => {
+                            *best = score;
+                            asteroids_storage::set_daily_best(*day, score);
+                        }
+                        _ => {}
+                    }
+                }
+
+                render::draw_remix(game, *best);
+                if over {
+                    render::remix_summary(game, *best);
                 } else if *paused {
                     render::paused_overlay();
                 }
@@ -216,6 +269,13 @@ impl App {
     fn return_to_mode_select(&mut self) {
         self.screen = Screen::ModeSelect {
             highlight: Mode::Faithful,
+        };
+    }
+
+    /// Opens ACCRETE's mode picker on its first mode.
+    fn open_remix_menu(&mut self) {
+        self.screen = Screen::RemixSelect {
+            highlight: RunMode::Orbit,
         };
     }
 
@@ -239,17 +299,27 @@ impl App {
         };
     }
 
-    /// Starts an ACCRETE run — the gravity Remix — in its opening mode.
-    fn start_remix_match(&mut self) {
-        let game = Box::new(RemixGame::new(
-            self.take_seed(),
-            RunMode::Orbit,
-            Loadout::default(),
-        ));
+    /// Starts an ACCRETE run in `mode`. Orbit and Maelstrom take a fresh seed from the
+    /// clock; a Daily takes the day's shared seed so everyone plays the same run, and
+    /// both endless modes draw the best to beat from the save.
+    fn start_remix_match(&mut self, mode: RunMode) {
+        let (seed, day, best) = match mode {
+            RunMode::Orbit => (self.take_seed(), 0, 0),
+            RunMode::Maelstrom => (self.take_seed(), 0, asteroids_storage::maelstrom_best()),
+            RunMode::Daily => {
+                let day = today();
+                (u64::from(day), day, asteroids_storage::daily_best(day))
+            }
+        };
+        let game = Box::new(RemixGame::new(seed, mode, Loadout::default()));
         self.screen = Screen::RemixMatch {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
             paused: false,
+            mode,
+            day,
+            best,
+            saved: false,
         };
     }
 }
@@ -263,6 +333,25 @@ fn heartbeat_interval(rocks: usize) -> f32 {
 /// Whether the player committed to the highlighted option this frame.
 fn committed() -> bool {
     is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
+}
+
+/// Reads ACCRETE's mode picker, cycling the highlight through its modes. Returns the
+/// chosen mode once the player commits to it.
+fn remix_menu_input(highlight: &mut RunMode) -> Option<RunMode> {
+    let i = REMIX_MODES.iter().position(|m| m == highlight).unwrap_or(0);
+    if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
+        *highlight = REMIX_MODES[(i + 1) % REMIX_MODES.len()];
+    } else if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
+        *highlight = REMIX_MODES[(i + REMIX_MODES.len() - 1) % REMIX_MODES.len()];
+    }
+    committed().then_some(*highlight)
+}
+
+/// Today's calendar day, as whole days since the Unix epoch. The core stays clock-free;
+/// only the shell reads the clock, so a Daily's seed is shared by everyone playing on
+/// the same day.
+fn today() -> u32 {
+    (miniquad::date::now() / 86_400.0) as u32
 }
 
 /// Whether the player nudged the menu highlight this frame.
