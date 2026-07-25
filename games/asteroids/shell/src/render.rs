@@ -625,10 +625,33 @@ fn draw_remix_rock(rock: RemixAsteroid) {
     stroke_polygon(rock.x, rock.y, rock.size.radius(), 10, WHITE);
 }
 
-/// A gravity well: a bright star core ringed by a faint halo.
+/// A gravity well: a bright consuming core inside a warping accretion glow, with a
+/// faint lensing shimmer rippling out across the field near it. Animated by the wall
+/// clock — pure presentation, so it may pulse without touching the deterministic core.
 fn draw_well(well: Well) {
     let r = asteroids_remix_core::WELL_CORE_RADIUS;
-    draw_circle(well.x, well.y, r * 2.4, dim(WELL_COLOR));
+    let t = get_time() as f32;
+
+    // The accretion glow: two soft haloes that pulse, warping the light around the core.
+    let pulse = 1.0 + 0.12 * (t * 3.0).sin();
+    draw_circle(well.x, well.y, r * 2.4 * pulse, dim(WELL_COLOR));
+    draw_circle(well.x, well.y, r * 1.5 * pulse, dim(WELL_COLOR));
+
+    // A subtle lensing shimmer: faint rings rippling outward, fading as they widen.
+    for k in 0..2 {
+        let phase = (t * 0.8 + k as f32 * 0.5).fract();
+        let lr = r * (2.0 + phase * 2.6);
+        let a = 0.12 * (1.0 - phase);
+        draw_circle_lines(
+            well.x,
+            well.y,
+            lr,
+            1.0,
+            Color::new(WELL_COLOR.r, WELL_COLOR.g, WELL_COLOR.b, a),
+        );
+    }
+
+    // The consuming core, bright.
     draw_circle_lines(well.x, well.y, r, STROKE, WELL_COLOR);
     draw_circle(well.x, well.y, 3.5, WELL_COLOR);
 }
