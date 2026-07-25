@@ -1,12 +1,12 @@
-//! Drawing the Asteroids field: bright thin vector outlines on black. Everything
-//! here is macroquad glue; the shapes are authored in code, none traced from the
-//! original ([ADR 0003](../../../docs/adr/0003-code-drawn-visuals.md)). The
-//! irregular rock silhouettes and the era's glow arrive with the look ticket; this
-//! draws the readable placeholders that make the game playable.
+//! Drawing the Asteroids field: bright vector outlines on black with a soft glow —
+//! the vector cabinet's look. Everything here is macroquad glue; the shapes are
+//! authored in code, none traced from the original
+//! ([ADR 0003](../../../docs/adr/0003-code-drawn-visuals.md)). Each rock size has
+//! its own irregular silhouette, and explosions scatter fading line-shards.
 
 use asteroids_core::{
-    Asteroid, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Saucer, SaucerBullet, Ship,
-    Shot,
+    Asteroid, AsteroidSize, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Saucer,
+    SaucerBullet, Ship, Shot,
 };
 use macroquad::prelude::*;
 use shell_kit::font;
@@ -25,6 +25,35 @@ const STROKE: f32 = 2.0;
 /// white so the threat reads at a glance.
 const SAUCER_COLOR: Color = color_u8!(140, 220, 255, 255);
 const SAUCER_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
+
+/// One irregular rock silhouette per size: radius multipliers at evenly spaced
+/// angles, so each size reads as its own lumpy polygon. Authored in code, nothing
+/// traced from the original (ADR 0002 / 0003).
+const LARGE_ROCK: [f32; 12] = [
+    1.0, 0.82, 1.06, 0.72, 0.98, 0.88, 1.08, 0.78, 1.0, 0.9, 1.05, 0.8,
+];
+const MEDIUM_ROCK: [f32; 11] = [
+    0.95, 1.08, 0.75, 1.0, 0.85, 1.05, 0.7, 0.98, 0.9, 1.06, 0.82,
+];
+const SMALL_ROCK: [f32; 9] = [1.0, 0.78, 1.08, 0.85, 0.95, 0.72, 1.05, 0.9, 0.82];
+
+/// Draws a vector line with a soft glow — a wide, dim underlay beneath the crisp
+/// bright line, evoking the vector cabinet's bloom.
+fn stroke(x1: f32, y1: f32, x2: f32, y2: f32, color: Color) {
+    draw_line(x1, y1, x2, y2, STROKE * 2.6, dim(color));
+    draw_line(x1, y1, x2, y2, STROKE, color);
+}
+
+/// Draws a glowing blip — a small bright dot over a dim halo.
+fn blip(x: f32, y: f32, r: f32, color: Color) {
+    draw_circle(x, y, r * 2.2, dim(color));
+    draw_circle(x, y, r, color);
+}
+
+/// The same colour at a low alpha, for the glow underlays.
+fn dim(color: Color) -> Color {
+    Color::new(color.r, color.g, color.b, 0.22)
+}
 
 /// Draws a live game: the rocks, shots and explosions, the ship (while it is on the
 /// field), and the HUD (with the session `best`).
@@ -57,9 +86,9 @@ fn ship_visible(game: &Game) -> bool {
     !game.ship_invulnerable() || ((get_time() * 10.0) as i64).rem_euclid(2) == 0
 }
 
-/// A shot: a small bright blip.
+/// A shot: a small glowing blip.
 fn draw_shot(shot: Shot) {
-    draw_circle(shot.x, shot.y, 2.5, WHITE);
+    blip(shot.x, shot.y, 2.5, WHITE);
 }
 
 /// The saucer: a vector hull, wrapped vertically (it leaves at the horizontal edges
@@ -87,45 +116,36 @@ fn draw_saucer_hull(cx: f32, cy: f32, r: f32) {
     for i in 0..hull.len() {
         let (ax, ay) = hull[i];
         let (bx, by) = hull[(i + 1) % hull.len()];
-        draw_line(cx + ax, cy + ay, cx + bx, cy + by, STROKE, SAUCER_COLOR);
+        stroke(cx + ax, cy + ay, cx + bx, cy + by, SAUCER_COLOR);
     }
-    draw_line(
-        cx - r * 0.25,
-        cy - r * 0.4,
-        cx,
-        cy - r * 0.75,
-        STROKE,
-        SAUCER_COLOR,
-    );
-    draw_line(
-        cx,
-        cy - r * 0.75,
-        cx + r * 0.25,
-        cy - r * 0.4,
-        STROKE,
-        SAUCER_COLOR,
-    );
+    stroke(cx - r * 0.25, cy - r * 0.4, cx, cy - r * 0.75, SAUCER_COLOR);
+    stroke(cx, cy - r * 0.75, cx + r * 0.25, cy - r * 0.4, SAUCER_COLOR);
 }
 
-/// A saucer bullet: a small warm blip, set apart from the player's white fire.
+/// A saucer bullet: a small warm glowing blip, set apart from the player's white
+/// fire.
 fn draw_saucer_bullet(bullet: SaucerBullet) {
-    draw_circle(bullet.x, bullet.y, 2.5, SAUCER_FIRE_COLOR);
+    blip(bullet.x, bullet.y, 2.5, SAUCER_FIRE_COLOR);
 }
 
-/// An explosion: a burst of line-shards where a rock or the ship broke. (The look
-/// ticket animates these; this is the readable placeholder.)
+/// An explosion: a burst of line-shards flying outward from where a rock or the ship
+/// broke, expanding and fading over the blast's life.
 fn draw_blast(blast: Blast) {
     const SHARDS: usize = 8;
-    let (inner, outer) = (3.0, 12.0);
+    let p = blast.progress;
+    let inner = 3.0 + 10.0 * p;
+    let outer = 6.0 + 26.0 * p;
+    let color = Color::new(1.0, 1.0, 1.0, (1.0 - p).clamp(0.0, 1.0));
     for i in 0..SHARDS {
-        let a = TAU * i as f32 / SHARDS as f32;
+        // A slight turn as they fly, so the burst reads as motion, not a static star.
+        let a = TAU * i as f32 / SHARDS as f32 + p * 0.6;
         draw_line(
             blast.x + a.cos() * inner,
             blast.y + a.sin() * inner,
             blast.x + a.cos() * outer,
             blast.y + a.sin() * outer,
             STROKE,
-            WHITE,
+            color,
         );
     }
 }
@@ -157,16 +177,9 @@ fn draw_hud(game: &Game, best: u32) {
 /// A small upward-pointing ship, for the lives readout.
 fn draw_ship_icon(x: f32, y: f32) {
     let s = 8.0;
-    draw_line(x, y - s, x - s * 0.7, y + s * 0.7, STROKE, WHITE);
-    draw_line(x, y - s, x + s * 0.7, y + s * 0.7, STROKE, WHITE);
-    draw_line(
-        x - s * 0.7,
-        y + s * 0.7,
-        x + s * 0.7,
-        y + s * 0.7,
-        STROKE,
-        WHITE,
-    );
+    stroke(x, y - s, x - s * 0.7, y + s * 0.7, WHITE);
+    stroke(x, y - s, x + s * 0.7, y + s * 0.7, WHITE);
+    stroke(x - s * 0.7, y + s * 0.7, x + s * 0.7, y + s * 0.7, WHITE);
 }
 
 /// Draws the game-over banner over the final field, with the run's score and the
@@ -225,30 +238,9 @@ fn draw_ship(ship: Ship) {
     );
 
     draw_wrapped(ship.x, ship.y, SHIP_RADIUS * 1.3, |ox, oy| {
-        draw_line(
-            nose.x + ox,
-            nose.y + oy,
-            left.x + ox,
-            left.y + oy,
-            STROKE,
-            WHITE,
-        );
-        draw_line(
-            nose.x + ox,
-            nose.y + oy,
-            right.x + ox,
-            right.y + oy,
-            STROKE,
-            WHITE,
-        );
-        draw_line(
-            left.x + ox,
-            left.y + oy,
-            right.x + ox,
-            right.y + oy,
-            STROKE,
-            WHITE,
-        );
+        stroke(nose.x + ox, nose.y + oy, left.x + ox, left.y + oy, WHITE);
+        stroke(nose.x + ox, nose.y + oy, right.x + ox, right.y + oy, WHITE);
+        stroke(left.x + ox, left.y + oy, right.x + ox, right.y + oy, WHITE);
     });
 
     // A thrust flame that blinks on and off, like the original's.
@@ -266,32 +258,42 @@ fn draw_ship(ship: Ship) {
             ship.y - fy * SHIP_RADIUS * 1.7,
         );
         draw_wrapped(ship.x, ship.y, SHIP_RADIUS * 1.7, |ox, oy| {
-            draw_line(fl.x + ox, fl.y + oy, tip.x + ox, tip.y + oy, STROKE, ORANGE);
-            draw_line(fr.x + ox, fr.y + oy, tip.x + ox, tip.y + oy, STROKE, ORANGE);
+            stroke(fl.x + ox, fl.y + oy, tip.x + ox, tip.y + oy, ORANGE);
+            stroke(fr.x + ox, fr.y + oy, tip.x + ox, tip.y + oy, ORANGE);
         });
     }
 }
 
-/// A rock: a closed vector polygon at its radius, wrapped across the edges.
+/// A rock: its size's irregular closed silhouette at its radius, glowing, wrapped
+/// across the edges.
 fn draw_asteroid(rock: Asteroid) {
-    const SIDES: usize = 10;
     let r = rock.size.radius();
+    let shape = rock_shape(rock.size);
+    let n = shape.len();
     draw_wrapped(rock.x, rock.y, r, |ox, oy| {
         let cx = rock.x + ox;
         let cy = rock.y + oy;
-        for i in 0..SIDES {
-            let a0 = TAU * i as f32 / SIDES as f32;
-            let a1 = TAU * (i + 1) as f32 / SIDES as f32;
-            draw_line(
-                cx + a0.cos() * r,
-                cy + a0.sin() * r,
-                cx + a1.cos() * r,
-                cy + a1.sin() * r,
-                STROKE,
-                WHITE,
-            );
+        for i in 0..n {
+            let (ax, ay) = rock_point(cx, cy, r, shape, i);
+            let (bx, by) = rock_point(cx, cy, r, shape, (i + 1) % n);
+            stroke(ax, ay, bx, by, WHITE);
         }
     });
+}
+
+/// The `i`th vertex of a rock `shape` of radius `r` centred at `(cx, cy)`.
+fn rock_point(cx: f32, cy: f32, r: f32, shape: &[f32], i: usize) -> (f32, f32) {
+    let a = TAU * i as f32 / shape.len() as f32;
+    (cx + a.cos() * r * shape[i], cy + a.sin() * r * shape[i])
+}
+
+/// The silhouette for a rock of `size`.
+fn rock_shape(size: AsteroidSize) -> &'static [f32] {
+    match size {
+        AsteroidSize::Large => &LARGE_ROCK,
+        AsteroidSize::Medium => &MEDIUM_ROCK,
+        AsteroidSize::Small => &SMALL_ROCK,
+    }
 }
 
 /// Calls `draw` at the object's real position, and again shifted by a field
