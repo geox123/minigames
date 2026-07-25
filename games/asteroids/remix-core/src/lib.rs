@@ -32,6 +32,8 @@
 
 use core::f32::consts::TAU;
 
+pub mod meta;
+
 /// Width of the toroidal play field, in logical units — shared with the Faithful.
 pub const LOGICAL_WIDTH: f32 = 1024.0;
 /// Height of the toroidal play field, in logical units — shared with the Faithful.
@@ -260,11 +262,20 @@ pub enum Outcome {
     Lost,
 }
 
-/// What the run was built with — the ship options earned in the meta. Empty and
-/// inert until the meta ticket fills it in; it exists now so `new` keeps a stable
-/// shape (the core is always handed a loadout, and never knows where it came from).
+/// What the run was built with — the ship options earned in the meta ([`meta`]), which
+/// [`Game::new`] seeds the ship from. Its default is the base ship (kitless): the core
+/// only ever reads these fields, and never knows they came from "unlocks".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Loadout {}
+pub struct Loadout {
+    /// The weapon tier the ship starts on (`0` base, up to [`WEAPON_MAX`]).
+    pub start_weapon: u32,
+    /// Whether the ship starts with a shield up.
+    pub shield: bool,
+    /// Extra ships beyond the base [`LIVES_START`].
+    pub bonus_lives: u32,
+    /// Whether the ship starts with the collapse meter full.
+    pub start_charge: bool,
+}
 
 /// What the player is doing this step. `fire` and `collapse` are wired now so the
 /// input shape stays stable across tickets, but the core ignores them until the
@@ -723,9 +734,10 @@ impl Game {
             enemies: Vec::new(),
             enemy_bullets: Vec::new(),
             pickups: Vec::new(),
-            // The run starts kitless — the loadout is inert until Phase B.
-            weapon_level: 0,
-            shield: false,
+            // The ship is seeded from the loadout the meta built — the base ship when
+            // it is default (kitless), stepped up by whatever the player has earned.
+            weapon_level: loadout.start_weapon.min(WEAPON_MAX),
+            shield: loadout.shield,
             wave_timer: ENEMY_WAVE_GAP,
             waves_spawned: 0,
             waves_this_system: 0,
@@ -739,10 +751,10 @@ impl Game {
             feed_streak: 0,
             feed_timer: 0.0,
             rocks_accreted: 0,
-            collapse_meter: 0.0,
+            collapse_meter: if loadout.start_charge { 1.0 } else { 0.0 },
             skimming: false,
             collapse_was_down: false,
-            lives: LIVES_START,
+            lives: LIVES_START + loadout.bonus_lives,
             mode,
             loadout,
             phase: Phase::Playing,

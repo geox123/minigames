@@ -3,7 +3,9 @@
 //! pure core, which is why it lives in the shell, not `asteroids_core`.
 
 use asteroids_core::{Game, Phase, TIMESTEP};
-use asteroids_remix_core::{Game as RemixGame, Loadout, Mode as RunMode, Phase as RemixPhase};
+use asteroids_remix_core::{
+    Game as RemixGame, Mode as RunMode, Outcome as RunOutcome, Phase as RemixPhase, meta,
+};
 use macroquad::prelude::*;
 use shell_kit::timestep::Accumulator;
 
@@ -67,6 +69,11 @@ enum Screen {
         fx: Fx,
         /// The gravity-hum depth currently sounding, so it re-pitches only on a change.
         hum_level: Option<usize>,
+        /// The options unlocked so far — this run's loadout was built from it, and its
+        /// outcome is recorded back into it.
+        unlocked: meta::Unlocked,
+        /// Options newly unlocked by this run, for the summary to call out.
+        earned: Vec<meta::Content>,
     },
 }
 
@@ -228,6 +235,8 @@ impl App {
                 saved,
                 fx,
                 hum_level,
+                unlocked,
+                earned,
             } => {
                 if is_key_pressed(KeyCode::Escape) {
                     self.audio.set_gravity_hum(None);
@@ -299,13 +308,27 @@ impl App {
                         }
                         _ => {}
                     }
+
+                    // Record the run into the unlock set; save and call out anything
+                    // newly earned. The core never sees this — it only flew the loadout.
+                    let outcome = meta::Outcome {
+                        won: game.outcome() == Some(RunOutcome::Won),
+                        systems_cleared: game.stage().saturating_sub(1),
+                        score,
+                        tier: 0,
+                    };
+                    let newly = unlocked.record(outcome);
+                    if !newly.is_empty() {
+                        asteroids_storage::set_unlocked_bits(unlocked.bits());
+                        *earned = newly;
+                    }
                 }
 
                 self.blit_shake = Vec2::from(fx.shake_offset());
                 render::draw_remix(game, *best);
                 fx.draw();
                 if over {
-                    render::remix_summary(game, *best);
+                    render::remix_summary(game, *best, earned);
                 } else if *paused {
                     render::paused_overlay();
                 }
@@ -358,7 +381,10 @@ impl App {
                 (u64::from(day), day, asteroids_storage::daily_best(day))
             }
         };
-        let game = Box::new(RemixGame::new(seed, mode, Loadout::default()));
+        // The run flies whatever the player has earned — the core only ever sees the
+        // loadout the meta builds; it never knows the word "unlock".
+        let unlocked = meta::Unlocked::from_bits(asteroids_storage::unlocked_bits());
+        let game = Box::new(RemixGame::new(seed, mode, unlocked.loadout()));
         self.screen = Screen::RemixMatch {
             game,
             accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
@@ -369,6 +395,8 @@ impl App {
             saved: false,
             fx: Fx::default(),
             hum_level: None,
+            unlocked,
+            earned: Vec::new(),
         };
     }
 }
