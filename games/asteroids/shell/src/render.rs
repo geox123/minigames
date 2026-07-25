@@ -8,7 +8,10 @@ use asteroids_core::{
     Asteroid, AsteroidSize, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Saucer,
     SaucerBullet, Ship, Shot,
 };
-use asteroids_remix_core::{Asteroid as RemixAsteroid, Game as RemixGame, Ship as RemixShip, Well};
+use asteroids_remix_core::{
+    Asteroid as RemixAsteroid, Enemy as RemixEnemy, EnemyBullet as RemixEnemyBullet, EnemyKind,
+    Game as RemixGame, Ship as RemixShip, Well,
+};
 use macroquad::prelude::*;
 use shell_kit::font;
 use std::f32::consts::TAU;
@@ -29,6 +32,11 @@ const SAUCER_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
 
 /// ACCRETE's gravity well — a warm star-glow.
 const WELL_COLOR: Color = color_u8!(255, 220, 130, 255);
+
+/// ACCRETE's enemy craft, and the warm colour of their fire — a hostile pink set
+/// against the ship's white and the well's gold so a threat reads at a glance.
+const ENEMY_COLOR: Color = color_u8!(255, 100, 150, 255);
+const ENEMY_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
 
 /// One irregular rock silhouette per size: radius multipliers at evenly spaced
 /// angles, so each size reads as its own lumpy polygon. Authored in code, nothing
@@ -57,6 +65,21 @@ fn blip(x: f32, y: f32, r: f32, color: Color) {
 /// The same colour at a low alpha, for the glow underlays.
 fn dim(color: Color) -> Color {
     Color::new(color.r, color.g, color.b, 0.22)
+}
+
+/// Strokes a regular `sides`-gon outline of radius `r` centred at `(cx, cy)`.
+fn stroke_polygon(cx: f32, cy: f32, r: f32, sides: usize, color: Color) {
+    for i in 0..sides {
+        let a0 = TAU * i as f32 / sides as f32;
+        let a1 = TAU * (i + 1) as f32 / sides as f32;
+        stroke(
+            cx + a0.cos() * r,
+            cy + a0.sin() * r,
+            cx + a1.cos() * r,
+            cy + a1.sin() * r,
+            color,
+        );
+    }
 }
 
 /// Draws a live game: the rocks, shots and explosions, the ship (while it is on the
@@ -398,9 +421,9 @@ pub fn paused_overlay() {
     );
 }
 
-/// Draws a live ACCRETE run: the gravity wells, the rocks orbiting them, the shots,
-/// and the ship — in neon. (Enemies, the accretion glow and the lensing arrive with
-/// the later tickets.)
+/// Draws a live ACCRETE run: the gravity wells, the rocks orbiting them, the enemy
+/// craft and their fire, the shots, and the ship — in neon. (The accretion glow and
+/// the lensing arrive with the look ticket.)
 pub fn draw_remix(game: &RemixGame) {
     clear_background(BLACK);
     for well in game.wells() {
@@ -408,6 +431,12 @@ pub fn draw_remix(game: &RemixGame) {
     }
     for rock in game.asteroids() {
         draw_remix_rock(rock);
+    }
+    for enemy in game.enemies() {
+        draw_remix_enemy(enemy);
+    }
+    for bullet in game.enemy_bullets() {
+        draw_remix_enemy_bullet(bullet);
     }
     for shot in game.shots() {
         blip(shot.x, shot.y, 2.5, WHITE);
@@ -491,19 +520,7 @@ pub fn remix_game_over(game: &RemixGame) {
 /// A rock on the gravity field: a glowing polygon at its radius. (The look ticket
 /// gives it the Faithful's authored silhouette.)
 fn draw_remix_rock(rock: RemixAsteroid) {
-    const SIDES: usize = 10;
-    let r = rock.size.radius();
-    for i in 0..SIDES {
-        let a0 = TAU * i as f32 / SIDES as f32;
-        let a1 = TAU * (i + 1) as f32 / SIDES as f32;
-        stroke(
-            rock.x + a0.cos() * r,
-            rock.y + a0.sin() * r,
-            rock.x + a1.cos() * r,
-            rock.y + a1.sin() * r,
-            WHITE,
-        );
-    }
+    stroke_polygon(rock.x, rock.y, rock.size.radius(), 10, WHITE);
 }
 
 /// A gravity well: a bright star core ringed by a faint halo.
@@ -523,4 +540,69 @@ fn draw_remix_ship(ship: RemixShip) {
         ship.thrusting,
         asteroids_remix_core::SHIP_RADIUS,
     );
+}
+
+/// An enemy craft: a distinct neon silhouette per kind, wrapped across the field
+/// edges. Each kind reads at a glance — a hexagonal Orbiter, a diving dart, a spiked
+/// Mine, a pronged Shepherd.
+fn draw_remix_enemy(enemy: RemixEnemy) {
+    let r = asteroids_remix_core::ENEMY_RADIUS;
+    draw_wrapped(enemy.x, enemy.y, r * 1.4, |ox, oy| {
+        let (cx, cy) = (enemy.x + ox, enemy.y + oy);
+        match enemy.kind {
+            EnemyKind::Orbiter => draw_enemy_polygon(cx, cy, r, 6),
+            EnemyKind::Diver => draw_enemy_diver(cx, cy, r),
+            EnemyKind::Mine => draw_enemy_mine(cx, cy, r),
+            EnemyKind::Shepherd => draw_enemy_shepherd(cx, cy, r),
+        }
+    });
+}
+
+/// A regular `sides`-gon outline at radius `r`, with a bright core — the Orbiter.
+fn draw_enemy_polygon(cx: f32, cy: f32, r: f32, sides: usize) {
+    stroke_polygon(cx, cy, r, sides, ENEMY_COLOR);
+    blip(cx, cy, 2.5, ENEMY_COLOR);
+}
+
+/// A downward dart — the Diver, caught mid-fall.
+fn draw_enemy_diver(cx: f32, cy: f32, r: f32) {
+    let nose = (cx, cy + r);
+    let left = (cx - r * 0.8, cy - r * 0.7);
+    let right = (cx + r * 0.8, cy - r * 0.7);
+    stroke(nose.0, nose.1, left.0, left.1, ENEMY_COLOR);
+    stroke(nose.0, nose.1, right.0, right.1, ENEMY_COLOR);
+    stroke(left.0, left.1, right.0, right.1, ENEMY_COLOR);
+}
+
+/// A spiked circle — the Mine, a naval hazard drifting in the pull.
+fn draw_enemy_mine(cx: f32, cy: f32, r: f32) {
+    draw_circle_lines(cx, cy, r * 0.6, STROKE, ENEMY_COLOR);
+    for i in 0..8 {
+        let a = TAU * i as f32 / 8.0;
+        stroke(
+            cx + a.cos() * r * 0.6,
+            cy + a.sin() * r * 0.6,
+            cx + a.cos() * r * 1.15,
+            cy + a.sin() * r * 1.15,
+            ENEMY_COLOR,
+        );
+    }
+    blip(cx, cy, 2.0, ENEMY_COLOR);
+}
+
+/// A diamond with two forward-reaching prongs — the Shepherd, its crook out to herd.
+fn draw_enemy_shepherd(cx: f32, cy: f32, r: f32) {
+    let pts = [(0.0, -r), (r * 0.8, 0.0), (0.0, r), (-r * 0.8, 0.0)];
+    for i in 0..pts.len() {
+        let (ax, ay) = pts[i];
+        let (bx, by) = pts[(i + 1) % pts.len()];
+        stroke(cx + ax, cy + ay, cx + bx, cy + by, ENEMY_COLOR);
+    }
+    stroke(cx - r * 0.8, cy, cx - r * 1.3, cy - r * 0.4, ENEMY_COLOR);
+    stroke(cx - r * 0.8, cy, cx - r * 1.3, cy + r * 0.4, ENEMY_COLOR);
+}
+
+/// An enemy shot: a small warm blip, set apart from the player's white fire.
+fn draw_remix_enemy_bullet(bullet: RemixEnemyBullet) {
+    blip(bullet.x, bullet.y, 2.5, ENEMY_FIRE_COLOR);
 }
