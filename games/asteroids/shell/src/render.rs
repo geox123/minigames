@@ -529,15 +529,21 @@ fn draw_collapse_meter(meter: f32) {
     }
 }
 
-/// Draws ACCRETE's run-over banner. (The victory summary arrives with the modes and
-/// persistence tickets.)
+/// Draws ACCRETE's run-over banner — VICTORY when the finite Orbit ladder is beaten,
+/// RUN OVER otherwise. (The fuller run summary arrives with the persistence ticket.)
 pub fn remix_game_over(game: &RemixGame) {
+    let won = game.outcome() == Some(asteroids_remix_core::Outcome::Won);
+    let (banner, colour) = if won {
+        ("VICTORY", WELL_COLOR)
+    } else {
+        ("RUN OVER", WHITE)
+    };
     font::draw_centred(
         LOGICAL_WIDTH,
-        "RUN OVER",
+        banner,
         LOGICAL_HEIGHT / 2.0 - 44.0,
         TITLE_SCALE,
-        WHITE,
+        colour,
     );
     font::draw_centred(
         LOGICAL_WIDTH,

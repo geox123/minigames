@@ -223,17 +223,41 @@ const BOSS_RING_TWIST: f32 = 0.13;
 const GRAVITY_PER_SYSTEM: f32 = 0.15;
 const ESCALATION_PER_SYSTEM: u32 = 2;
 
-/// Which run this is. Inert for now — every mode plays the same until the modes
-/// ticket shapes their ends.
+/// The length of Orbit's finite ladder — felling the boss of this system wins the run.
+const ORBIT_SYSTEMS: u32 = 5;
+
+/// Which run this is — the mode shapes how the run ends (A8).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
-    /// A finite, winnable ladder of systems.
+    /// A finite, winnable ladder of [`ORBIT_SYSTEMS`] systems; felling the final boss
+    /// wins the run.
     #[default]
     Orbit,
-    /// Endless, the well tightening and the field flooding, scored for survival.
+    /// Endless, the well tightening and the field flooding, scored for survival — each
+    /// boss just deepens the run.
     Maelstrom,
-    /// Endless, seeded by the calendar day.
+    /// Endless like Maelstrom, and — once the shell offers the modes (A9) — seeded by
+    /// the calendar day so everyone faces the same run. The core only ever takes the
+    /// seed it is handed; which seed a Daily uses is the shell's to choose.
     Daily,
+}
+
+impl Mode {
+    /// Whether the mode ends in a win — only Orbit, the finite ladder. Maelstrom and
+    /// Daily run until the last life.
+    fn is_finite(self) -> bool {
+        matches!(self, Mode::Orbit)
+    }
+}
+
+/// How a finished run resolved. `None` from [`Game::outcome`] while it is still being
+/// played.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The finite ladder was beaten — the final boss fell.
+    Won,
+    /// The last life was spent.
+    Lost,
 }
 
 /// What the run was built with — the ship options earned in the meta. Empty and
@@ -664,6 +688,8 @@ pub struct Game {
     /// replays the very same run once the meta ticket gives it teeth.
     loadout: Loadout,
     phase: Phase,
+    /// How the run resolved, once it is over — `None` while it is still being played.
+    outcome: Option<Outcome>,
     score: u32,
     rng: Rng,
     steps: u64,
@@ -717,6 +743,7 @@ impl Game {
             mode,
             loadout,
             phase: Phase::Playing,
+            outcome: None,
             score: 0,
             rng: Rng::new(seed),
             steps: 0,
@@ -809,6 +836,7 @@ impl Game {
         }
         if self.ending {
             self.phase = Phase::Over;
+            self.outcome = Some(Outcome::Lost);
             events.game_over = true;
             return;
         }
@@ -1343,9 +1371,10 @@ impl Game {
         self.fell_boss_if_dead(events);
     }
 
-    /// Fells a boss whose health has run out: its rival well leaves the field, the
-    /// system advances — deepening the field's own pull and, through the escalation, the
-    /// enemies' fire — and the waves resume after a beat.
+    /// Fells a boss whose health has run out: its rival well leaves the field and the
+    /// system advances. In a finite Orbit run, felling the final system's boss **wins**
+    /// the run; otherwise the field's own pull deepens (and, through the escalation, the
+    /// enemies' fire), and the waves resume after a beat.
     fn fell_boss_if_dead(&mut self, events: &mut Events) {
         let Some(boss) = self.boss.as_ref() else {
             return;
@@ -1358,15 +1387,24 @@ impl Game {
         // The rival well was pushed last when the boss ignited, and nothing else touches
         // `wells` during the fight, so it is always the tail — pop it off.
         self.wells.pop();
-        self.wells[0].strength += GRAVITY_PER_SYSTEM;
         self.stage += 1;
-        self.wave_timer = ENEMY_WAVE_GAP;
         self.blasts.push(BlastState {
             x: bx,
             y: by,
             timer: BLAST_LIFE,
         });
         events.boss_cleared = true;
+
+        if self.mode.is_finite() && self.stage > ORBIT_SYSTEMS {
+            // The final system's boss has fallen — the run is won.
+            self.phase = Phase::Over;
+            self.outcome = Some(Outcome::Won);
+            events.game_over = true;
+            return;
+        }
+        // The run goes on: deepen the field and set the next wave's beat.
+        self.wells[0].strength += GRAVITY_PER_SYSTEM;
+        self.wave_timer = ENEMY_WAVE_GAP;
     }
 
     /// Sends in a fresh wave: as many enemies as [`Game::wave_size`], their kinds
@@ -1800,6 +1838,12 @@ impl Game {
         self.phase
     }
 
+    /// How the run resolved — `Won` (the finite ladder beaten) or `Lost` (the last life
+    /// spent) — or `None` while it is still being played.
+    pub fn outcome(&self) -> Option<Outcome> {
+        self.outcome
+    }
+
     /// Starts the run over from the beginning; the same seed, mode and loadout replay
     /// it exactly.
     pub fn restart(&mut self) {
@@ -1988,9 +2032,24 @@ mod tests {
 
     /// A run with the field cleared, so a test can plant exactly what it needs.
     fn empty_field(seed: u64) -> Game {
-        let mut game = Game::new(seed, Mode::Orbit, Loadout::default());
+        empty_field_in(seed, Mode::Orbit)
+    }
+
+    fn empty_field_in(seed: u64, mode: Mode) -> Game {
+        let mut game = Game::new(seed, mode, Loadout::default());
         game.asteroids.clear();
         game
+    }
+
+    /// Ignites a boss with `hp` on the brink of the given `stage`, then fells it with a
+    /// weak-point shot on the next step — the shared setup for the mode run-end tests.
+    fn fell_boss_at_stage(game: &mut Game, stage: u32) -> Events {
+        game.stage = stage;
+        game.spawn_boss();
+        game.boss.as_mut().unwrap().hp = 1;
+        let wp = game.weak_points().next().expect("a weak point");
+        plant_shot(game, wp.x, wp.y);
+        game.step(Input::default())
     }
 
     fn plant_rock(game: &mut Game, size: AsteroidSize, x: f32, y: f32, drift: f32) {
@@ -2923,5 +2982,60 @@ mod tests {
             game.wells[0].strength > strength_before,
             "and the field's pull deepens"
         );
+    }
+
+    // The modes shape the run's end. Reaching the final boss by honest play means
+    // clearing a whole ladder of systems, so these fell a boss at a chosen stage
+    // directly (through the real damage path) and read the outcome.
+
+    #[test]
+    fn outcome_is_none_while_a_run_is_played() {
+        let game = empty_field(1);
+        assert!(game.outcome().is_none(), "an unfinished run has no outcome");
+    }
+
+    #[test]
+    fn orbit_is_won_by_felling_the_final_boss() {
+        let mut game = empty_field_in(1, Mode::Orbit);
+        let events = fell_boss_at_stage(&mut game, ORBIT_SYSTEMS);
+
+        assert!(events.boss_cleared, "the final boss falls");
+        assert!(events.game_over, "and the run ends");
+        assert_eq!(game.phase(), Phase::Over);
+        assert_eq!(game.outcome(), Some(Outcome::Won), "the ladder is beaten");
+    }
+
+    #[test]
+    fn orbits_earlier_bosses_do_not_win() {
+        let mut game = empty_field_in(1, Mode::Orbit);
+        let events = fell_boss_at_stage(&mut game, 1);
+
+        assert!(events.boss_cleared);
+        assert!(!events.game_over, "an early boss does not end the run");
+        assert_eq!(game.phase(), Phase::Playing);
+        assert!(game.outcome().is_none());
+        assert_eq!(game.stage(), 2, "the system advances instead");
+    }
+
+    #[test]
+    fn maelstrom_is_endless_a_boss_only_deepens_it() {
+        let mut game = empty_field_in(1, Mode::Maelstrom);
+        let events = fell_boss_at_stage(&mut game, ORBIT_SYSTEMS);
+
+        assert!(events.boss_cleared);
+        assert!(!events.game_over, "the endless run is never won");
+        assert_eq!(game.phase(), Phase::Playing);
+        assert!(game.outcome().is_none());
+        assert_eq!(game.stage(), ORBIT_SYSTEMS + 1, "it just deepens");
+    }
+
+    #[test]
+    fn daily_is_endless_like_maelstrom() {
+        let mut game = empty_field_in(1, Mode::Daily);
+        let events = fell_boss_at_stage(&mut game, ORBIT_SYSTEMS);
+
+        assert!(!events.game_over, "the day's run is endless too");
+        assert_eq!(game.phase(), Phase::Playing);
+        assert!(game.outcome().is_none());
     }
 }
