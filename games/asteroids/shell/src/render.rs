@@ -5,7 +5,8 @@
 //! draws the readable placeholders that make the game playable.
 
 use asteroids_core::{
-    Asteroid, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Ship, Shot,
+    Asteroid, Blast, Game, LOGICAL_HEIGHT, LOGICAL_WIDTH, SHIP_RADIUS, Saucer, SaucerBullet, Ship,
+    Shot,
 };
 use macroquad::prelude::*;
 use shell_kit::font;
@@ -20,6 +21,11 @@ const HINT_SCALE: f32 = 1.0;
 /// The line weight of the vector outlines, in logical units.
 const STROKE: f32 = 2.0;
 
+/// The saucer's hull, and the warm colour of its fire — set apart from the player's
+/// white so the threat reads at a glance.
+const SAUCER_COLOR: Color = color_u8!(140, 220, 255, 255);
+const SAUCER_FIRE_COLOR: Color = color_u8!(255, 120, 90, 255);
+
 /// Draws a live game: the rocks, shots and explosions, the ship (while it is on the
 /// field), and the HUD.
 pub fn draw(game: &Game) {
@@ -29,6 +35,12 @@ pub fn draw(game: &Game) {
     }
     for shot in game.shots() {
         draw_shot(shot);
+    }
+    if let Some(saucer) = game.saucer() {
+        draw_saucer(saucer);
+    }
+    for bullet in game.saucer_bullets() {
+        draw_saucer_bullet(bullet);
     }
     for blast in game.blasts() {
         draw_blast(blast);
@@ -48,6 +60,56 @@ fn ship_visible(game: &Game) -> bool {
 /// A shot: a small bright blip.
 fn draw_shot(shot: Shot) {
     draw_circle(shot.x, shot.y, 2.5, WHITE);
+}
+
+/// The saucer: a vector hull, wrapped vertically (it leaves at the horizontal edges
+/// rather than wrapping, so only its lane wraps).
+fn draw_saucer(saucer: Saucer) {
+    let r = saucer.size.radius();
+    for oy in axis_offsets(saucer.y, r, LOGICAL_HEIGHT)
+        .into_iter()
+        .flatten()
+    {
+        draw_saucer_hull(saucer.x, saucer.y + oy, r);
+    }
+}
+
+/// One saucer hull centred at `(cx, cy)`: an elongated hexagon with a small dome.
+fn draw_saucer_hull(cx: f32, cy: f32, r: f32) {
+    let hull = [
+        (-r, 0.0),
+        (-r * 0.45, -r * 0.4),
+        (r * 0.45, -r * 0.4),
+        (r, 0.0),
+        (r * 0.45, r * 0.45),
+        (-r * 0.45, r * 0.45),
+    ];
+    for i in 0..hull.len() {
+        let (ax, ay) = hull[i];
+        let (bx, by) = hull[(i + 1) % hull.len()];
+        draw_line(cx + ax, cy + ay, cx + bx, cy + by, STROKE, SAUCER_COLOR);
+    }
+    draw_line(
+        cx - r * 0.25,
+        cy - r * 0.4,
+        cx,
+        cy - r * 0.75,
+        STROKE,
+        SAUCER_COLOR,
+    );
+    draw_line(
+        cx,
+        cy - r * 0.75,
+        cx + r * 0.25,
+        cy - r * 0.4,
+        STROKE,
+        SAUCER_COLOR,
+    );
+}
+
+/// A saucer bullet: a small warm blip, set apart from the player's white fire.
+fn draw_saucer_bullet(bullet: SaucerBullet) {
+    draw_circle(bullet.x, bullet.y, 2.5, SAUCER_FIRE_COLOR);
 }
 
 /// An explosion: a burst of line-shards where a rock or the ship broke. (The look
