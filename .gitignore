@@ -6,3 +6,4 @@ dist/
 # directory when its tests run — ignore them wherever they land.
 rift-save.txt
 stepfall-save.txt
+asteroids-save.txt

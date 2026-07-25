@@ -10,8 +10,8 @@ use asteroids_core::{
 };
 use asteroids_remix_core::{
     Asteroid as RemixAsteroid, Boss as RemixBoss, Enemy as RemixEnemy,
-    EnemyBullet as RemixEnemyBullet, EnemyKind, Game as RemixGame, Pickup as RemixPickup, PowerUp,
-    Ship as RemixShip, Well,
+    EnemyBullet as RemixEnemyBullet, EnemyKind, Game as RemixGame, Mode as RunMode,
+    Pickup as RemixPickup, PowerUp, Ship as RemixShip, Well,
 };
 use macroquad::prelude::*;
 use shell_kit::font;
@@ -433,9 +433,10 @@ pub fn paused_overlay() {
 }
 
 /// Draws a live ACCRETE run: the gravity wells, the rocks orbiting them, the enemy
-/// craft and their fire, the shots, and the ship — in neon. (The accretion glow and
-/// the lensing arrive with the look ticket.)
-pub fn draw_remix(game: &RemixGame) {
+/// craft and their fire, the shots, and the ship — in neon, with the HUD carrying the
+/// session/persisted `best`. (The accretion glow and the lensing arrive with the look
+/// ticket.)
+pub fn draw_remix(game: &RemixGame, best: u32) {
     clear_background(BLACK);
     for well in game.wells() {
         draw_well(well);
@@ -469,13 +470,22 @@ pub fn draw_remix(game: &RemixGame) {
             draw_shield(game.ship());
         }
     }
-    draw_remix_hud(game);
+    draw_remix_hud(game, best);
 }
 
-/// ACCRETE's HUD: the score, the ships left, the accretion feed streak, the current
-/// system, and the earned weapon tier while it is running.
-fn draw_remix_hud(game: &RemixGame) {
+/// ACCRETE's HUD: the score and best, the ships left, the accretion feed streak, the
+/// current system, and the earned weapon tier while it is running.
+fn draw_remix_hud(game: &RemixGame, best: u32) {
     font::draw(&game.score().to_string(), 20.0, 20.0, OPTION_SCALE, WHITE);
+    if best > 0 {
+        font::draw_centred(
+            LOGICAL_WIDTH,
+            &format!("BEST {best}"),
+            24.0,
+            HINT_SCALE,
+            GRAY,
+        );
+    }
     let system = format!("SYSTEM {}", game.stage());
     font::draw(
         &system,
@@ -492,7 +502,7 @@ fn draw_remix_hud(game: &RemixGame) {
         font::draw_centred(
             LOGICAL_WIDTH,
             &format!("FEED x{streak}"),
-            24.0,
+            44.0,
             HINT_SCALE,
             WELL_COLOR,
         );
@@ -529,36 +539,84 @@ fn draw_collapse_meter(meter: f32) {
     }
 }
 
-/// Draws ACCRETE's run-over banner — VICTORY when the finite Orbit ladder is beaten,
-/// RUN OVER otherwise. (The fuller run summary arrives with the persistence ticket.)
-pub fn remix_game_over(game: &RemixGame) {
+/// ACCRETE's run summary — VICTORY when the finite Orbit ladder is beaten, RUN OVER
+/// otherwise — with the run's score, the system it reached, the rocks it fed the wells,
+/// the mode `best`, and the way on (restart / back out).
+pub fn remix_summary(game: &RemixGame, best: u32) {
     let won = game.outcome() == Some(asteroids_remix_core::Outcome::Won);
     let (banner, colour) = if won {
         ("VICTORY", WELL_COLOR)
     } else {
         ("RUN OVER", WHITE)
     };
+    let cx = LOGICAL_WIDTH;
+    let mid = LOGICAL_HEIGHT / 2.0;
+    font::draw_centred(cx, banner, mid - 80.0, TITLE_SCALE, colour);
     font::draw_centred(
-        LOGICAL_WIDTH,
-        banner,
-        LOGICAL_HEIGHT / 2.0 - 44.0,
-        TITLE_SCALE,
-        colour,
-    );
-    font::draw_centred(
-        LOGICAL_WIDTH,
+        cx,
         &format!("SCORE {}", game.score()),
-        LOGICAL_HEIGHT / 2.0 + 20.0,
+        mid,
         OPTION_SCALE,
         WHITE,
     );
     font::draw_centred(
-        LOGICAL_WIDTH,
-        "R RESTART   ESC QUIT",
-        LOGICAL_HEIGHT / 2.0 + 60.0,
+        cx,
+        &format!("SYSTEM {}", game.stage()),
+        mid + 32.0,
         HINT_SCALE,
         GRAY,
     );
+    font::draw_centred(
+        cx,
+        &format!("ROCKS ACCRETED {}", game.rocks_accreted()),
+        mid + 52.0,
+        HINT_SCALE,
+        GRAY,
+    );
+    if best > 0 {
+        font::draw_centred(
+            cx,
+            &format!("BEST {best}"),
+            mid + 72.0,
+            HINT_SCALE,
+            WELL_COLOR,
+        );
+    }
+    font::draw_centred(cx, "R RESTART   ESC MODES", mid + 104.0, HINT_SCALE, GRAY);
+}
+
+/// ACCRETE's mode picker — Orbit (the finite ladder), Maelstrom and Daily (endless).
+/// The row order is the single source in [`crate::app::REMIX_MODES`], so the on-screen
+/// order and the highlight navigation can never drift apart.
+pub fn remix_select(highlight: RunMode) {
+    clear_background(BLACK);
+    font::draw_centred(LOGICAL_WIDTH, "ACCRETE", 150.0, TITLE_SCALE, WELL_COLOR);
+    font::draw_centred(LOGICAL_WIDTH, "CHOOSE A MODE", 224.0, HINT_SCALE, GRAY);
+
+    for (i, mode) in crate::app::REMIX_MODES.iter().enumerate() {
+        let (label, blurb) = mode_blurb(*mode);
+        let y = 320.0 + i as f32 * 54.0;
+        option(label, y, *mode == highlight, false);
+        if *mode == highlight {
+            font::draw_centred(LOGICAL_WIDTH, blurb, y + 24.0, HINT_SCALE, GRAY);
+        }
+    }
+    font::draw_centred(
+        LOGICAL_WIDTH,
+        "UP/DOWN TO CHOOSE   ENTER TO FLY   ESC BACK",
+        LOGICAL_HEIGHT - 60.0,
+        HINT_SCALE,
+        GRAY,
+    );
+}
+
+/// A mode's picker label and its one-line blurb.
+fn mode_blurb(mode: RunMode) -> (&'static str, &'static str) {
+    match mode {
+        RunMode::Orbit => ("ORBIT", "A WINNABLE LADDER OF SYSTEMS"),
+        RunMode::Maelstrom => ("MAELSTROM", "ENDLESS - CHASE A HIGH SCORE"),
+        RunMode::Daily => ("DAILY", "TODAY'S SEEDED RUN, SHARED BY ALL"),
+    }
 }
 
 /// A rock on the gravity field: a glowing polygon at its radius. (The look ticket
