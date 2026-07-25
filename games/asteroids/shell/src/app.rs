@@ -20,16 +20,19 @@ use crate::{Audio, read_input, read_remix_input, render};
 pub enum MenuRow {
     /// Start a run in this mode.
     Mode(RunMode),
+    /// Start an Ascension run at the reached tier.
+    Ascension,
     /// Open the collection screen.
     Collection,
 }
 
 impl MenuRow {
     /// The rows, top to bottom.
-    pub const ROWS: [MenuRow; 4] = [
+    pub const ROWS: [MenuRow; 5] = [
         MenuRow::Mode(RunMode::Orbit),
         MenuRow::Mode(RunMode::Maelstrom),
         MenuRow::Mode(RunMode::Daily),
+        MenuRow::Ascension,
         MenuRow::Collection,
     ];
 
@@ -39,6 +42,7 @@ impl MenuRow {
             MenuRow::Mode(RunMode::Orbit) => "ORBIT",
             MenuRow::Mode(RunMode::Maelstrom) => "MAELSTROM",
             MenuRow::Mode(RunMode::Daily) => "DAILY",
+            MenuRow::Ascension => "ASCENSION",
             MenuRow::Collection => "COLLECTION",
         }
     }
@@ -100,6 +104,9 @@ enum Screen {
         fx: Fx,
         /// The gravity-hum depth currently sounding, so it re-pitches only on a change.
         hum_level: Option<usize>,
+        /// Whether this is an Ascension run — its tier is read from the game, and a win
+        /// pushes the reached tier up.
+        ascension: bool,
         /// The options unlocked so far — this run's loadout was built from it, and its
         /// outcome is recorded back into it.
         unlocked: meta::Unlocked,
@@ -179,6 +186,7 @@ impl App {
                 }
                 match remix_menu_input(highlight) {
                     Some(MenuRow::Mode(mode)) => self.start_remix_match(mode),
+                    Some(MenuRow::Ascension) => self.start_ascension_match(),
                     Some(MenuRow::Collection) => self.open_collection(),
                     None => render::remix_select(*highlight),
                 }
@@ -273,6 +281,7 @@ impl App {
                 saved,
                 fx,
                 hum_level,
+                ascension,
                 unlocked,
                 earned,
             } => {
@@ -349,16 +358,25 @@ impl App {
 
                     // Record the run into the unlock set; save and call out anything
                     // newly earned. The core never sees this — it only flew the loadout.
+                    let won = game.outcome() == Some(RunOutcome::Won);
                     let outcome = meta::Outcome {
-                        won: game.outcome() == Some(RunOutcome::Won),
+                        won,
                         systems_cleared: game.stage().saturating_sub(1),
                         score,
-                        tier: 0,
+                        tier: if *ascension { game.tier() } else { 0 },
                     };
                     let newly = unlocked.record(outcome);
                     if !newly.is_empty() {
                         asteroids_storage::set_unlocked_bits(unlocked.bits());
                         *earned = newly;
+                    }
+
+                    // Winning an Ascension run pushes the reached tier up a rung.
+                    if *ascension && won {
+                        let next = game.tier() + 1;
+                        if next > asteroids_storage::ascension_tier() {
+                            asteroids_storage::set_ascension_tier(next);
+                        }
                     }
                 }
 
@@ -440,6 +458,33 @@ impl App {
             saved: false,
             fx: Fx::default(),
             hum_level: None,
+            ascension: false,
+            unlocked,
+            earned: Vec::new(),
+        };
+    }
+
+    /// Starts an Ascension run at the reached tier — an Orbit run escalated by the
+    /// tier's modifiers. Winning it pushes the reached tier up.
+    fn start_ascension_match(&mut self) {
+        let tier = asteroids_storage::ascension_tier();
+        let unlocked = meta::Unlocked::from_bits(asteroids_storage::unlocked_bits());
+        let game = Box::new(RemixGame::new_ascension(
+            self.take_seed(),
+            tier,
+            unlocked.loadout(),
+        ));
+        self.screen = Screen::RemixMatch {
+            game,
+            accumulator: Accumulator::new(TIMESTEP, MAX_FRAME_TIME),
+            paused: false,
+            mode: RunMode::Orbit,
+            day: 0,
+            best: 0,
+            saved: false,
+            fx: Fx::default(),
+            hum_level: None,
+            ascension: true,
             unlocked,
             earned: Vec::new(),
         };

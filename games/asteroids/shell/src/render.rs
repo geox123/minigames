@@ -494,6 +494,17 @@ fn draw_remix_hud(game: &RemixGame, best: u32) {
         HINT_SCALE,
         GRAY,
     );
+    // On an Ascension run, tag the tier under the system.
+    if game.tier() > 0 {
+        let tier = format!("TIER {}", game.tier());
+        font::draw(
+            &tier,
+            LOGICAL_WIDTH - font::text_width(&tier, HINT_SCALE) - 20.0,
+            40.0,
+            HINT_SCALE,
+            WELL_COLOR,
+        );
+    }
     for i in 0..game.lives() {
         draw_ship_icon(28.0 + i as f32 * 24.0, 60.0);
     }
@@ -544,10 +555,10 @@ fn draw_collapse_meter(meter: f32) {
 /// the mode `best`, anything the run newly `earned`, and the way on (restart / back out).
 pub fn remix_summary(game: &RemixGame, best: u32, earned: &[asteroids_remix_core::meta::Content]) {
     let won = game.outcome() == Some(asteroids_remix_core::Outcome::Won);
-    let (banner, colour) = if won {
-        ("VICTORY", WELL_COLOR)
-    } else {
-        ("RUN OVER", WHITE)
+    let (banner, colour) = match (won, game.tier() > 0) {
+        (true, true) => ("ASCENDED", WELL_COLOR),
+        (true, false) => ("VICTORY", WELL_COLOR),
+        (false, _) => ("RUN OVER", WHITE),
     };
     let cx = LOGICAL_WIDTH;
     let mid = LOGICAL_HEIGHT / 2.0;
@@ -559,13 +570,12 @@ pub fn remix_summary(game: &RemixGame, best: u32, earned: &[asteroids_remix_core
         OPTION_SCALE,
         WHITE,
     );
-    font::draw_centred(
-        cx,
-        &format!("SYSTEM {}", game.stage()),
-        mid + 32.0,
-        HINT_SCALE,
-        GRAY,
-    );
+    let system = if game.tier() > 0 {
+        format!("SYSTEM {}   TIER {}", game.stage(), game.tier())
+    } else {
+        format!("SYSTEM {}", game.stage())
+    };
+    font::draw_centred(cx, &system, mid + 32.0, HINT_SCALE, GRAY);
     font::draw_centred(
         cx,
         &format!("ROCKS ACCRETED {}", game.rocks_accreted()),
@@ -629,6 +639,7 @@ fn row_blurb(row: MenuRow) -> &'static str {
         MenuRow::Mode(RunMode::Orbit) => "A WINNABLE LADDER OF SYSTEMS",
         MenuRow::Mode(RunMode::Maelstrom) => "ENDLESS - CHASE A HIGH SCORE",
         MenuRow::Mode(RunMode::Daily) => "TODAY'S SEEDED RUN, SHARED BY ALL",
+        MenuRow::Ascension => "AN ESCALATED ORBIT - MASTERY'S LADDER",
         MenuRow::Collection => "THE SHIP OPTIONS YOU HAVE EARNED",
     }
 }
