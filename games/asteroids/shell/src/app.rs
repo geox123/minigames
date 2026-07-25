@@ -12,8 +12,37 @@ use shell_kit::timestep::Accumulator;
 use crate::fx::Fx;
 use crate::{Audio, read_input, read_remix_input, render};
 
-/// ACCRETE's three modes, top to bottom on its picker.
-pub const REMIX_MODES: [RunMode; 3] = [RunMode::Orbit, RunMode::Maelstrom, RunMode::Daily];
+/// A row on ACCRETE's menu: one of its run modes to play, or the collection to browse.
+/// Keeping the run **mode** its own type (inside `Mode`) means the menu can grow rows
+/// like the collection without entangling them with what a run is. (Ascension joins in
+/// B3.)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MenuRow {
+    /// Start a run in this mode.
+    Mode(RunMode),
+    /// Open the collection screen.
+    Collection,
+}
+
+impl MenuRow {
+    /// The rows, top to bottom.
+    pub const ROWS: [MenuRow; 4] = [
+        MenuRow::Mode(RunMode::Orbit),
+        MenuRow::Mode(RunMode::Maelstrom),
+        MenuRow::Mode(RunMode::Daily),
+        MenuRow::Collection,
+    ];
+
+    /// The label shown for this row.
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuRow::Mode(RunMode::Orbit) => "ORBIT",
+            MenuRow::Mode(RunMode::Maelstrom) => "MAELSTROM",
+            MenuRow::Mode(RunMode::Daily) => "DAILY",
+            MenuRow::Collection => "COLLECTION",
+        }
+    }
+}
 
 /// How much real time a single frame may contribute to the simulation. Without
 /// this cap, one long stall (a dragged window, a backgrounded tab) would make the
@@ -50,8 +79,10 @@ enum Screen {
         beat_timer: f32,
         beat_high: bool,
     },
-    /// ACCRETE's mode picker — Orbit, Maelstrom or Daily.
-    RemixSelect { highlight: RunMode },
+    /// ACCRETE's menu — its modes and the collection.
+    RemixSelect { highlight: MenuRow },
+    /// The collection screen, browsing what has been unlocked.
+    Collection { unlocked: meta::Unlocked },
     /// An ACCRETE run in progress — the gravity Remix. Boxed like the Faithful's game.
     RemixMatch {
         game: Box<RemixGame>,
@@ -146,11 +177,18 @@ impl App {
                     self.return_to_mode_select();
                     return;
                 }
-                if let Some(mode) = remix_menu_input(highlight) {
-                    self.start_remix_match(mode);
-                } else {
-                    render::remix_select(*highlight);
+                match remix_menu_input(highlight) {
+                    Some(MenuRow::Mode(mode)) => self.start_remix_match(mode),
+                    Some(MenuRow::Collection) => self.open_collection(),
+                    None => render::remix_select(*highlight),
                 }
+            }
+            Screen::Collection { unlocked } => {
+                if is_key_pressed(KeyCode::Escape) || committed() {
+                    self.open_remix_menu();
+                    return;
+                }
+                render::draw_collection(*unlocked);
             }
             Screen::Match {
                 game,
@@ -342,10 +380,17 @@ impl App {
         };
     }
 
-    /// Opens ACCRETE's mode picker on its first mode.
+    /// Opens ACCRETE's menu on its first row.
     fn open_remix_menu(&mut self) {
         self.screen = Screen::RemixSelect {
-            highlight: RunMode::Orbit,
+            highlight: MenuRow::Mode(RunMode::Orbit),
+        };
+    }
+
+    /// Opens the collection on what this player has unlocked so far.
+    fn open_collection(&mut self) {
+        self.screen = Screen::Collection {
+            unlocked: meta::Unlocked::from_bits(asteroids_storage::unlocked_bits()),
         };
     }
 
@@ -412,14 +457,15 @@ fn committed() -> bool {
     is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space)
 }
 
-/// Reads ACCRETE's mode picker, cycling the highlight through its modes. Returns the
-/// chosen mode once the player commits to it.
-fn remix_menu_input(highlight: &mut RunMode) -> Option<RunMode> {
-    let i = REMIX_MODES.iter().position(|m| m == highlight).unwrap_or(0);
+/// Reads ACCRETE's menu, cycling the highlight through its rows. Returns the chosen row
+/// once the player commits to it.
+fn remix_menu_input(highlight: &mut MenuRow) -> Option<MenuRow> {
+    let rows = MenuRow::ROWS;
+    let i = rows.iter().position(|r| r == highlight).unwrap_or(0);
     if is_key_pressed(KeyCode::Down) || is_key_pressed(KeyCode::S) {
-        *highlight = REMIX_MODES[(i + 1) % REMIX_MODES.len()];
+        *highlight = rows[(i + 1) % rows.len()];
     } else if is_key_pressed(KeyCode::Up) || is_key_pressed(KeyCode::W) {
-        *highlight = REMIX_MODES[(i + REMIX_MODES.len() - 1) % REMIX_MODES.len()];
+        *highlight = rows[(i + rows.len() - 1) % rows.len()];
     }
     committed().then_some(*highlight)
 }
