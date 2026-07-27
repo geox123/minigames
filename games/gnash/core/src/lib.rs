@@ -234,10 +234,10 @@ pub struct Eater {
     pub dir: Dir,
 }
 
-/// A tile mover's live state, in logical pixels: where it is, the way it heads, the
-/// turn it wants next (buffered until an opening takes it), its fractional-speed
-/// accumulator, and any eating stall freezing it. The eater is one; the hunters
-/// (later tickets) reuse the same shape.
+/// The eater's live state, in logical pixels: where it is, the way it heads, the
+/// turn it wants next (buffered until an opening takes it), a corner-cut in progress,
+/// its fractional-speed accumulator, and any eating stall freezing it. The hunters
+/// carry their own leaner [`HunterState`] — no buffered turn, corner or stall.
 #[derive(Clone, Copy)]
 struct MoverState {
     x: i32,
@@ -589,9 +589,7 @@ impl Game {
 
     /// Moves the eater one pixel along `dir`, wrapping it through the side tunnel.
     fn move_eater_pixel(&mut self, dir: Dir) {
-        let (dx, dy) = dir.delta();
-        self.eater.x = (self.eater.x + dx).rem_euclid(LOGICAL_WIDTH);
-        self.eater.y += dy;
+        (self.eater.x, self.eater.y) = step_pixel(self.eater.x, self.eater.y, dir);
     }
 
     /// Advances every hunter one frame toward its target.
@@ -634,9 +632,8 @@ impl Game {
         if ox == HALF && oy == HALF {
             self.hunters[i].dir = self.choose_hunter_dir(tc, tr, self.hunters[i].dir, target);
         }
-        let (dx, dy) = self.hunters[i].dir.delta();
-        self.hunters[i].x = (self.hunters[i].x + dx).rem_euclid(LOGICAL_WIDTH);
-        self.hunters[i].y += dy;
+        (self.hunters[i].x, self.hunters[i].y) =
+            step_pixel(self.hunters[i].x, self.hunters[i].y, self.hunters[i].dir);
     }
 
     /// Chooses a hunter's heading out of tile `(tc, tr)`: among the open exits — never
@@ -755,6 +752,13 @@ pub fn tile_center(col: i32, row: i32) -> (i32, i32) {
 /// The tile containing pixel `(x, y)`.
 pub fn tile_at(x: i32, y: i32) -> (i32, i32) {
     (x.div_euclid(TILE), y.div_euclid(TILE))
+}
+
+/// One pixel of travel from `(x, y)` along `dir`, wrapping x through the side tunnel.
+/// Both the eater and the hunters step by this.
+fn step_pixel(x: i32, y: i32, dir: Dir) -> (i32, i32) {
+    let (dx, dy) = dir.delta();
+    ((x + dx).rem_euclid(LOGICAL_WIDTH), y + dy)
 }
 
 /// Whether a mover heading `dir` is within the cornering window on its approach to a
