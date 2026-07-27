@@ -50,6 +50,11 @@ fn the_same_seed_and_inputs_replay_identically() {
         let eb = b.step(input);
         assert_eq!(ea, eb, "events diverged at step {n}");
         assert_eq!(a.eater(), b.eater(), "the eater diverged at step {n}");
+        assert_eq!(
+            a.hunters().collect::<Vec<_>>(),
+            b.hunters().collect::<Vec<_>>(),
+            "the hunters diverged at step {n}"
+        );
         assert_eq!(a.score(), b.score(), "the score diverged at step {n}");
         assert_eq!(
             a.pickups_remaining(),
