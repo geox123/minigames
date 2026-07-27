@@ -19,6 +19,7 @@ members = [
     "games/asteroids/storage",
     "games/asteroids/shell",
     "games/gnash/core",
+    "games/gnash/shell",
 ]
 
 [workspace.package]
