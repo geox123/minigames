@@ -27,7 +27,15 @@
 //! before a tile centre for a sliver of extra ground), **wraps** through the tunnel,
 //! and **eats** — a dot (10) stalls it a frame, a power pellet (50) three, the tax
 //! that lets the hunt close in while it feeds; clearing all the pickups raises a
-//! maze-cleared event. The hunters land in the tickets that follow.
+//! maze-cleared event.
+//!
+//! The first **hunter** ([T4](https://github.com/geox123/minigames/issues/162)) —
+//! the **Shadow**, the direct chaser — navigates the maze by the original's
+//! one-tile-lookahead rule: at each tile centre it takes the exit whose next tile is
+//! nearest its **target** (never reversing, ties broken up-left-down-right, and never
+//! turning up at the marked junctions), targeting the eater's own tile. Contact costs
+//! a life. The mover is generic over the target, so the other three minds and the
+//! scatter/chase modes plug into it in the tickets that follow.
 
 /// The maze is 28 tiles wide and 31 tall — the original's playfield.
 pub const COLS: usize = 28;
@@ -89,6 +97,17 @@ const POWER_PELLET_STALL: u32 = 3;
 /// What a dot and a power pellet score.
 const DOT_SCORE: u32 = 10;
 const POWER_PELLET_SCORE: u32 = 50;
+
+/// The Shadow's start tile — just outside the pen, above the gate, where the direct
+/// chaser begins already loose on the maze (the staggered pen release of the other
+/// hunters is a later ticket). It heads left from here.
+pub const HUNTER_START: (usize, usize) = (13, 11);
+/// A hunter's speed at level 1, as a percentage of the base rate — a touch under the
+/// eater's, so a clean run stays ahead. (Per-level speeds are a later ticket.)
+const HUNTER_SPEED: i32 = 75;
+/// A hunter's speed while crossing the tunnel — it crawls there, the original's
+/// let-off that a cornered player can exploit.
+const HUNTER_TUNNEL_SPEED: i32 = 40;
 
 /// GNASH's original maze — our own layout (ADR 0005), left-right symmetric like the
 /// original's. `#` wall, `.` dot, `o` power pellet, ` ` empty path, `-` the pen gate
@@ -237,6 +256,26 @@ struct MoverState {
     stall: u32,
 }
 
+/// A hunter, as the shell should draw it: its centre in logical pixels and the way it
+/// heads (which the shell points its eyes along).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hunter {
+    pub x: i32,
+    pub y: i32,
+    pub dir: Dir,
+}
+
+/// A hunter's live state: where it is, the way it heads, and its fractional-speed
+/// accumulator. Unlike the eater it never buffers a turn or corners — it decides
+/// afresh at each tile centre by its target (a later ticket gives each its own mind).
+#[derive(Clone, Copy)]
+struct HunterState {
+    x: i32,
+    y: i32,
+    dir: Dir,
+    accum: i32,
+}
+
 /// The maze: its fixed walls and gate, and the mutable field of pickups that empties
 /// as the eater feeds. Built once from [`LAYOUT`] and thereafter only eaten from.
 #[derive(Clone)]
@@ -348,6 +387,8 @@ pub struct Events {
     /// The maze was cleared of every pickup this step (a later ticket advances the
     /// level on it).
     pub maze_cleared: bool,
+    /// A hunter caught the eater this step (lives and respawn are a later ticket).
+    pub life_lost: bool,
 }
 
 /// Where a game is.
@@ -364,6 +405,12 @@ pub enum Phase {
 pub struct Game {
     maze: Maze,
     eater: MoverState,
+    /// The hunters loose on the maze. Just the Shadow so far; the other three join
+    /// in a later ticket.
+    hunters: Vec<HunterState>,
+    /// Whether a hunter has caught the eater (latched; lives and respawn are a later
+    /// ticket).
+    caught: bool,
     score: u32,
     phase: Phase,
     /// Steps taken so far.
@@ -378,6 +425,7 @@ impl Game {
     /// laid out full, and the eater waits centred on its start tile facing left.
     pub fn new(seed: u64) -> Self {
         let (sx, sy) = tile_center(EATER_START.0 as i32, EATER_START.1 as i32);
+        let (hx, hy) = tile_center(HUNTER_START.0 as i32, HUNTER_START.1 as i32);
         Self {
             maze: Maze::new(),
             eater: MoverState {
@@ -389,6 +437,13 @@ impl Game {
                 accum: 0,
                 stall: 0,
             },
+            hunters: vec![HunterState {
+                x: hx,
+                y: hy,
+                dir: Dir::Left,
+                accum: 0,
+            }],
+            caught: false,
             score: 0,
             phase: Phase::Playing,
             steps: 0,
@@ -409,6 +464,11 @@ impl Game {
             self.eater.want = Some(d);
         }
         self.advance_eater(&mut events);
+        // The original checks a catch both after the eater moves and after the
+        // hunters move, so a head-on pass counts as a catch either way.
+        self.resolve_contact(&mut events);
+        self.advance_hunters();
+        self.resolve_contact(&mut events);
         events
     }
 
@@ -534,6 +594,95 @@ impl Game {
         self.eater.y += dy;
     }
 
+    /// Advances every hunter one frame toward its target.
+    fn advance_hunters(&mut self) {
+        for i in 0..self.hunters.len() {
+            let target = self.hunter_target(i);
+            self.advance_hunter(i, target);
+        }
+    }
+
+    /// The tile hunter `i` steers toward. The Shadow — all there is so far — targets
+    /// the eater's own tile; the other minds (and scatter's corners) arrive in a later
+    /// ticket, plugging into this same seam.
+    fn hunter_target(&self, _i: usize) -> (i32, i32) {
+        tile_at(self.eater.x, self.eater.y)
+    }
+
+    /// Advances one hunter a frame: spend its fractional-speed budget — a crawl while
+    /// crossing the tunnel — one pixel at a time.
+    fn advance_hunter(&mut self, i: usize, target: (i32, i32)) {
+        let (_, row) = tile_at(self.hunters[i].x, self.hunters[i].y);
+        let speed = if row == TUNNEL_ROW as i32 {
+            HUNTER_TUNNEL_SPEED
+        } else {
+            HUNTER_SPEED
+        };
+        self.hunters[i].accum += speed;
+        while self.hunters[i].accum >= SPEED_DEN {
+            self.hunters[i].accum -= SPEED_DEN;
+            self.step_hunter_pixel(i, target);
+        }
+    }
+
+    /// Moves one hunter a single pixel: at a tile centre it picks the exit nearest its
+    /// target, then it steps along its heading, wrapping through the tunnel.
+    fn step_hunter_pixel(&mut self, i: usize, target: (i32, i32)) {
+        let (tc, tr) = tile_at(self.hunters[i].x, self.hunters[i].y);
+        let ox = self.hunters[i].x.rem_euclid(TILE);
+        let oy = self.hunters[i].y.rem_euclid(TILE);
+        if ox == HALF && oy == HALF {
+            self.hunters[i].dir = self.choose_hunter_dir(tc, tr, self.hunters[i].dir, target);
+        }
+        let (dx, dy) = self.hunters[i].dir.delta();
+        self.hunters[i].x = (self.hunters[i].x + dx).rem_euclid(LOGICAL_WIDTH);
+        self.hunters[i].y += dy;
+    }
+
+    /// Chooses a hunter's heading out of tile `(tc, tr)`: among the open exits — never
+    /// the reverse of `current`, never up at a no-up junction — the one whose next tile
+    /// is nearest `target` in straight-line distance, ties broken up → left → down →
+    /// right. A dead end (no exit) forces a reversal.
+    fn choose_hunter_dir(&self, tc: i32, tr: i32, current: Dir, target: (i32, i32)) -> Dir {
+        let reverse = current.opposite();
+        let mut best: Option<(Dir, i32)> = None;
+        // The tie-break order is the iteration order: with strict-less-than, the first
+        // exit at the minimum distance is the one kept.
+        for dir in [Dir::Up, Dir::Left, Dir::Down, Dir::Right] {
+            if dir == reverse {
+                continue;
+            }
+            if dir == Dir::Up && is_no_up(tc, tr) {
+                continue;
+            }
+            let (nc, nr) = dir.neighbor(tc, tr);
+            if !self.hunter_can_enter(nc, nr) {
+                continue;
+            }
+            let dist = tile_dist_sq((nc, nr), target);
+            if best.is_none_or(|(_, b)| dist < b) {
+                best = Some((dir, dist));
+            }
+        }
+        best.map_or(reverse, |(dir, _)| dir)
+    }
+
+    /// Whether a hunter may enter tile `(col, row)` — an open corridor. The gate and
+    /// pen interior open to hunters only in the release/eyes ticket that follows; for
+    /// now the Shadow, already loose, keeps to the corridors.
+    fn hunter_can_enter(&self, col: i32, row: i32) -> bool {
+        self.maze.tile(col, row) == Tile::Path
+    }
+
+    /// Flags a catch if any hunter shares the eater's tile.
+    fn resolve_contact(&mut self, events: &mut Events) {
+        let eater_tile = tile_at(self.eater.x, self.eater.y);
+        if self.hunters.iter().any(|h| tile_at(h.x, h.y) == eater_tile) {
+            self.caught = true;
+            events.life_lost = true;
+        }
+    }
+
     /// The structural tile at `(col, row)` — what the shell draws and the movers read
     /// as wall or corridor. Out-of-bounds is [`Tile::Wall`] except along the tunnel
     /// row, where it is open so the wrap is legal.
@@ -554,6 +703,21 @@ impl Game {
             y: self.eater.y,
             dir: self.eater.dir,
         }
+    }
+
+    /// The hunters loose on the maze, as the shell should draw them.
+    pub fn hunters(&self) -> impl Iterator<Item = Hunter> + '_ {
+        self.hunters.iter().map(|h| Hunter {
+            x: h.x,
+            y: h.y,
+            dir: h.dir,
+        })
+    }
+
+    /// Whether a hunter has caught the eater — latched, until a later ticket adds
+    /// lives and respawn.
+    pub fn caught(&self) -> bool {
+        self.caught
     }
 
     /// How many pickups (dots and power pellets) are still on the board.
@@ -615,6 +779,20 @@ fn in_bounds(col: i32, row: i32) -> bool {
 /// the eater never goes. The seam the pursuit tickets read pen-membership from.
 pub fn in_pen(col: i32, row: i32) -> bool {
     (PEN_COLS.0..=PEN_COLS.1).contains(&col) && (PEN_ROWS.0..=PEN_ROWS.1).contains(&row)
+}
+
+/// The squared straight-line distance between two tiles — the quantity the pursuit AI
+/// minimises. Squared, because ranking needs no square root.
+fn tile_dist_sq(a: (i32, i32), b: (i32, i32)) -> i32 {
+    let dx = a.0 - b.0;
+    let dy = a.1 - b.1;
+    dx * dx + dy * dy
+}
+
+/// Whether `(col, row)` is one of the marked no-up junctions, where a hunter may not
+/// choose to turn upward.
+fn is_no_up(col: i32, row: i32) -> bool {
+    col >= 0 && row >= 0 && NO_UP_TILES.contains(&(col as usize, row as usize))
 }
 
 #[cfg(test)]
@@ -994,5 +1172,76 @@ mod tests {
             cx,
             "and the eater is aligned in the new corridor"
         );
+    }
+
+    /// Replaces the hunters with a single one centred on `(col, row)` facing `dir`,
+    /// primed to move on the next step.
+    fn plant_hunter(game: &mut Game, col: i32, row: i32, dir: Dir) {
+        let (x, y) = tile_center(col, row);
+        game.hunters = vec![HunterState {
+            x,
+            y,
+            dir,
+            accum: SPEED_DEN,
+        }];
+        game.caught = false;
+    }
+
+    #[test]
+    fn the_shadow_runs_the_eater_down() {
+        // The eater, stalled against the wall left of (6, 23), sits still; the Shadow,
+        // planted three tiles up the same corridor, must chase down and catch it.
+        let mut game = Game::new(1);
+        plant_eater(&mut game, 6, 23, Dir::Left);
+        plant_hunter(&mut game, 6, 20, Dir::Down);
+        let mut caught = false;
+        for _ in 0..200 {
+            caught |= game.step(Input::default()).life_lost;
+        }
+        assert!(caught, "the Shadow closes on and catches the eater");
+        assert!(game.caught());
+    }
+
+    #[test]
+    fn a_hunter_never_reverses() {
+        // Over a long chase the hunter only ever turns at right angles or holds on —
+        // it never flips to its opposite heading.
+        let mut game = Game::new(2);
+        let mut prev = game.hunters[0].dir;
+        for _ in 0..4000 {
+            game.step(Input::default());
+            let now = game.hunters[0].dir;
+            assert_ne!(now, prev.opposite(), "a hunter never reverses on the spot");
+            prev = now;
+        }
+    }
+
+    #[test]
+    fn a_hunter_will_not_turn_up_at_a_no_up_junction() {
+        // On the no-up tile (12, 11), with the eater straight above, up is the nearest
+        // exit — but forbidden here, so the hunter takes the next-best instead.
+        let mut game = Game::new(1);
+        plant_eater(&mut game, 12, 3, Dir::Left); // parked directly above the junction
+        plant_hunter(&mut game, 12, 11, Dir::Left);
+        assert!(
+            is_no_up(12, 11),
+            "the fixture tile really is a no-up junction"
+        );
+        game.step(Input::default());
+        assert_ne!(
+            game.hunters[0].dir,
+            Dir::Up,
+            "no hunter turns up at a no-up junction"
+        );
+    }
+
+    #[test]
+    fn a_catch_costs_a_life() {
+        let mut game = Game::new(1);
+        plant_eater(&mut game, 13, 23, Dir::Left);
+        plant_hunter(&mut game, 13, 23, Dir::Left); // planted on the eater's tile
+        let events = game.step(Input::default());
+        assert!(events.life_lost, "sharing the eater's tile is a catch");
+        assert!(game.caught(), "and the catch is latched");
     }
 }
