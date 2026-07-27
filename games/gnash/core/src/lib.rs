@@ -61,6 +61,13 @@ pub const NO_UP_TILES: [(usize, usize); 4] = [(12, 11), (15, 11), (9, 17), (18, 
 /// original opened. The tile carries no dot.
 pub const EATER_START: (usize, usize) = (13, 23);
 
+/// The pen's interior tile bounds (inclusive): the open box the hunters begin
+/// inside, sealed but for the gate above it. The eater never enters. Exposed as the
+/// seam the pursuit tickets read pen-membership from, since the interior is otherwise
+/// an ordinary [`Tile::Path`]. See [`in_pen`].
+pub const PEN_COLS: (i32, i32) = (11, 16);
+pub const PEN_ROWS: (i32, i32) = (13, 15);
+
 /// The half-tile offset a mover sits at when it is centred in a tile. Tiles are 8px,
 /// so a centred mover is at offset 4 on each axis.
 const HALF: i32 = TILE / 2;
@@ -78,10 +85,10 @@ const CORNER: i32 = 3;
 /// Frames the eater freezes after eating — one on a dot, three on a power pellet:
 /// the original's small tax that lets the hunt close in while it feeds.
 const DOT_STALL: u32 = 1;
-const ENERGIZER_STALL: u32 = 3;
+const POWER_PELLET_STALL: u32 = 3;
 /// What a dot and a power pellet score.
 const DOT_SCORE: u32 = 10;
-const ENERGIZER_SCORE: u32 = 50;
+const POWER_PELLET_SCORE: u32 = 50;
 
 /// GNASH's original maze — our own layout (ADR 0005), left-right symmetric like the
 /// original's. `#` wall, `.` dot, `o` power pellet, ` ` empty path, `-` the pen gate
@@ -106,7 +113,7 @@ const LAYOUT: [&str; ROWS] = [
     "          #      #          ", // 14  (tunnel row — dotless)
     "###### ## #      # ## ######", // 15
     "###### ## ######## ## ######", // 16
-    "######.##          ##.######", // 17
+    "######.##.        .##.######", // 17
     "######.##.########.##.######", // 18
     "######.##.########.##.######", // 19
     "#............##............#", // 20
@@ -165,6 +172,12 @@ impl Dir {
     fn perpendicular(self, other: Dir) -> bool {
         self.horizontal() != other.horizontal()
     }
+
+    /// The tile one step from `(col, row)` in this heading.
+    fn neighbor(self, col: i32, row: i32) -> (i32, i32) {
+        let (dx, dy) = self.delta();
+        (col + dx, row + dy)
+    }
 }
 
 /// What a tile *is* — its fixed structure, as the shell should draw the maze and the
@@ -190,7 +203,7 @@ pub enum Pickup {
     Dot,
     /// A power pellet — one near each corner, worth 50, and (a later ticket) the
     /// flip that turns the hunt.
-    Energizer,
+    PowerPellet,
 }
 
 /// The eater, as the shell should draw it: its centre in logical pixels and the way
@@ -249,7 +262,7 @@ impl Maze {
                     b'-' => (Tile::Gate, Pickup::None),
                     b' ' => (Tile::Path, Pickup::None),
                     b'.' => (Tile::Path, Pickup::Dot),
-                    b'o' => (Tile::Path, Pickup::Energizer),
+                    b'o' => (Tile::Path, Pickup::PowerPellet),
                     other => panic!("unexpected maze glyph {:?} at ({c}, {r})", other as char),
                 };
                 tiles[r][c] = tile;
@@ -273,15 +286,34 @@ impl Maze {
         if row == TUNNEL_ROW as i32 && (col < 0 || col >= COLS as i32) {
             return Tile::Path;
         }
-        if col < 0 || col >= COLS as i32 || row < 0 || row >= ROWS as i32 {
+        if !in_bounds(col, row) {
             return Tile::Wall;
         }
         self.tiles[row as usize][col as usize]
     }
+
+    /// The pickup on `(col, row)` as it stands now; out-of-bounds is [`Pickup::None`].
+    fn pickup(&self, col: i32, row: i32) -> Pickup {
+        if !in_bounds(col, row) {
+            return Pickup::None;
+        }
+        self.pickups[row as usize][col as usize]
+    }
+
+    /// Takes the pickup off `(col, row)` — clearing it and decrementing the remaining
+    /// count — and returns what was there (or [`Pickup::None`] if the tile was empty).
+    fn take(&mut self, col: i32, row: i32) -> Pickup {
+        let pickup = self.pickup(col, row);
+        if pickup != Pickup::None {
+            self.pickups[row as usize][col as usize] = Pickup::None;
+            self.remaining -= 1;
+        }
+        pickup
+    }
 }
 
 /// What the player pressed this step — a desired heading, latched by the core until
-/// a turn can honour it (a later ticket). All-false means "no new intent".
+/// a turn can honour it. All-false means "no new intent".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Input {
     pub up: bool,
@@ -312,7 +344,7 @@ pub struct Events {
     /// The eater ate a dot this step.
     pub dot_eaten: bool,
     /// The eater ate a power pellet this step (a later ticket flips the hunt on it).
-    pub energizer_eaten: bool,
+    pub power_pellet_eaten: bool,
     /// The maze was cleared of every pickup this step (a later ticket advances the
     /// level on it).
     pub maze_cleared: bool,
@@ -327,8 +359,8 @@ pub enum Phase {
     GameOver,
 }
 
-/// The whole game: the maze and the seeded RNG that later movers draw on. Advanced
-/// only through [`Game::step`]; everything else is read-only.
+/// The whole game: the maze and the eater threading it. Advanced only through
+/// [`Game::step`]; everything else is read-only.
 pub struct Game {
     maze: Maze,
     eater: MoverState,
@@ -336,11 +368,9 @@ pub struct Game {
     phase: Phase,
     /// Steps taken so far.
     steps: u64,
-    /// The seed the game began on, so a restart replays it exactly. Unused by the
-    /// board alone; the movers that follow are what it seeds.
+    /// The seed the game began on, so a restart replays it exactly. (The movers that
+    /// later tickets add are what it will seed.)
     seed: u64,
-    #[allow(dead_code)]
-    rng: Rng,
 }
 
 impl Game {
@@ -363,7 +393,6 @@ impl Game {
             phase: Phase::Playing,
             steps: 0,
             seed,
-            rng: Rng::new(seed),
         }
     }
 
@@ -420,8 +449,9 @@ impl Game {
         // the last few pixels before the tile centre, squarely on the corridor line.
         let corner = self.eater.turning.or_else(|| {
             self.eater.want.filter(|&w| {
+                let (nc, nr) = w.neighbor(tc, tr);
                 w.perpendicular(self.eater.dir)
-                    && self.eater_can_enter(tc + w.delta().0, tr + w.delta().1)
+                    && self.eater_can_enter(nc, nr)
                     && in_corner_window(ox, oy, self.eater.dir)
             })
         });
@@ -440,20 +470,25 @@ impl Game {
             if centered {
                 self.eater.dir = w;
                 self.eater.turning = None;
+                self.eater.want = None; // the buffered turn is spent
             }
             return false;
         }
 
         if ox == HALF && oy == HALF {
-            // Squarely centred: take a buffered turn if its corridor is open...
-            if let Some(w) = self.eater.want
-                && self.eater_can_enter(tc + w.delta().0, tr + w.delta().1)
-            {
-                self.eater.dir = w;
+            // Squarely centred: take a buffered turn if its corridor is open, and spend
+            // it — so a single press turns once at the first opening, not at every
+            // junction thereafter.
+            if let Some(w) = self.eater.want {
+                let (nc, nr) = w.neighbor(tc, tr);
+                if self.eater_can_enter(nc, nr) {
+                    self.eater.dir = w;
+                    self.eater.want = None;
+                }
             }
             // ...then press on if the way ahead is open, else stall against the wall.
-            let (dx, dy) = self.eater.dir.delta();
-            if self.eater_can_enter(tc + dx, tr + dy) {
+            let (nc, nr) = self.eater.dir.neighbor(tc, tr);
+            if self.eater_can_enter(nc, nr) {
                 self.move_eater_pixel(self.eater.dir);
             }
             return false;
@@ -464,30 +499,21 @@ impl Game {
         false
     }
 
-    /// Eats the pickup on `(col, row)` if there is one: scores it, clears it, sets the
-    /// feeding stall, and flags the cleared maze. Returns whether anything was eaten.
+    /// Eats the pickup on `(col, row)` if there is one: scores it, sets the feeding
+    /// stall, and flags a cleared maze. Returns whether anything was eaten.
     fn eat_at(&mut self, col: i32, row: i32, events: &mut Events) -> bool {
-        if col < 0 || col >= COLS as i32 || row < 0 || row >= ROWS as i32 {
-            return false;
-        }
-        let pickup = self.maze.pickups[row as usize][col as usize];
-        if pickup == Pickup::None {
-            return false;
-        }
-        self.maze.pickups[row as usize][col as usize] = Pickup::None;
-        self.maze.remaining -= 1;
-        match pickup {
+        match self.maze.take(col, row) {
+            Pickup::None => return false,
             Pickup::Dot => {
                 self.score += DOT_SCORE;
                 self.eater.stall = DOT_STALL;
                 events.dot_eaten = true;
             }
-            Pickup::Energizer => {
-                self.score += ENERGIZER_SCORE;
-                self.eater.stall = ENERGIZER_STALL;
-                events.energizer_eaten = true;
+            Pickup::PowerPellet => {
+                self.score += POWER_PELLET_SCORE;
+                self.eater.stall = POWER_PELLET_STALL;
+                events.power_pellet_eaten = true;
             }
-            Pickup::None => unreachable!(),
         }
         if self.maze.remaining == 0 {
             events.maze_cleared = true;
@@ -518,10 +544,7 @@ impl Game {
     /// The pickup on `(col, row)` — dot, power pellet, or nothing — as it stands now,
     /// emptying as the eater feeds. Out-of-bounds is [`Pickup::None`].
     pub fn pickup(&self, col: i32, row: i32) -> Pickup {
-        if col < 0 || col >= COLS as i32 || row < 0 || row >= ROWS as i32 {
-            return Pickup::None;
-        }
-        self.maze.pickups[row as usize][col as usize]
+        self.maze.pickup(col, row)
     }
 
     /// The eater, as the shell should draw it.
@@ -583,38 +606,24 @@ fn in_corner_window(ox: i32, oy: i32, dir: Dir) -> bool {
     }
 }
 
-/// The Collection's small deterministic PRNG: splitmix64 to spread the seed, then
-/// xorshift for the stream. Shared in spirit with the other cores' `Rng`; kept local
-/// so the core has no dependency. Unused by the board alone — the movers seed on it.
-#[derive(Clone)]
-struct Rng(u64);
+/// Whether `(col, row)` is a tile inside the maze grid.
+fn in_bounds(col: i32, row: i32) -> bool {
+    (0..COLS as i32).contains(&col) && (0..ROWS as i32).contains(&row)
+}
 
-impl Rng {
-    fn new(seed: u64) -> Self {
-        let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^= z >> 31;
-        Self(z | 1)
-    }
-
-    #[allow(dead_code)]
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
+/// Whether `(col, row)` is inside the pen's interior — where the hunters begin and
+/// the eater never goes. The seam the pursuit tickets read pen-membership from.
+pub fn in_pen(col: i32, row: i32) -> bool {
+    (PEN_COLS.0..=PEN_COLS.1).contains(&col) && (PEN_ROWS.0..=PEN_ROWS.1).contains(&row)
 }
 
 #[cfg(test)]
 mod tests {
-    //! Board-shape invariants: the maze parses to the right size, is symmetric, holds
-    //! four power pellets one near each corner, is fully connected (no pickup walled
-    //! off), and has the pen, gate and tunnel it needs. Movement is tested with the
-    //! movers, in later tickets.
+    //! Board-shape invariants (the maze parses to the right size, is symmetric, holds
+    //! 240 dots and four corner power pellets, is fully connected, and has the pen,
+    //! gate and tunnel it needs) and the eater's movement (drift, buffered turns,
+    //! cornering, the wall stall, tunnel wrap and eating) — planted through the crate
+    //! internals; honest play and determinism live in `tests/`.
     use super::*;
 
     fn glyph(col: usize, row: usize) -> u8 {
@@ -702,20 +711,19 @@ mod tests {
     }
 
     #[test]
-    fn the_pickup_total_matches_the_layout() {
+    fn the_maze_holds_240_dots_and_4_power_pellets() {
         let game = Game::new(1);
-        let counted: u32 = (0..ROWS)
-            .flat_map(|r| (0..COLS).map(move |c| (c, r)))
-            .filter(|&(c, r)| matches!(glyph(c, r), b'.' | b'o'))
-            .count() as u32;
-        assert_eq!(game.pickups_total(), counted);
-        assert_eq!(game.pickups_remaining(), counted, "a fresh maze is full");
-        // A faithful maze is packed with dots — the original held 244 pickups; ours
-        // sits in the same neighbourhood.
-        assert!(
-            (230..=250).contains(&counted),
-            "the maze holds a faithful pickup count, got {counted}"
-        );
+        let count = |target: u8| -> u32 {
+            (0..ROWS)
+                .flat_map(|r| (0..COLS).map(move |c| (c, r)))
+                .filter(|&(c, r)| glyph(c, r) == target)
+                .count() as u32
+        };
+        // The original's exact tally — 240 dots and 4 power pellets — on our own layout.
+        assert_eq!(count(b'.'), 240, "240 dots");
+        assert_eq!(count(b'o'), 4, "4 power pellets");
+        assert_eq!(game.pickups_total(), 244, "244 pickups in all");
+        assert_eq!(game.pickups_remaining(), 244, "a fresh maze is full");
     }
 
     #[test]
@@ -726,19 +734,35 @@ mod tests {
             .filter(|&(c, r)| game.tile(c, r) == Tile::Gate)
             .collect();
         assert!(!gates.is_empty(), "the pen has a gate");
-        // The interior tiles (open path enclosed by walls/gate around the pen centre)
-        // exist and carry no pickups.
-        assert_eq!(game.tile(13, 13), Tile::Path);
-        assert_eq!(game.pickup(13, 13), Pickup::None, "the pen holds no dots");
+        // Every pen-interior tile is open path carrying no pickup, and `in_pen`
+        // reports it — the seam the hunter tickets read pen-membership from.
+        for row in PEN_ROWS.0..=PEN_ROWS.1 {
+            for col in PEN_COLS.0..=PEN_COLS.1 {
+                assert!(in_pen(col, row), "({col}, {row}) is inside the pen");
+                assert_eq!(game.tile(col, row), Tile::Path, "the pen interior is open");
+                assert_eq!(game.pickup(col, row), Pickup::None, "the pen holds no dots");
+            }
+        }
+        // A corridor tile outside the pen is not reported as pen.
+        assert!(!in_pen(EATER_START.0 as i32, EATER_START.1 as i32));
     }
 
     #[test]
-    fn the_tunnel_row_is_open_past_both_edges() {
+    fn the_tunnel_row_is_the_open_dotless_crossing() {
         let game = Game::new(1);
         assert_eq!(game.tile(-1, TUNNEL_ROW as i32), Tile::Path);
         assert_eq!(game.tile(COLS as i32, TUNNEL_ROW as i32), Tile::Path);
         // Off the tunnel row, out-of-bounds is solid.
         assert_eq!(game.tile(-1, 5), Tile::Wall);
+        // The tunnel row itself carries no pickups — so redrawing the maze can't
+        // silently drop dots into the crossing.
+        for col in 0..COLS as i32 {
+            assert_eq!(
+                game.pickup(col, TUNNEL_ROW as i32),
+                Pickup::None,
+                "the tunnel row is dotless at column {col}"
+            );
+        }
     }
 
     #[test]
@@ -897,7 +921,7 @@ mod tests {
         let mut game = Game::new(1);
         plant_eater(&mut game, 1, 23, Dir::Right); // (1, 23) carries a power pellet
         let events = game.step(Input::default());
-        assert!(events.energizer_eaten);
+        assert!(events.power_pellet_eaten);
         assert_eq!(game.score(), 50);
 
         // The pellet's three-frame stall freezes it longer than a dot would.
