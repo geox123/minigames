@@ -122,6 +122,13 @@ const HUNTER_SPEED: i32 = 75;
 /// let-off that a cornered player can exploit.
 const HUNTER_TUNNEL_SPEED: i32 = 40;
 
+/// How the minds aim: the Ambusher looks this many tiles ahead of the eater; the
+/// Fickle pivots off a point this many ahead; the Shy breaks for its corner within
+/// this many tiles of the eater.
+const AMBUSHER_LOOKAHEAD: i32 = 4;
+const FICKLE_PIVOT: i32 = 2;
+const SHY_FLEE_TILES: i32 = 8;
+
 /// GNASH's original maze — our own layout (ADR 0005), left-right symmetric like the
 /// original's. `#` wall, `.` dot, `o` power pellet, ` ` empty path, `-` the pen gate
 /// (which only hunters pass). It keeps the structure the genre needs — a full dot
@@ -281,6 +288,19 @@ pub enum HunterKind {
     /// Targets the eater when far, but breaks for its own corner when within eight
     /// tiles — it lopes in, loses nerve, and comes again.
     Shy,
+}
+
+impl HunterKind {
+    /// The off-maze corner this mind heads for in scatter mode (and the Shy breaks for
+    /// when the eater comes close) — one per quadrant, so the four scatter apart.
+    fn scatter_corner(self) -> (i32, i32) {
+        match self {
+            HunterKind::Shadow => (COLS as i32 - 3, 0), // top-right
+            HunterKind::Ambusher => (2, 0),             // top-left
+            HunterKind::Fickle => (COLS as i32 - 1, ROWS as i32 - 1), // bottom-right
+            HunterKind::Shy => (0, ROWS as i32 - 1),    // bottom-left
+        }
+    }
 }
 
 /// A hunter, as the shell should draw it: its centre in logical pixels, the way it
@@ -644,22 +664,22 @@ impl Game {
         match hunter.kind {
             // The Shadow bears straight down on the eater.
             HunterKind::Shadow => eater,
-            // The Ambusher aims four tiles ahead of where the eater is heading.
-            HunterKind::Ambusher => ahead_of_eater(eater, self.eater.dir, 4),
-            // The Fickle doubles the vector from the Shadow through the point two ahead
-            // of the eater — a pincer that swings as the pair move.
+            // The Ambusher aims a few tiles ahead of where the eater is heading.
+            HunterKind::Ambusher => ahead_of_eater(eater, self.eater.dir, AMBUSHER_LOOKAHEAD),
+            // The Fickle doubles the vector from the Shadow through a point ahead of the
+            // eater — a pincer that swings as the pair move.
             HunterKind::Fickle => {
-                let pivot = ahead_of_eater(eater, self.eater.dir, 2);
+                let pivot = ahead_of_eater(eater, self.eater.dir, FICKLE_PIVOT);
                 let shadow = self.shadow_tile();
                 (2 * pivot.0 - shadow.0, 2 * pivot.1 - shadow.1)
             }
-            // The Shy chases while far, but breaks for its corner within eight tiles.
+            // The Shy chases while far, but breaks for its corner when the eater is near.
             HunterKind::Shy => {
                 let own = tile_at(hunter.x, hunter.y);
-                if tile_dist_sq(own, eater) > 8 * 8 {
+                if tile_dist_sq(own, eater) > SHY_FLEE_TILES * SHY_FLEE_TILES {
                     eater
                 } else {
-                    scatter_corner(HunterKind::Shy)
+                    HunterKind::Shy.scatter_corner()
                 }
             }
         }
@@ -891,17 +911,6 @@ fn ahead_of_eater(tile: (i32, i32), dir: Dir, n: i32) -> (i32, i32) {
         ahead.0 -= n;
     }
     ahead
-}
-
-/// The off-maze corner a hunter heads for in scatter mode (and the Shy breaks for when
-/// the eater comes close) — one per quadrant, so the four scatter apart.
-fn scatter_corner(kind: HunterKind) -> (i32, i32) {
-    match kind {
-        HunterKind::Shadow => (COLS as i32 - 3, 0), // top-right
-        HunterKind::Ambusher => (2, 0),             // top-left
-        HunterKind::Fickle => (COLS as i32 - 1, ROWS as i32 - 1), // bottom-right
-        HunterKind::Shy => (0, ROWS as i32 - 1),    // bottom-left
-    }
 }
 
 /// Whether `(col, row)` is one of the marked no-up junctions, where a hunter may not
@@ -1412,7 +1421,7 @@ mod tests {
         (game.hunters[3].x, game.hunters[3].y) = tile_center(10, 20);
         assert_eq!(
             game.hunter_target(3),
-            scatter_corner(HunterKind::Shy),
+            HunterKind::Shy.scatter_corner(),
             "near: the Shy breaks for its corner"
         );
     }
@@ -1420,10 +1429,10 @@ mod tests {
     #[test]
     fn each_mind_has_a_distinct_scatter_corner() {
         let corners = [
-            scatter_corner(HunterKind::Shadow),
-            scatter_corner(HunterKind::Ambusher),
-            scatter_corner(HunterKind::Fickle),
-            scatter_corner(HunterKind::Shy),
+            HunterKind::Shadow.scatter_corner(),
+            HunterKind::Ambusher.scatter_corner(),
+            HunterKind::Fickle.scatter_corner(),
+            HunterKind::Shy.scatter_corner(),
         ];
         for (i, ci) in corners.iter().enumerate() {
             for cj in &corners[i + 1..] {
@@ -1449,6 +1458,32 @@ mod tests {
             before,
             positions(&game),
             "the penned hunters stay put until released"
+        );
+    }
+
+    #[test]
+    fn a_released_mind_moves_and_replays_identically() {
+        // T6 releases the penned minds on a schedule; here we un-pen the Ambusher
+        // directly to exercise its targeting driving movement through the step seam,
+        // and confirm it replays identically across two runs on one seed.
+        let run = || {
+            let mut game = Game::new(9);
+            game.hunters[1].penned = false; // the Ambusher
+            let mut path = Vec::new();
+            for _ in 0..1500 {
+                game.step(Input::default());
+                let a = game.hunters().nth(1).expect("the Ambusher");
+                path.push((a.x, a.y));
+            }
+            path
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(a, b, "a released mind replays identically");
+        let distinct = a.iter().collect::<std::collections::HashSet<_>>().len();
+        assert!(
+            distinct > 1,
+            "its targeting drove it to move, visiting {distinct} tiles"
         );
     }
 }
