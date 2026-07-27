@@ -18,6 +18,7 @@ members = [
     "games/asteroids/remix-core",
     "games/asteroids/storage",
     "games/asteroids/shell",
+    "games/gnash/core",
 ]
 
 [workspace.package]
