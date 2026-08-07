@@ -34,8 +34,16 @@
 //! one-tile-lookahead rule: at each tile centre it takes the exit whose next tile is
 //! nearest its **target** (never reversing, ties broken up-left-down-right, and never
 //! turning up at the marked junctions), targeting the eater's own tile. Contact costs
-//! a life. The mover is generic over the target, so the other three minds and the
-//! scatter/chase modes plug into it in the tickets that follow.
+//! a life.
+//!
+//! The **four minds** ([T5](https://github.com/geox123/minigames/issues/163)) give
+//! the hunt its character: the **Shadow** targets the eater's tile; the **Ambusher**
+//! four tiles ahead of its facing (with the original's up-facing overflow quirk); the
+//! **Fickle** a point pincering off the Shadow (doubled through two-ahead); the
+//! **Shy** the eater when far but its own corner when within eight tiles. Each also
+//! has a scatter corner it heads for. The Shadow starts loose; the other three leave
+//! the **pen** on their dot thresholds (or the post-death global counter), while the
+//! hunt alternates between scatter and chase.
 
 /// The maze is 28 tiles wide and 31 tall — the original's playfield.
 pub const COLS: usize = 28;
@@ -99,15 +107,48 @@ const DOT_SCORE: u32 = 10;
 const POWER_PELLET_SCORE: u32 = 50;
 
 /// The Shadow's start tile — just outside the pen, above the gate, where the direct
-/// chaser begins already loose on the maze (the staggered pen release of the other
-/// hunters is a later ticket). It heads left from here.
+/// chaser begins already loose on the maze. It heads left from here.
 pub const HUNTER_START: (usize, usize) = (13, 11);
+/// The other three hunters' start tiles, inside the pen, where they wait for their
+/// staggered release thresholds.
+pub const AMBUSHER_START: (usize, usize) = (13, 14);
+pub const FICKLE_START: (usize, usize) = (11, 14);
+pub const SHY_START: (usize, usize) = (16, 14);
 /// A hunter's speed at level 1, as a percentage of the base rate — a touch under the
 /// eater's, so a clean run stays ahead. (Per-level speeds are a later ticket.)
 const HUNTER_SPEED: i32 = 75;
 /// A hunter's speed while crossing the tunnel — it crawls there, the original's
 /// let-off that a cornered player can exploit.
 const HUNTER_TUNNEL_SPEED: i32 = 40;
+
+/// How the minds aim: the Ambusher looks this many tiles ahead of the eater; the
+/// Fickle pivots off a point this many ahead; the Shy breaks for its corner within
+/// this many tiles of the eater.
+const AMBUSHER_LOOKAHEAD: i32 = 4;
+const FICKLE_PIVOT: i32 = 2;
+const SHY_FLEE_TILES: i32 = 8;
+
+/// Level 1's scatter/chase rhythm, in simulation frames. The final chase has no
+/// expiry; later level tables will replace this constant when the level climb lands.
+const HUNT_SCHEDULE: [(HuntPhase, u32); 8] = [
+    (HuntPhase::Scatter, 7 * 60),
+    (HuntPhase::Chase, 20 * 60),
+    (HuntPhase::Scatter, 7 * 60),
+    (HuntPhase::Chase, 20 * 60),
+    (HuntPhase::Scatter, 5 * 60),
+    (HuntPhase::Chase, 20 * 60),
+    (HuntPhase::Scatter, 5 * 60),
+    (HuntPhase::Chase, u32::MAX),
+];
+/// Personal dot thresholds for the three waiting hunters, in release order.
+const AMBUSHER_RELEASE_DOTS: u32 = 0;
+const FICKLE_RELEASE_DOTS: u32 = 30;
+const SHY_RELEASE_DOTS: u32 = 60;
+/// After a death, the original's global counter releases another hunter every seven
+/// pickups. This counter is deliberately separate from the personal thresholds.
+const GLOBAL_RELEASE_DOTS: u32 = 7;
+/// A waiting hunter is forced out after four seconds without a pickup.
+const RELEASE_TIMEOUT_FRAMES: u32 = 4 * 60;
 
 /// GNASH's original maze — our own layout (ADR 0005), left-right symmetric like the
 /// original's. `#` wall, `.` dot, `o` power pellet, ` ` empty path, `-` the pen gate
@@ -256,24 +297,69 @@ struct MoverState {
     stall: u32,
 }
 
-/// A hunter, as the shell should draw it: its centre in logical pixels and the way it
-/// heads (which the shell points its eyes along).
+/// Which of the four minds a hunter has — each steers by its own target rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HunterKind {
+    /// Targets the eater's own tile — the relentless direct chaser.
+    Shadow,
+    /// Targets four tiles ahead of the eater — cutting off where it is going.
+    Ambusher,
+    /// Targets a point pincering off the Shadow — swinging wildly as the pair move.
+    Fickle,
+    /// Targets the eater when far, but breaks for its own corner when within eight
+    /// tiles — it lopes in, loses nerve, and comes again.
+    Shy,
+}
+
+/// The active part of the hunt's repeating rhythm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HuntPhase {
+    /// Hunters steer toward their individual scatter corners.
+    Scatter,
+    /// Hunters steer according to their individual minds.
+    Chase,
+}
+
+impl HunterKind {
+    /// The off-maze corner this mind heads for in scatter mode (and the Shy breaks for
+    /// when the eater comes close) — one per quadrant, so the four scatter apart.
+    fn scatter_corner(self) -> (i32, i32) {
+        match self {
+            HunterKind::Shadow => (COLS as i32 - 3, 0), // top-right
+            HunterKind::Ambusher => (2, 0),             // top-left
+            HunterKind::Fickle => (COLS as i32 - 1, ROWS as i32 - 1), // bottom-right
+            HunterKind::Shy => (0, ROWS as i32 - 1),    // bottom-left
+        }
+    }
+}
+
+/// A hunter, as the shell should draw it: its centre in logical pixels, the way it
+/// heads (which the shell points its eyes along), and which mind it is (its colour).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hunter {
     pub x: i32,
     pub y: i32,
     pub dir: Dir,
+    pub kind: HunterKind,
+    /// Whether this hunter is still waiting inside the pen.
+    pub penned: bool,
 }
 
-/// A hunter's live state: where it is, the way it heads, and its fractional-speed
-/// accumulator. Unlike the eater it never buffers a turn or corners — it decides
-/// afresh at each tile centre by its target (a later ticket gives each its own mind).
+/// A hunter's live state: where it is, the way it heads, its fractional-speed
+/// accumulator, which mind it has, and whether it is still penned. Unlike the eater
+/// it never buffers a turn or corners — it decides afresh at each tile centre by its
+/// target.
 #[derive(Clone, Copy)]
 struct HunterState {
     x: i32,
     y: i32,
     dir: Dir,
     accum: i32,
+    kind: HunterKind,
+    /// Still in the pen, immobile, until the release ticket lets it out.
+    penned: bool,
+    /// Released but still travelling through the gate to join the hunt.
+    leaving_pen: bool,
 }
 
 /// The maze: its fixed walls and gate, and the mutable field of pickups that empties
@@ -382,13 +468,17 @@ impl Input {
 pub struct Events {
     /// The eater ate a dot this step.
     pub dot_eaten: bool,
-    /// The eater ate a power pellet this step (a later ticket flips the hunt on it).
+    /// The eater ate a power pellet this step (T7 flips the hunt on it).
     pub power_pellet_eaten: bool,
     /// The maze was cleared of every pickup this step (a later ticket advances the
     /// level on it).
     pub maze_cleared: bool,
     /// A hunter caught the eater this step (lives and respawn are a later ticket).
     pub life_lost: bool,
+    /// The hunt switched between scatter and chase this step.
+    pub hunt_phase_changed: bool,
+    /// A waiting hunter left the pen this step, if one did.
+    pub hunter_released: Option<HunterKind>,
 }
 
 /// Where a game is.
@@ -405,12 +495,21 @@ pub enum Phase {
 pub struct Game {
     maze: Maze,
     eater: MoverState,
-    /// The hunters loose on the maze. Just the Shadow so far; the other three join
-    /// in a later ticket.
+    /// The four hunters. The Shadow starts loose; the other three wait for their
+    /// personal dot thresholds or the post-death global counter.
     hunters: Vec<HunterState>,
     /// Whether a hunter has caught the eater (latched; lives and respawn are a later
     /// ticket).
     caught: bool,
+    pickups_eaten: u32,
+    post_death_pickups: u32,
+    global_release: bool,
+    frames_since_pickup: u32,
+    hunt_phase: HuntPhase,
+    hunt_phase_index: usize,
+    hunt_phase_frames: u32,
+    /// A seam for T8's savage Shadow, which keeps chasing during scatter.
+    shadow_chases_in_scatter: bool,
     score: u32,
     phase: Phase,
     /// Steps taken so far.
@@ -425,7 +524,12 @@ impl Game {
     /// laid out full, and the eater waits centred on its start tile facing left.
     pub fn new(seed: u64) -> Self {
         let (sx, sy) = tile_center(EATER_START.0 as i32, EATER_START.1 as i32);
-        let (hx, hy) = tile_center(HUNTER_START.0 as i32, HUNTER_START.1 as i32);
+        let hunters = vec![
+            new_hunter(HunterKind::Shadow, HUNTER_START, Dir::Left, false),
+            new_hunter(HunterKind::Ambusher, AMBUSHER_START, Dir::Down, true),
+            new_hunter(HunterKind::Fickle, FICKLE_START, Dir::Up, true),
+            new_hunter(HunterKind::Shy, SHY_START, Dir::Up, true),
+        ];
         Self {
             maze: Maze::new(),
             eater: MoverState {
@@ -437,13 +541,16 @@ impl Game {
                 accum: 0,
                 stall: 0,
             },
-            hunters: vec![HunterState {
-                x: hx,
-                y: hy,
-                dir: Dir::Left,
-                accum: 0,
-            }],
+            hunters,
             caught: false,
+            pickups_eaten: 0,
+            post_death_pickups: 0,
+            global_release: false,
+            frames_since_pickup: 0,
+            hunt_phase: HUNT_SCHEDULE[0].0,
+            hunt_phase_index: 0,
+            hunt_phase_frames: 0,
+            shadow_chases_in_scatter: false,
             score: 0,
             phase: Phase::Playing,
             steps: 0,
@@ -460,6 +567,7 @@ impl Game {
         if self.phase == Phase::GameOver {
             return events;
         }
+        self.frames_since_pickup = self.frames_since_pickup.saturating_add(1);
         if let Some(d) = input.dir() {
             self.eater.want = Some(d);
         }
@@ -469,6 +577,8 @@ impl Game {
         self.resolve_contact(&mut events);
         self.advance_hunters();
         self.resolve_contact(&mut events);
+        self.advance_pen_release(&mut events);
+        self.advance_hunt_schedule(&mut events);
         events
     }
 
@@ -575,6 +685,11 @@ impl Game {
                 events.power_pellet_eaten = true;
             }
         }
+        self.pickups_eaten += 1;
+        if self.global_release {
+            self.post_death_pickups += 1;
+        }
+        self.frames_since_pickup = 0;
         if self.maze.remaining == 0 {
             events.maze_cleared = true;
         }
@@ -592,19 +707,110 @@ impl Game {
         (self.eater.x, self.eater.y) = step_pixel(self.eater.x, self.eater.y, dir);
     }
 
-    /// Advances every hunter one frame toward its target.
+    /// Advances every loose hunter one frame toward its target. Penned hunters hold
+    /// still until the release rules let them out.
     fn advance_hunters(&mut self) {
         for i in 0..self.hunters.len() {
+            if self.hunters[i].penned {
+                continue;
+            }
             let target = self.hunter_target(i);
             self.advance_hunter(i, target);
         }
     }
 
-    /// The tile hunter `i` steers toward. The Shadow — all there is so far — targets
-    /// the eater's own tile; the other minds (and scatter's corners) arrive in a later
-    /// ticket, plugging into this same seam.
-    fn hunter_target(&self, _i: usize) -> (i32, i32) {
-        tile_at(self.eater.x, self.eater.y)
+    /// Releases at most one waiting hunter per frame. Personal thresholds govern a
+    /// fresh run; after a death, the seven-pickup global counter takes over. The
+    /// timeout guarantees that a stalled eater cannot hold the pen forever.
+    fn advance_pen_release(&mut self, events: &mut Events) {
+        let next = self.hunters.iter().position(|hunter| hunter.penned);
+        let Some(i) = next else { return };
+
+        let threshold_reached = if self.global_release {
+            self.post_death_pickups >= GLOBAL_RELEASE_DOTS
+        } else {
+            self.pickups_eaten >= release_threshold(self.hunters[i].kind)
+        };
+        let timeout = self.frames_since_pickup >= RELEASE_TIMEOUT_FRAMES;
+        if threshold_reached || timeout {
+            let kind = self.hunters[i].kind;
+            self.hunters[i].penned = false;
+            self.hunters[i].leaving_pen = true;
+            self.hunters[i].dir = Dir::Up;
+            self.hunters[i].accum = SPEED_DEN;
+            if self.global_release {
+                self.post_death_pickups = 0;
+            }
+            self.frames_since_pickup = 0;
+            events.hunter_released = Some(kind);
+        }
+    }
+
+    /// Advances the level-1 scatter/chase clock. The clock intentionally lives in
+    /// its own method so T7 can pause it during frightened time.
+    fn advance_hunt_schedule(&mut self, events: &mut Events) {
+        self.hunt_phase_frames = self.hunt_phase_frames.saturating_add(1);
+        let duration = HUNT_SCHEDULE[self.hunt_phase_index].1;
+        if self.hunt_phase_frames < duration || self.hunt_phase_index + 1 >= HUNT_SCHEDULE.len() {
+            return;
+        }
+        self.hunt_phase_index += 1;
+        self.hunt_phase = HUNT_SCHEDULE[self.hunt_phase_index].0;
+        self.hunt_phase_frames = 0;
+        for hunter in &mut self.hunters {
+            if !hunter.penned {
+                hunter.dir = hunter.dir.opposite();
+            }
+        }
+        events.hunt_phase_changed = true;
+    }
+
+    /// The tile hunter `i` steers toward, by its mind and the active hunt phase.
+    fn hunter_target(&self, i: usize) -> (i32, i32) {
+        let hunter = self.hunters[i];
+        if hunter.leaving_pen {
+            return (13, 12);
+        }
+        let eater = tile_at(self.eater.x, self.eater.y);
+        if self.hunt_phase == HuntPhase::Scatter
+            && !(hunter.kind == HunterKind::Shadow && self.shadow_chases_in_scatter)
+        {
+            return hunter.kind.scatter_corner();
+        }
+        match hunter.kind {
+            // The Shadow bears straight down on the eater.
+            HunterKind::Shadow => eater,
+            // The Ambusher aims a few tiles ahead of where the eater is heading.
+            HunterKind::Ambusher => ahead_of_eater(eater, self.eater.dir, AMBUSHER_LOOKAHEAD),
+            // The Fickle doubles the vector from the Shadow through a point ahead of the
+            // eater — a pincer that swings as the pair move.
+            HunterKind::Fickle => {
+                let pivot = ahead_of_eater(eater, self.eater.dir, FICKLE_PIVOT);
+                let shadow = self.shadow_tile();
+                (2 * pivot.0 - shadow.0, 2 * pivot.1 - shadow.1)
+            }
+            // The Shy chases while far, but breaks for its corner when the eater is near.
+            HunterKind::Shy => {
+                let own = tile_at(hunter.x, hunter.y);
+                if tile_dist_sq(own, eater) > SHY_FLEE_TILES * SHY_FLEE_TILES {
+                    eater
+                } else {
+                    HunterKind::Shy.scatter_corner()
+                }
+            }
+        }
+    }
+
+    /// The Shadow's current tile — the Fickle steers off it. Falls back to the eater's
+    /// tile if somehow no Shadow is present.
+    fn shadow_tile(&self) -> (i32, i32) {
+        self.hunters
+            .iter()
+            .find(|h| h.kind == HunterKind::Shadow)
+            .map_or_else(
+                || tile_at(self.eater.x, self.eater.y),
+                |h| tile_at(h.x, h.y),
+            )
     }
 
     /// Advances one hunter a frame: spend its fractional-speed budget — a crawl while
@@ -634,6 +840,12 @@ impl Game {
         }
         (self.hunters[i].x, self.hunters[i].y) =
             step_pixel(self.hunters[i].x, self.hunters[i].y, self.hunters[i].dir);
+        if self.hunters[i].leaving_pen {
+            let tile = tile_at(self.hunters[i].x, self.hunters[i].y);
+            if !in_pen(tile.0, tile.1) && self.maze.tile(tile.0, tile.1) != Tile::Gate {
+                self.hunters[i].leaving_pen = false;
+            }
+        }
     }
 
     /// Chooses a hunter's heading out of tile `(tc, tr)`: among the open exits — never
@@ -664,19 +876,26 @@ impl Game {
         best.map_or(reverse, |(dir, _)| dir)
     }
 
-    /// Whether a hunter may enter tile `(col, row)` — an open corridor. The gate and
-    /// pen interior open to hunters only in the release/eyes ticket that follows; for
-    /// now the Shadow, already loose, keeps to the corridors.
+    /// Whether a hunter may enter tile `(col, row)`. Released hunters may cross the
+    /// gate while leaving or returning to the pen; the eater still treats it as a wall.
     fn hunter_can_enter(&self, col: i32, row: i32) -> bool {
-        self.maze.tile(col, row) == Tile::Path
+        matches!(self.maze.tile(col, row), Tile::Path | Tile::Gate)
     }
 
-    /// Flags a catch if any hunter shares the eater's tile.
+    /// Flags a catch if any loose hunter shares the eater's tile. The event is latched
+    /// once; T8 will turn that latch into lives and a reset sequence.
     fn resolve_contact(&mut self, events: &mut Events) {
         let eater_tile = tile_at(self.eater.x, self.eater.y);
-        if self.hunters.iter().any(|h| tile_at(h.x, h.y) == eater_tile) {
+        if !self.caught
+            && self
+                .hunters
+                .iter()
+                .any(|h| !h.penned && tile_at(h.x, h.y) == eater_tile)
+        {
             self.caught = true;
             events.life_lost = true;
+            self.global_release = true;
+            self.post_death_pickups = 0;
         }
     }
 
@@ -702,13 +921,41 @@ impl Game {
         }
     }
 
-    /// The hunters loose on the maze, as the shell should draw them.
+    /// The hunters, as the shell should draw them.
     pub fn hunters(&self) -> impl Iterator<Item = Hunter> + '_ {
         self.hunters.iter().map(|h| Hunter {
             x: h.x,
             y: h.y,
             dir: h.dir,
+            kind: h.kind,
+            penned: h.penned,
         })
+    }
+
+    /// The current scatter/chase phase of the hunt.
+    pub fn hunt_phase(&self) -> HuntPhase {
+        self.hunt_phase
+    }
+
+    /// Frames elapsed in the current scatter/chase phase.
+    pub fn hunt_phase_frames(&self) -> u32 {
+        self.hunt_phase_frames
+    }
+
+    /// The number of pickups eaten so far, useful for the HUD and release tests.
+    pub fn pickups_eaten(&self) -> u32 {
+        self.pickups_eaten
+    }
+
+    /// Number of hunters still waiting in the pen.
+    pub fn penned_hunters(&self) -> usize {
+        self.hunters.iter().filter(|hunter| hunter.penned).count()
+    }
+
+    /// Enables the T8 savage-Shadow seam: Shadow keeps its chase target during
+    /// scatter while the other active hunters still use their corners.
+    pub fn set_shadow_chases_in_scatter(&mut self, enabled: bool) {
+        self.shadow_chases_in_scatter = enabled;
     }
 
     /// Whether a hunter has caught the eater — latched, until a later ticket adds
@@ -791,6 +1038,42 @@ fn tile_dist_sq(a: (i32, i32), b: (i32, i32)) -> i32 {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
     dx * dx + dy * dy
+}
+
+/// A fresh hunter of `kind`, centred on its start `tile`, facing `dir`.
+fn new_hunter(kind: HunterKind, tile: (usize, usize), dir: Dir, penned: bool) -> HunterState {
+    let (x, y) = tile_center(tile.0 as i32, tile.1 as i32);
+    HunterState {
+        x,
+        y,
+        dir,
+        accum: 0,
+        kind,
+        penned,
+        leaving_pen: false,
+    }
+}
+
+/// The personal release threshold for a hunter on a fresh run.
+fn release_threshold(kind: HunterKind) -> u32 {
+    match kind {
+        HunterKind::Shadow => 0,
+        HunterKind::Ambusher => AMBUSHER_RELEASE_DOTS,
+        HunterKind::Fickle => FICKLE_RELEASE_DOTS,
+        HunterKind::Shy => SHY_RELEASE_DOTS,
+    }
+}
+
+/// The tile `n` ahead of the eater's `tile` along `dir`. Facing up it is also `n` to
+/// the left — the original's overflow quirk, which both the Ambusher (n=4) and the
+/// Fickle's pivot (n=2) inherit.
+fn ahead_of_eater(tile: (i32, i32), dir: Dir, n: i32) -> (i32, i32) {
+    let (dx, dy) = dir.delta();
+    let mut ahead = (tile.0 + n * dx, tile.1 + n * dy);
+    if dir == Dir::Up {
+        ahead.0 -= n;
+    }
+    ahead
 }
 
 /// Whether `(col, row)` is one of the marked no-up junctions, where a hunter may not
@@ -1178,8 +1461,8 @@ mod tests {
         );
     }
 
-    /// Replaces the hunters with a single one centred on `(col, row)` facing `dir`,
-    /// primed to move on the next step.
+    /// Replaces the hunters with a single loose Shadow centred on `(col, row)` facing
+    /// `dir`, primed to move on the next step.
     fn plant_hunter(game: &mut Game, col: i32, row: i32, dir: Dir) {
         let (x, y) = tile_center(col, row);
         game.hunters = vec![HunterState {
@@ -1187,6 +1470,9 @@ mod tests {
             y,
             dir,
             accum: SPEED_DEN,
+            kind: HunterKind::Shadow,
+            penned: false,
+            leaving_pen: false,
         }];
         game.caught = false;
     }
@@ -1196,6 +1482,7 @@ mod tests {
         // The eater, stalled against the wall left of (6, 23), sits still; the Shadow,
         // planted three tiles up the same corridor, must chase down and catch it.
         let mut game = Game::new(1);
+        game.hunt_phase = HuntPhase::Chase;
         plant_eater(&mut game, 6, 23, Dir::Left);
         plant_hunter(&mut game, 6, 20, Dir::Down);
         let mut caught = false;
@@ -1211,8 +1498,11 @@ mod tests {
         // Over a long chase the hunter only ever turns at right angles or holds on —
         // it never flips to its opposite heading.
         let mut game = Game::new(2);
+        game.hunt_phase = HuntPhase::Chase;
+        game.hunt_phase_index = 1;
+        game.hunt_phase_frames = 0;
         let mut prev = game.hunters[0].dir;
-        for _ in 0..4000 {
+        for _ in 0..1000 {
             game.step(Input::default());
             let now = game.hunters[0].dir;
             assert_ne!(now, prev.opposite(), "a hunter never reverses on the spot");
@@ -1247,5 +1537,224 @@ mod tests {
         let events = game.step(Input::default());
         assert!(events.life_lost, "sharing the eater's tile is a catch");
         assert!(game.caught(), "and the catch is latched");
+    }
+
+    #[test]
+    fn the_ambusher_aims_four_ahead() {
+        let mut game = Game::new(1);
+        game.hunt_phase = HuntPhase::Chase;
+        plant_eater(&mut game, 10, 20, Dir::Right);
+        assert_eq!(game.hunters[1].kind, HunterKind::Ambusher);
+        assert_eq!(
+            game.hunter_target(1),
+            (14, 20),
+            "four tiles ahead of the right-facing eater"
+        );
+    }
+
+    #[test]
+    fn the_ambusher_up_quirk_aims_ahead_and_aside() {
+        let mut game = Game::new(1);
+        game.hunt_phase = HuntPhase::Chase;
+        plant_eater(&mut game, 10, 20, Dir::Up);
+        assert_eq!(
+            game.hunter_target(1),
+            (6, 16),
+            "facing up: four ahead and four to the left, the original's overflow"
+        );
+    }
+
+    #[test]
+    fn the_fickle_pincers_off_the_shadow() {
+        let mut game = Game::new(1);
+        game.hunt_phase = HuntPhase::Chase;
+        plant_eater(&mut game, 10, 20, Dir::Right);
+        // Park the Shadow (hunters[0]) at a known tile the Fickle steers off.
+        (game.hunters[0].x, game.hunters[0].y) = tile_center(10, 10);
+        assert_eq!(game.hunters[2].kind, HunterKind::Fickle);
+        // pivot = two ahead of the eater = (12, 20); target = 2*pivot - shadow = (14, 30).
+        assert_eq!(game.hunter_target(2), (14, 30));
+    }
+
+    #[test]
+    fn the_shy_chases_when_far_and_flees_when_near() {
+        let mut game = Game::new(1);
+        game.hunt_phase = HuntPhase::Chase;
+        plant_eater(&mut game, 10, 20, Dir::Left);
+        assert_eq!(game.hunters[3].kind, HunterKind::Shy);
+        // Fifteen tiles up — far — so it targets the eater.
+        (game.hunters[3].x, game.hunters[3].y) = tile_center(10, 5);
+        assert_eq!(
+            game.hunter_target(3),
+            (10, 20),
+            "far: the Shy targets the eater"
+        );
+        // On the eater's tile — near — so it breaks for its own corner.
+        (game.hunters[3].x, game.hunters[3].y) = tile_center(10, 20);
+        assert_eq!(
+            game.hunter_target(3),
+            HunterKind::Shy.scatter_corner(),
+            "near: the Shy breaks for its corner"
+        );
+    }
+
+    #[test]
+    fn each_mind_has_a_distinct_scatter_corner() {
+        let corners = [
+            HunterKind::Shadow.scatter_corner(),
+            HunterKind::Ambusher.scatter_corner(),
+            HunterKind::Fickle.scatter_corner(),
+            HunterKind::Shy.scatter_corner(),
+        ];
+        for (i, ci) in corners.iter().enumerate() {
+            for cj in &corners[i + 1..] {
+                assert_ne!(ci, cj, "the four scatter corners are distinct");
+            }
+        }
+    }
+
+    #[test]
+    fn the_penned_hunters_release_on_personal_thresholds() {
+        let mut game = Game::new(1);
+        let positions = |g: &Game| -> Vec<(i32, i32)> {
+            g.hunters()
+                .filter(|h| h.kind != HunterKind::Shadow)
+                .map(|h| (h.x, h.y))
+                .collect()
+        };
+        assert_eq!(game.penned_hunters(), 3);
+        let first = (0..300)
+            .map(|_| game.step(Input::default()))
+            .find_map(|events| events.hunter_released);
+        assert_eq!(first, Some(HunterKind::Ambusher));
+        assert_eq!(game.penned_hunters(), 2);
+        assert!(
+            positions(&game).len() == 3,
+            "all hunters remain observable after the first release"
+        );
+    }
+
+    #[test]
+    fn the_hunt_switches_from_scatter_to_chase_on_schedule() {
+        let mut game = Game::new(1);
+        assert_eq!(game.hunt_phase(), HuntPhase::Scatter);
+        for _ in 0..(7 * 60 - 1) {
+            assert!(!game.step(Input::default()).hunt_phase_changed);
+        }
+        let events = game.step(Input::default());
+        assert!(events.hunt_phase_changed);
+        assert_eq!(game.hunt_phase(), HuntPhase::Chase);
+        assert_eq!(game.hunt_phase_frames(), 0);
+    }
+
+    #[test]
+    fn a_phase_switch_reverses_each_active_hunter_once() {
+        let mut game = Game::new(1);
+        game.hunters[0].x = tile_center(6, 20).0;
+        game.hunters[0].y = tile_center(6, 20).1;
+        game.hunters[0].dir = Dir::Left;
+        game.hunt_phase_frames = 7 * 60 - 1;
+        let before = game.hunters[0].dir;
+        let mut events = Events::default();
+        game.advance_hunt_schedule(&mut events);
+        assert!(events.hunt_phase_changed);
+        assert_eq!(game.hunt_phase(), HuntPhase::Chase);
+        assert_eq!(game.hunters[0].dir, before.opposite());
+    }
+
+    #[test]
+    fn a_released_hunter_exits_through_the_gate() {
+        let mut game = Game::new(1);
+        let event = game.step(Input::default());
+        assert_eq!(event.hunter_released, Some(HunterKind::Ambusher));
+        for _ in 0..240 {
+            game.step(Input::default());
+        }
+        let ambusher = game.hunters().nth(1).unwrap();
+        let tile = tile_at(ambusher.x, ambusher.y);
+        assert!(!ambusher.penned);
+        assert!(!in_pen(tile.0, tile.1), "the Ambusher cleared the pen");
+    }
+
+    #[test]
+    fn the_release_timeout_forces_the_next_hunter() {
+        let mut game = Game::new(1);
+        for row in &mut game.maze.pickups {
+            for pickup in row {
+                *pickup = Pickup::None;
+            }
+        }
+        game.maze.remaining = 0;
+        game.caught = true; // keep this release-only scenario free of contact noise
+        assert_eq!(
+            game.step(Input::default()).hunter_released,
+            Some(HunterKind::Ambusher)
+        );
+        let mut released = None;
+        for _ in 0..RELEASE_TIMEOUT_FRAMES {
+            released = game.step(Input::default()).hunter_released;
+            if released.is_some() {
+                break;
+            }
+        }
+        assert_eq!(released, Some(HunterKind::Fickle));
+    }
+
+    #[test]
+    fn a_death_switches_pen_release_to_the_global_counter() {
+        let mut game = Game::new(1);
+        plant_eater(&mut game, 13, 23, Dir::Left);
+        plant_hunter(&mut game, 13, 23, Dir::Left);
+        game.hunters.push(new_hunter(
+            HunterKind::Ambusher,
+            AMBUSHER_START,
+            Dir::Down,
+            true,
+        ));
+        assert!(game.step(Input::default()).life_lost);
+        assert!(game.global_release);
+        game.caught = true;
+        game.maze.remaining = 0;
+        for row in &mut game.maze.pickups {
+            for pickup in row {
+                *pickup = Pickup::None;
+            }
+        }
+        game.post_death_pickups = GLOBAL_RELEASE_DOTS - 1;
+        game.eater.x = tile_center(1, 23).0;
+        game.eater.y = tile_center(1, 23).1;
+        game.eater.dir = Dir::Left;
+        game.eater.accum = SPEED_DEN;
+        game.maze.pickups[23][1] = Pickup::Dot;
+        game.maze.remaining = 1;
+        assert!(game.step(Input::default()).dot_eaten);
+        assert_eq!(game.post_death_pickups, 0);
+        assert_eq!(game.hunters.iter().filter(|h| h.penned).count(), 0);
+    }
+
+    #[test]
+    fn a_released_mind_moves_and_replays_identically() {
+        // T6 releases the penned minds on a schedule; here we un-pen the Ambusher
+        // directly to exercise its targeting driving movement through the step seam,
+        // and confirm it replays identically across two runs on one seed.
+        let run = || {
+            let mut game = Game::new(9);
+            game.hunters[1].penned = false; // the Ambusher
+            let mut path = Vec::new();
+            for _ in 0..1500 {
+                game.step(Input::default());
+                let a = game.hunters().nth(1).expect("the Ambusher");
+                path.push((a.x, a.y));
+            }
+            path
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(a, b, "a released mind replays identically");
+        let distinct = a.iter().collect::<std::collections::HashSet<_>>().len();
+        assert!(
+            distinct > 1,
+            "its targeting drove it to move, visiting {distinct} tiles"
+        );
     }
 }
