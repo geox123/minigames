@@ -51,6 +51,15 @@
 //! breathes, levels 2–4 and 5+ stretch the third chase past seventeen minutes and
 //! shrink the final scatter to a single frame, so deep in a level the hunters seem
 //! to reverse without ever relaxing.
+//!
+//! A **power pellet flips the hunt**
+//! ([T7](https://github.com/geox123/minigames/issues/165)): every hunter out on the
+//! maze reverses, slows and turns **frightened**, wandering on the seeded RNG while
+//! the scatter/chase clock holds its breath. The eater catches them for
+//! **200 → 400 → 800 → 1600**, doubling within a pellet; a caught hunter is a pair
+//! of **eyes** racing home to regenerate and re-enter through the release rules.
+//! The window follows the original's per-level table, down to **zero blue time** at
+//! the deep levels, where a pellet scores 50 and reverses no one.
 
 /// The maze is 28 tiles wide and 31 tall — the original's playfield.
 pub const COLS: usize = 28;
@@ -191,6 +200,75 @@ const GLOBAL_RELEASE_DOTS: u32 = 7;
 /// original tightens this to three seconds at level 5+; that lands with T8's
 /// per-level tables.)
 const RELEASE_TIMEOUT_FRAMES: u32 = 4 * 60;
+
+/// A frightened hunter's speed — 50% of a frame's full budget, the original's
+/// level-1 frightened rate. (Per-level frightened speeds land with T8's tables.)
+const FRIGHTENED_SPEED: i32 = 50;
+/// Eyes race home at about twice the hunting clip, and the tunnel does not slow
+/// them — nothing does.
+const EYES_SPEED: i32 = 160;
+/// What catching frightened hunters scores: doubling with each catch on a single
+/// pellet, resetting on the next pellet.
+const CATCH_SCORES: [u32; 4] = [200, 400, 800, 1600];
+
+/// The frightened window by level — `(frames, end flashes)`, the original's table:
+/// six seconds at level 1, wobbling downward (with the odd recovery) to **zero** at
+/// level 17 and from 19 on, where a power pellet buys no blue time at all and
+/// reverses no one — the late game's cruelty, kept.
+const FRIGHT_TABLE: [(u32, u32); 18] = [
+    (6 * 60, 5), // level 1
+    (5 * 60, 5),
+    (4 * 60, 5),
+    (3 * 60, 5),
+    (2 * 60, 5),
+    (5 * 60, 5),
+    (2 * 60, 5),
+    (2 * 60, 5),
+    (60, 3),
+    (5 * 60, 5), // level 10
+    (2 * 60, 5),
+    (60, 3),
+    (60, 3),
+    (3 * 60, 5),
+    (60, 3),
+    (60, 3),
+    (0, 0),
+    (60, 3), // level 18 — the one late reprieve
+];
+
+/// The frightened window a level grants; levels past the table's end grant none.
+fn fright_for(level: u32) -> (u32, u32) {
+    let index = level.saturating_sub(1) as usize;
+    FRIGHT_TABLE.get(index).copied().unwrap_or((0, 0))
+}
+
+/// The tile eyes race for — the pen's centre, straight through the gate. Reaching
+/// the pen regenerates the hunter.
+const EYES_HOME: (i32, i32) = (13, 14);
+
+/// The game's one source of randomness — a seeded xorshift, consumed only by
+/// frightened wander, so a seed and an input sequence still replay identically.
+struct Rng {
+    state: u64,
+}
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        // Xorshift sticks at zero, so displace the seed and keep it nonzero.
+        Self {
+            state: (seed ^ 0x9E37_79B9_7F4A_7C15).max(1),
+        }
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+}
 
 /// GNASH's original maze — our own layout (ADR 0005), left-right symmetric like the
 /// original's. `#` wall, `.` dot, `o` power pellet, ` ` empty path, `-` the pen gate
@@ -357,6 +435,20 @@ pub enum HunterKind {
     Molar,
 }
 
+/// What state a hunter is in — how it moves, how it meets the eater, and what the
+/// shell draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HunterMode {
+    /// On the hunt: steering by its mind (or its corner in scatter). Touching the
+    /// eater costs a life.
+    Hunting,
+    /// Flipped by a power pellet: slowed, wandering at random, harmless — and worth
+    /// catching.
+    Frightened,
+    /// Caught: a pair of eyes racing home to the pen to regenerate.
+    Eyes,
+}
+
 /// The active part of the hunt's repeating rhythm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HuntPhase {
@@ -389,6 +481,8 @@ pub struct Hunter {
     pub kind: HunterKind,
     /// Whether this hunter is still waiting inside the pen.
     pub penned: bool,
+    /// Hunting, frightened, or eyes — what the shell draws it as.
+    pub mode: HunterMode,
 }
 
 /// A hunter's live state: where it is, the way it heads, its fractional-speed
@@ -406,6 +500,8 @@ struct HunterState {
     penned: bool,
     /// Released but still travelling through the gate to join the hunt.
     leaving_pen: bool,
+    /// Hunting, frightened, or eyes.
+    mode: HunterMode,
 }
 
 /// The maze: its fixed walls and gate, and the mutable field of pickups that empties
@@ -525,6 +621,18 @@ pub struct Events {
     pub hunt_phase_changed: bool,
     /// A waiting hunter left the pen this step, if one did.
     pub hunter_released: Option<HunterKind>,
+    /// A power pellet flipped the hunt to frightened this step. (At the deep levels
+    /// the window is zero: the pellet is eaten but this never fires.)
+    pub frightened_started: bool,
+    /// The frightened window ran out this step and the schedule resumed.
+    pub frightened_ended: bool,
+    /// The eater caught a frightened hunter this step, and what the catch scored.
+    /// If two hunters are somehow caught in one step the later overwrites — the
+    /// authoritative score is [`Game::score`]; this is a one-shot cue for juice.
+    pub hunter_caught: Option<(HunterKind, u32)>,
+    /// A pair of eyes reached the pen and the hunter regenerated this step. Same
+    /// last-writer-wins caveat as `hunter_caught`, and just as rare.
+    pub hunter_regenerated: Option<HunterKind>,
 }
 
 /// Where a game is.
@@ -557,6 +665,14 @@ pub struct Game {
     /// The level being played, driving which schedule tier the hunt runs on. Fixed
     /// at 1 until T8 advances it on a maze clear.
     level: u32,
+    /// Frames left on the frightened window; zero means the hunt is running. While
+    /// nonzero the scatter/chase clock holds its breath.
+    frightened_frames: u32,
+    /// Catches on the current pellet, indexing the doubling score ladder. Reset by
+    /// the next pellet.
+    catch_streak: usize,
+    /// The frightened wander's randomness — the game's only nondeterminism, seeded.
+    rng: Rng,
     /// A seam for T8's savage Canine, which keeps chasing during scatter.
     canine_chases_in_scatter: bool,
     score: u32,
@@ -601,6 +717,9 @@ impl Game {
             hunt_phase_index: 0,
             hunt_phase_frames: 0,
             level,
+            frightened_frames: 0,
+            catch_streak: 0,
+            rng: Rng::new(seed),
             canine_chases_in_scatter: false,
             score: 0,
             phase: Phase::Playing,
@@ -623,14 +742,44 @@ impl Game {
             self.eater.want = Some(d);
         }
         self.advance_eater(&mut events);
+        if events.power_pellet_eaten {
+            self.flip_hunt(&mut events);
+        }
         // The original checks a catch both after the eater moves and after the
         // hunters move, so a head-on pass counts as a catch either way.
         self.resolve_contact(&mut events);
-        self.advance_hunters();
+        self.advance_hunters(&mut events);
         self.resolve_contact(&mut events);
         self.advance_pen_release(&mut events);
         self.advance_hunt_schedule(&mut events);
         events
+    }
+
+    /// A power pellet flips the hunt: every hunter out on the maze reverses, slows
+    /// and turns frightened for the level's window, and the catch ladder resets.
+    /// At the deep levels the window is zero — the pellet scores, and nothing else
+    /// happens at all.
+    fn flip_hunt(&mut self, events: &mut Events) {
+        let (frames, _) = fright_for(self.level);
+        if frames == 0 {
+            return;
+        }
+        self.frightened_frames = frames;
+        self.catch_streak = 0;
+        events.frightened_started = true;
+        for hunter in &mut self.hunters {
+            // A second pellet re-frightens and re-reverses a still-blue hunter;
+            // only eyes are past caring.
+            if !hunter.penned && hunter.mode != HunterMode::Eyes {
+                hunter.mode = HunterMode::Frightened;
+                // But a hunter mid-doorway keeps its heading: the original never
+                // reverses one in or leaving the house — it turns blue and keeps
+                // climbing out.
+                if !hunter.leaving_pen {
+                    hunter.dir = hunter.dir.opposite();
+                }
+            }
+        }
     }
 
     /// Advances the eater one frame: honour a reversal at once, then spend the frame's
@@ -760,13 +909,25 @@ impl Game {
 
     /// Advances every loose hunter one frame toward its target. Penned hunters hold
     /// still until the release rules let them out.
-    fn advance_hunters(&mut self) {
+    fn advance_hunters(&mut self, events: &mut Events) {
         for i in 0..self.hunters.len() {
             if self.hunters[i].penned {
                 continue;
             }
             let target = self.hunter_target(i);
             self.advance_hunter(i, target);
+            // Eyes that have made it back inside the pen regenerate: penned again,
+            // hunting again, and the release machinery re-releases them the way it
+            // released them the first time.
+            if self.hunters[i].mode == HunterMode::Eyes {
+                let tile = tile_at(self.hunters[i].x, self.hunters[i].y);
+                if in_pen(tile.0, tile.1) {
+                    self.hunters[i].mode = HunterMode::Hunting;
+                    self.hunters[i].penned = true;
+                    self.hunters[i].leaving_pen = false;
+                    events.hunter_regenerated = Some(self.hunters[i].kind);
+                }
+            }
         }
     }
 
@@ -797,9 +958,22 @@ impl Game {
         }
     }
 
-    /// Advances the level's scatter/chase clock. The clock intentionally lives in
-    /// its own method so T7 can pause it during frightened time.
+    /// Advances the level's scatter/chase clock — unless the hunt is frightened, in
+    /// which case the clock holds its breath until the window runs out, and the
+    /// still-blue hunters revert where they stand (no reversal on recovery).
     fn advance_hunt_schedule(&mut self, events: &mut Events) {
+        if self.frightened_frames > 0 {
+            self.frightened_frames -= 1;
+            if self.frightened_frames == 0 {
+                for hunter in &mut self.hunters {
+                    if hunter.mode == HunterMode::Frightened {
+                        hunter.mode = HunterMode::Hunting;
+                    }
+                }
+                events.frightened_ended = true;
+            }
+            return;
+        }
         let schedule = hunt_schedule(self.level);
         self.hunt_phase_frames = self.hunt_phase_frames.saturating_add(1);
         let duration = schedule[self.hunt_phase_index].1;
@@ -818,8 +992,12 @@ impl Game {
     }
 
     /// The tile hunter `i` steers toward, by its mind and the active hunt phase.
+    /// (A frightened hunter never consults this — it wanders.)
     fn hunter_target(&self, i: usize) -> (i32, i32) {
         let hunter = self.hunters[i];
+        if hunter.mode == HunterMode::Eyes {
+            return EYES_HOME;
+        }
         if hunter.leaving_pen {
             return (13, 12);
         }
@@ -865,14 +1043,20 @@ impl Game {
             )
     }
 
-    /// Advances one hunter a frame: spend its fractional-speed budget — a crawl while
-    /// crossing the tunnel — one pixel at a time.
+    /// Advances one hunter a frame: spend its fractional-speed budget — slowed when
+    /// frightened, racing as eyes, a crawl while crossing the tunnel — one pixel at
+    /// a time.
     fn advance_hunter(&mut self, i: usize, target: (i32, i32)) {
         let (_, row) = tile_at(self.hunters[i].x, self.hunters[i].y);
-        let speed = if row == TUNNEL_ROW as i32 {
-            HUNTER_TUNNEL_SPEED
+        let base = match self.hunters[i].mode {
+            HunterMode::Hunting => HUNTER_SPEED,
+            HunterMode::Frightened => FRIGHTENED_SPEED,
+            HunterMode::Eyes => EYES_SPEED,
+        };
+        let speed = if row == TUNNEL_ROW as i32 && self.hunters[i].mode != HunterMode::Eyes {
+            base.min(HUNTER_TUNNEL_SPEED)
         } else {
-            HUNTER_SPEED
+            base
         };
         self.hunters[i].accum += speed;
         while self.hunters[i].accum >= SPEED_DEN {
@@ -882,13 +1066,24 @@ impl Game {
     }
 
     /// Moves one hunter a single pixel: at a tile centre it picks the exit nearest its
-    /// target, then it steps along its heading, wrapping through the tunnel.
+    /// target — or a random one while frightened — then it steps along its heading,
+    /// wrapping through the tunnel.
     fn step_hunter_pixel(&mut self, i: usize, target: (i32, i32)) {
         let (tc, tr) = tile_at(self.hunters[i].x, self.hunters[i].y);
         let ox = self.hunters[i].x.rem_euclid(TILE);
         let oy = self.hunters[i].y.rem_euclid(TILE);
         if ox == HALF && oy == HALF {
-            self.hunters[i].dir = self.choose_hunter_dir(tc, tr, self.hunters[i].dir, target);
+            let through_gate =
+                self.hunters[i].leaving_pen || self.hunters[i].mode == HunterMode::Eyes;
+            // A frightened hunter still mid-doorway steers for the exit like anyone
+            // leaving the pen; the wander begins once it is out on the maze.
+            let wanders =
+                self.hunters[i].mode == HunterMode::Frightened && !self.hunters[i].leaving_pen;
+            self.hunters[i].dir = if wanders {
+                self.choose_frightened_dir(tc, tr, self.hunters[i].dir, through_gate)
+            } else {
+                self.choose_hunter_dir(tc, tr, self.hunters[i].dir, target, through_gate)
+            };
         }
         (self.hunters[i].x, self.hunters[i].y) =
             step_pixel(self.hunters[i].x, self.hunters[i].y, self.hunters[i].dir);
@@ -904,7 +1099,14 @@ impl Game {
     /// the reverse of `current`, never up at a no-up junction — the one whose next tile
     /// is nearest `target` in straight-line distance, ties broken up → left → down →
     /// right. A dead end (no exit) forces a reversal.
-    fn choose_hunter_dir(&self, tc: i32, tr: i32, current: Dir, target: (i32, i32)) -> Dir {
+    fn choose_hunter_dir(
+        &self,
+        tc: i32,
+        tr: i32,
+        current: Dir,
+        target: (i32, i32),
+        through_gate: bool,
+    ) -> Dir {
         let reverse = current.opposite();
         let mut best: Option<(Dir, i32)> = None;
         // The tie-break order is the iteration order: with strict-less-than, the first
@@ -917,7 +1119,7 @@ impl Game {
                 continue;
             }
             let (nc, nr) = dir.neighbor(tc, tr);
-            if !self.hunter_can_enter(nc, nr) {
+            if !self.hunter_can_enter(nc, nr, through_gate) {
                 continue;
             }
             let dist = tile_dist_sq((nc, nr), target);
@@ -928,26 +1130,71 @@ impl Game {
         best.map_or(reverse, |(dir, _)| dir)
     }
 
-    /// Whether a hunter may enter tile `(col, row)`. Released hunters may cross the
-    /// gate while leaving or returning to the pen; the eater still treats it as a wall.
-    fn hunter_can_enter(&self, col: i32, row: i32) -> bool {
-        matches!(self.maze.tile(col, row), Tile::Path | Tile::Gate)
+    /// Whether a hunter may enter tile `(col, row)`. The gate opens only to a hunter
+    /// with business there — leaving the pen, or racing home as eyes; a hunter out on
+    /// the maze never walks back in alive. The eater treats it as a wall outright.
+    fn hunter_can_enter(&self, col: i32, row: i32, through_gate: bool) -> bool {
+        match self.maze.tile(col, row) {
+            Tile::Path => true,
+            Tile::Gate => through_gate,
+            Tile::Wall => false,
+        }
     }
 
-    /// Flags a catch if any loose hunter shares the eater's tile. The event is latched
-    /// once; T8 will turn that latch into lives and a reset sequence.
+    /// Chooses a frightened hunter's heading out of tile `(tc, tr)`: a pseudo-random
+    /// pick among the open exits, under the same rules as the hunt — never reversing,
+    /// never up at a no-up junction. A dead end still forces the reversal.
+    fn choose_frightened_dir(&mut self, tc: i32, tr: i32, current: Dir, through_gate: bool) -> Dir {
+        let reverse = current.opposite();
+        let mut open = [Dir::Up; 4];
+        let mut count = 0;
+        for dir in [Dir::Up, Dir::Left, Dir::Down, Dir::Right] {
+            if dir == reverse || (dir == Dir::Up && is_no_up(tc, tr)) {
+                continue;
+            }
+            let (nc, nr) = dir.neighbor(tc, tr);
+            if self.hunter_can_enter(nc, nr, through_gate) {
+                open[count] = dir;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return reverse;
+        }
+        // Reduce in u64: `as usize` first would truncate on 32-bit targets (wasm)
+        // and let the same seed replay differently on web and desktop.
+        open[(self.rng.next() % count as u64) as usize]
+    }
+
+    /// Resolves the eater sharing a tile with a loose hunter, by the hunter's mode:
+    /// a hunting one costs a life (latched; T8 turns the latch into lives and a
+    /// reset), a frightened one is caught for the ladder and becomes eyes, and eyes
+    /// pass straight through.
     fn resolve_contact(&mut self, events: &mut Events) {
         let eater_tile = tile_at(self.eater.x, self.eater.y);
-        if !self.caught
-            && self
-                .hunters
-                .iter()
-                .any(|h| !h.penned && tile_at(h.x, h.y) == eater_tile)
-        {
-            self.caught = true;
-            events.life_lost = true;
-            self.global_release = true;
-            self.post_death_pickups = 0;
+        for i in 0..self.hunters.len() {
+            let hunter = self.hunters[i];
+            if hunter.penned || tile_at(hunter.x, hunter.y) != eater_tile {
+                continue;
+            }
+            match hunter.mode {
+                HunterMode::Hunting => {
+                    if !self.caught {
+                        self.caught = true;
+                        events.life_lost = true;
+                        self.global_release = true;
+                        self.post_death_pickups = 0;
+                    }
+                }
+                HunterMode::Frightened => {
+                    let score = CATCH_SCORES[self.catch_streak.min(CATCH_SCORES.len() - 1)];
+                    self.catch_streak += 1;
+                    self.score += score;
+                    self.hunters[i].mode = HunterMode::Eyes;
+                    events.hunter_caught = Some((hunter.kind, score));
+                }
+                HunterMode::Eyes => {}
+            }
         }
     }
 
@@ -981,6 +1228,7 @@ impl Game {
             dir: h.dir,
             kind: h.kind,
             penned: h.penned,
+            mode: h.mode,
         })
     }
 
@@ -997,6 +1245,17 @@ impl Game {
     /// The level being played, from 1. (Advancing it on a maze clear is T8's.)
     pub fn level(&self) -> u32 {
         self.level
+    }
+
+    /// Frames left on the frightened window — zero when the hunt is running. The
+    /// shell reads this against [`Game::frightened_flashes`] to blink the warning.
+    pub fn frightened_frames_left(&self) -> u32 {
+        self.frightened_frames
+    }
+
+    /// How many warning flashes this level's frightened window ends on.
+    pub fn frightened_flashes(&self) -> u32 {
+        fright_for(self.level).1
     }
 
     /// The number of pickups eaten so far, useful for the HUD and release tests.
@@ -1108,6 +1367,7 @@ fn new_hunter(kind: HunterKind, tile: (usize, usize), dir: Dir, penned: bool) ->
         kind,
         penned,
         leaving_pen: false,
+        mode: HunterMode::Hunting,
     }
 }
 
@@ -1530,6 +1790,7 @@ mod tests {
             kind: HunterKind::Canine,
             penned: false,
             leaving_pen: false,
+            mode: HunterMode::Hunting,
         }];
         game.caught = false;
     }
@@ -1868,5 +2129,219 @@ mod tests {
             distinct > 1,
             "its targeting drove it to move, visiting {distinct} tiles"
         );
+    }
+
+    /// Plants a power pellet on the eater's tile and steps until it is eaten,
+    /// so a test can trigger the flip mid-scene without steering to a corner.
+    /// (A few steps may pass first if the eater is still stalled from feeding.)
+    fn feed_pellet(game: &mut Game) -> Events {
+        let (tc, tr) = tile_at(game.eater.x, game.eater.y);
+        if game.maze.pickups[tr as usize][tc as usize] == Pickup::None {
+            game.maze.remaining += 1;
+        }
+        game.maze.pickups[tr as usize][tc as usize] = Pickup::PowerPellet;
+        for _ in 0..10 {
+            let events = game.step(Input::default());
+            if events.power_pellet_eaten {
+                return events;
+            }
+        }
+        panic!("the planted pellet was never eaten");
+    }
+
+    #[test]
+    fn a_power_pellet_flips_the_loose_hunters() {
+        let mut game = Game::new(3);
+        // Plant the pellet by hand so the pre-flip heading can be read on the very
+        // frame it is eaten, however many stalled frames precede it.
+        let (tc, tr) = tile_at(game.eater.x, game.eater.y);
+        game.maze.pickups[tr as usize][tc as usize] = Pickup::PowerPellet;
+        game.maze.remaining += 1;
+        let mut before = game.hunters[0].dir;
+        let mut events = Events::default();
+        for _ in 0..10 {
+            before = game.hunters[0].dir;
+            events = game.step(Input::default());
+            if events.power_pellet_eaten {
+                break;
+            }
+        }
+        assert!(events.power_pellet_eaten);
+        assert!(events.frightened_started);
+        assert_eq!(game.hunters[0].mode, HunterMode::Frightened);
+        assert_eq!(game.hunters[0].dir, before.opposite(), "the flip reverses");
+        assert!(
+            game.hunters[3].penned && game.hunters[3].mode == HunterMode::Hunting,
+            "a penned hunter is not frightened"
+        );
+        assert!(game.frightened_frames_left() > 0);
+        let clock = game.hunt_phase_frames();
+        for _ in 0..5 {
+            game.step(Input::default());
+        }
+        assert_eq!(
+            game.hunt_phase_frames(),
+            clock,
+            "the scatter/chase clock holds its breath"
+        );
+    }
+
+    #[test]
+    fn catches_score_the_doubling_ladder_and_reset_on_the_next_pellet() {
+        let mut game = Game::new(3);
+        feed_pellet(&mut game);
+        let eater_tile = tile_at(game.eater.x, game.eater.y);
+        let mut scores = Vec::new();
+        for _ in 0..4 {
+            // Park a fresh frightened hunter on the eater and resolve the touch.
+            plant_hunter(&mut game, eater_tile.0, eater_tile.1, Dir::Left);
+            game.hunters[0].mode = HunterMode::Frightened;
+            let mut events = Events::default();
+            game.resolve_contact(&mut events);
+            let (_, score) = events.hunter_caught.expect("a catch");
+            scores.push(score);
+        }
+        assert_eq!(scores, vec![200, 400, 800, 1600]);
+        // The next pellet resets the ladder — and leaves the caught one as eyes.
+        feed_pellet(&mut game);
+        assert_eq!(
+            game.hunters[0].mode,
+            HunterMode::Eyes,
+            "a second pellet does not re-frighten eyes"
+        );
+        plant_hunter(&mut game, eater_tile.0, eater_tile.1, Dir::Left);
+        game.hunters[0].mode = HunterMode::Frightened;
+        let mut events = Events::default();
+        game.resolve_contact(&mut events);
+        assert_eq!(events.hunter_caught, Some((HunterKind::Canine, 200)));
+    }
+
+    #[test]
+    fn frightened_and_eyes_hunters_do_not_harm_the_eater() {
+        let mut game = Game::new(3);
+        let eater_tile = tile_at(game.eater.x, game.eater.y);
+        plant_hunter(&mut game, eater_tile.0, eater_tile.1, Dir::Left);
+        game.hunters[0].mode = HunterMode::Frightened;
+        let mut events = Events::default();
+        game.resolve_contact(&mut events);
+        assert!(!events.life_lost, "a frightened hunter is prey, not peril");
+        assert_eq!(game.hunters[0].mode, HunterMode::Eyes, "and is now eyes");
+        let mut events = Events::default();
+        game.resolve_contact(&mut events);
+        assert!(!events.life_lost, "eyes pass straight through");
+        assert_eq!(events.hunter_caught, None);
+    }
+
+    #[test]
+    fn eyes_race_home_regenerate_and_re_release() {
+        let mut game = Game::new(3);
+        // Turn the loose Canine to eyes out on the maze.
+        game.hunters[0].mode = HunterMode::Eyes;
+        let mut regenerated = false;
+        let mut re_released = false;
+        for _ in 0..1800 {
+            let events = game.step(Input::default());
+            if events.hunter_regenerated == Some(HunterKind::Canine) {
+                regenerated = true;
+                assert_eq!(game.hunters[0].mode, HunterMode::Hunting);
+                // The release can fire in this same step — the Canine's threshold
+                // is zero, so it barely pauses in the pen. Faithful, not a bug.
+            }
+            if regenerated && events.hunter_released == Some(HunterKind::Canine) {
+                re_released = true;
+                break;
+            }
+        }
+        assert!(regenerated, "the eyes made it home");
+        assert!(re_released, "and the release rules let the hunter back out");
+    }
+
+    #[test]
+    fn the_window_expires_back_into_the_schedule() {
+        let mut game = Game::new(3);
+        feed_pellet(&mut game);
+        game.frightened_frames = 2;
+        let events = game.step(Input::default());
+        assert!(!events.frightened_ended);
+        let clock = game.hunt_phase_frames();
+        let events = game.step(Input::default());
+        assert!(events.frightened_ended);
+        assert_eq!(game.hunters[0].mode, HunterMode::Hunting, "blue is over");
+        game.step(Input::default());
+        assert!(
+            game.hunt_phase_frames() > clock,
+            "the scatter/chase clock breathes again"
+        );
+    }
+
+    #[test]
+    fn a_live_hunter_never_walks_back_through_the_gate() {
+        // Park hunters at the tile straight above the gate, where Down leads into
+        // the pen. Neither a hunting nor a wandering hunter may take it — only
+        // eyes and leavers have gate business. Pins the through_gate rule.
+        for frightened in [false, true] {
+            let mut game = Game::new(7);
+            plant_hunter(&mut game, 13, 11, Dir::Right);
+            if frightened {
+                game.hunters[0].mode = HunterMode::Frightened;
+                game.frightened_frames = u32::MAX;
+            }
+            for _ in 0..600 {
+                game.step(Input::default());
+                let hunter = game.hunters().next().expect("the hunter");
+                let tile = tile_at(hunter.x, hunter.y);
+                assert!(
+                    !in_pen(tile.0, tile.1) && game.tile(tile.0, tile.1) != Tile::Gate,
+                    "a live hunter (frightened: {frightened}) re-entered the pen"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_fright_table_follows_the_original() {
+        assert_eq!(fright_for(1), (6 * 60, 5));
+        assert_eq!(fright_for(9), (60, 3));
+        assert_eq!(fright_for(14), (3 * 60, 5));
+        assert_eq!(fright_for(17), (0, 0));
+        assert_eq!(fright_for(18), (60, 3), "the one late reprieve");
+        assert_eq!(fright_for(19), (0, 0));
+        assert_eq!(fright_for(255), (0, 0));
+    }
+
+    #[test]
+    fn deep_levels_get_no_blue_time_at_all() {
+        let mut game = Game::new(3);
+        game.level = 17;
+        let score = game.score();
+        let events = feed_pellet(&mut game);
+        assert!(events.power_pellet_eaten, "the pellet is still eaten");
+        assert!(!events.frightened_started, "but buys no blue time");
+        assert_eq!(game.hunters[0].mode, HunterMode::Hunting);
+        assert_eq!(game.score(), score + POWER_PELLET_SCORE);
+        assert_eq!(game.frightened_frames_left(), 0);
+    }
+
+    #[test]
+    fn a_frightened_wander_stays_legal_and_replays() {
+        let run = || {
+            let mut game = Game::new(11);
+            game.hunters[0].mode = HunterMode::Frightened;
+            game.frightened_frames = u32::MAX; // hold the window open artificially
+            let mut path = Vec::new();
+            for _ in 0..2000 {
+                game.step(Input::default());
+                let hunter = game.hunters().next().expect("the Canine");
+                let tile = tile_at(hunter.x, hunter.y);
+                assert_ne!(
+                    game.tile(tile.0, tile.1),
+                    Tile::Wall,
+                    "a wandering hunter never leaves the corridors"
+                );
+                path.push((hunter.x, hunter.y));
+            }
+            path
+        };
+        assert_eq!(run(), run(), "the wander is seeded, so it replays");
     }
 }
