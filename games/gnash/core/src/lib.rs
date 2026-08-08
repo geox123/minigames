@@ -60,6 +60,15 @@
 //! of **eyes** racing home to regenerate and re-enter through the release rules.
 //! The window follows the original's per-level table, down to **zero blue time** at
 //! the deep levels, where a pellet scores 50 and reverses no one.
+//!
+//! The **run and the climb** ([T8](https://github.com/geox123/minigames/issues/166))
+//! complete the rules: **sweets** below the pen at 70 and 170 dots, worth the
+//! original's ladder by level; **three lives** and the ten-thousand-point bonus
+//! life; a death that freezes the world a beat and walks everyone home while the
+//! board keeps its gaps; and a cleared maze that **climbs the level**, re-keying
+//! every table — speeds, schedule, fright window, release timeout — while the
+//! **savage Canine** gains speed and stops honouring scatter as the dots run out.
+//! The level counter is bounded sanely; there is no kill screen.
 
 /// The maze is 28 tiles wide and 31 tall — the original's playfield.
 pub const COLS: usize = 28;
@@ -104,10 +113,84 @@ pub const PEN_ROWS: (i32, i32) = (13, 15);
 /// so a centred mover is at offset 4 on each axis.
 const HALF: i32 = TILE / 2;
 
-/// The eater's speed at level 1, as a percentage of the base rate: it advances a
-/// pixel on `EATER_SPEED` of every `SPEED_DEN` frames, so 80 is the original's 80%.
-/// (Per-level speeds are a later ticket; this is the opening clip.)
-const EATER_SPEED: i32 = 80;
+/// The movers' speeds for one level, each a percentage of the base rate: a mover
+/// advances a pixel on `speed` of every `SPEED_DEN` frames, so 80 reads as the
+/// original's 80%. Selected per level by [`level_table`], following the original's
+/// speed tables.
+struct LevelTable {
+    /// The eater's clip.
+    eater: i32,
+    /// The eater while the hunt is frightened — it quickens as the hunters slow.
+    eater_fright: i32,
+    /// A hunter's clip.
+    hunter: i32,
+    /// A frightened hunter's clip.
+    fright: i32,
+    /// Any hunter (but eyes) crossing the tunnel.
+    tunnel: i32,
+    /// Frames without a pickup before the pen releases the next waiting hunter.
+    timeout: u32,
+}
+
+/// The original's speed tiers: 1 / 2–4 / 5–20 / 21+, where the eater eases back to
+/// 90% for good while the hunters stay at their peak — the long game belongs to
+/// them. The release timeout tightens from four seconds to three at level 5.
+fn level_table(level: u32) -> LevelTable {
+    match level {
+        // 0 unreachable; clamp to the opening tier.
+        0 | 1 => LevelTable {
+            eater: 80,
+            eater_fright: 90,
+            hunter: 75,
+            fright: 50,
+            tunnel: 40,
+            timeout: 4 * 60,
+        },
+        2..=4 => LevelTable {
+            eater: 90,
+            eater_fright: 95,
+            hunter: 85,
+            fright: 55,
+            tunnel: 45,
+            timeout: 4 * 60,
+        },
+        5..=20 => LevelTable {
+            eater: 100,
+            eater_fright: 100,
+            hunter: 95,
+            fright: 60,
+            tunnel: 50,
+            timeout: 3 * 60,
+        },
+        // Both fright speeds are unreachable here: no blue time survives past 18.
+        _ => LevelTable {
+            eater: 90,
+            eater_fright: 100,
+            hunter: 95,
+            fright: 60,
+            tunnel: 50,
+            timeout: 3 * 60,
+        },
+    }
+}
+
+/// The savage (Cruise-Elroy) first threshold by level: with this many dots left the
+/// Canine gains 5% and stops honouring scatter; at half this many it gains 10%.
+/// The original's table, coarsened to its tiers. Every value is even, so the
+/// half-threshold divides cleanly.
+fn savage_dots(level: u32) -> u32 {
+    match level {
+        // 0 unreachable; clamp to the opening tier.
+        0 | 1 => 20,
+        2 => 30,
+        3..=5 => 40,
+        6..=8 => 50,
+        9..=11 => 60,
+        12..=14 => 80,
+        15..=18 => 100,
+        _ => 120,
+    }
+}
 /// The denominator the speed accumulator counts against — a percentage base, so a
 /// mover's speed reads directly as a percent.
 const SPEED_DEN: i32 = 100;
@@ -130,12 +213,8 @@ pub const CANINE_START: (usize, usize) = (13, 11);
 pub const INCISOR_START: (usize, usize) = (13, 14);
 pub const WISDOM_START: (usize, usize) = (11, 14);
 pub const MOLAR_START: (usize, usize) = (16, 14);
-/// A hunter's speed at level 1, as a percentage of the base rate — a touch under the
-/// eater's, so a clean run stays ahead. (Per-level speeds are a later ticket.)
-const HUNTER_SPEED: i32 = 75;
-/// A hunter's speed while crossing the tunnel — it crawls there, the original's
-/// let-off that a cornered player can exploit.
-const HUNTER_TUNNEL_SPEED: i32 = 40;
+/// What each savage stage adds to the Canine's clip, in percentage points.
+const SAVAGE_SPEED_BONUS: i32 = 5;
 
 /// How the minds aim: the Incisor looks this many tiles ahead of the eater; the
 /// Wisdom pivots off a point this many ahead; the Molar breaks for its corner within
@@ -196,17 +275,41 @@ const MOLAR_RELEASE_DOTS: u32 = 60;
 /// After a death, the original's global counter releases another hunter every seven
 /// pickups. This counter is deliberately separate from the personal thresholds.
 const GLOBAL_RELEASE_DOTS: u32 = 7;
-/// A waiting hunter is forced out after four seconds without a pickup. (The
-/// original tightens this to three seconds at level 5+; that lands with T8's
-/// per-level tables.)
-const RELEASE_TIMEOUT_FRAMES: u32 = 4 * 60;
-
-/// A frightened hunter's speed — 50% of a frame's full budget, the original's
-/// level-1 frightened rate. (Per-level frightened speeds land with T8's tables.)
-const FRIGHTENED_SPEED: i32 = 50;
 /// Eyes race home at about twice the hunting clip, and the tunnel does not slow
-/// them — nothing does.
+/// them — nothing does. The one speed no level changes.
 const EYES_SPEED: i32 = 160;
+
+/// The run's stakes: three lives to start, one more at ten thousand points, and a
+/// short frozen beat when a life is lost before play resumes.
+const STARTING_LIVES: u32 = 3;
+const BONUS_LIFE_SCORE: u32 = 10_000;
+const DEATH_FREEZE_FRAMES: u32 = 60;
+/// The level counter's sane bound — no kill screen, per the spec's cut list.
+const LEVEL_CAP: u32 = 255;
+
+/// Where a sweet appears (below the pen, the original's spot), how long it lingers
+/// (a fixed beat inside the original's random 9⅓–10s band, fixed for determinism),
+/// and what it is worth by level — the original's ladder exactly.
+const SWEET_TILE: (i32, i32) = (13, 17);
+const SWEET_FRAMES: u32 = 570;
+/// The dot counts that summon a sweet, twice a level.
+const SWEET_DOTS: [u32; 2] = [70, 170];
+
+/// A sweet's value on the original's ladder: 100 at level 1 up to 5000 from level
+/// 13 on, each rung drawn grander than the last.
+fn sweet_value(level: u32) -> u32 {
+    match level {
+        // 0 unreachable; clamp to the opening rung.
+        0 | 1 => 100,
+        2 => 300,
+        3 | 4 => 500,
+        5 | 6 => 700,
+        7 | 8 => 1000,
+        9 | 10 => 2000,
+        11 | 12 => 3000,
+        _ => 5000,
+    }
+}
 /// What catching frightened hunters scores: doubling with each catch on a single
 /// pellet, resetting on the next pellet.
 const CATCH_SCORES: [u32; 4] = [200, 400, 800, 1600];
@@ -610,12 +713,13 @@ impl Input {
 pub struct Events {
     /// The eater ate a dot this step.
     pub dot_eaten: bool,
-    /// The eater ate a power pellet this step (T7 flips the hunt on it).
+    /// The eater ate a power pellet this step, flipping any live hunt frightened.
     pub power_pellet_eaten: bool,
-    /// The maze was cleared of every pickup this step (a later ticket advances the
-    /// level on it).
+    /// The maze was cleared of every pickup this step; the level climbs on it, and
+    /// the board is already refilled by the time the step returns.
     pub maze_cleared: bool,
-    /// A hunter caught the eater this step (lives and respawn are a later ticket).
+    /// A hunter caught the eater this step: a life spent, the world frozen for the
+    /// death beat. Anything wanting the death's location must read it this frame.
     pub life_lost: bool,
     /// The hunt switched between scatter and chase this step.
     pub hunt_phase_changed: bool,
@@ -633,6 +737,25 @@ pub struct Events {
     /// A pair of eyes reached the pen and the hunter regenerated this step. Same
     /// last-writer-wins caveat as `hunter_caught`, and just as rare.
     pub hunter_regenerated: Option<HunterKind>,
+    /// A sweet appeared below the pen this step.
+    pub sweet_appeared: bool,
+    /// The eater took the sweet this step, and what it was worth.
+    pub sweet_eaten: Option<u32>,
+    /// The sweet lingered too long and vanished this step. (A death or a level
+    /// climb also removes an outstanding sweet, silently — `Game::sweet` is the
+    /// authority on whether one is out.)
+    pub sweet_expired: bool,
+    /// The ten-thousand-point bonus life arrived this step.
+    pub extra_life: bool,
+}
+
+/// The sweet as the shell should draw it: its centre in logical pixels and its
+/// value, which picks which rung of the ladder to draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sweet {
+    pub x: i32,
+    pub y: i32,
+    pub value: u32,
 }
 
 /// Where a game is.
@@ -640,7 +763,7 @@ pub struct Events {
 pub enum Phase {
     /// The game is being played.
     Playing,
-    /// Every life has been spent (a later ticket).
+    /// Every life has been spent; the game is inert.
     GameOver,
 }
 
@@ -652,9 +775,16 @@ pub struct Game {
     /// The four hunters. The Canine starts loose; the other three wait for their
     /// personal dot thresholds or the post-death global counter.
     hunters: Vec<HunterState>,
-    /// Whether a hunter has caught the eater (latched; lives and respawn are a later
-    /// ticket).
-    caught: bool,
+    /// Lives in hand; the last one lost ends the game.
+    lives: u32,
+    /// Whether the ten-thousand-point life has been claimed — it comes once.
+    bonus_life_awarded: bool,
+    /// Frames the world stays frozen after a death before play resumes.
+    death_freeze: u32,
+    /// Frames the current sweet has left; zero means no sweet is out.
+    sweet_frames: u32,
+    /// Dots eaten this level — the counter that summons the sweets at 70 and 170.
+    dots_eaten_level: u32,
     pickups_eaten: u32,
     post_death_pickups: u32,
     global_release: bool,
@@ -662,8 +792,8 @@ pub struct Game {
     hunt_phase: HuntPhase,
     hunt_phase_index: usize,
     hunt_phase_frames: u32,
-    /// The level being played, driving which schedule tier the hunt runs on. Fixed
-    /// at 1 until T8 advances it on a maze clear.
+    /// The level being played, from 1, advanced on every cleared maze. Every table
+    /// — speeds, schedule, fright, savage, timeout, sweets — keys off it.
     level: u32,
     /// Frames left on the frightened window; zero means the hunt is running. While
     /// nonzero the scatter/chase clock holds its breath.
@@ -673,8 +803,6 @@ pub struct Game {
     catch_streak: usize,
     /// The frightened wander's randomness — the game's only nondeterminism, seeded.
     rng: Rng,
-    /// A seam for T8's savage Canine, which keeps chasing during scatter.
-    canine_chases_in_scatter: bool,
     score: u32,
     phase: Phase,
     /// Steps taken so far.
@@ -690,25 +818,15 @@ impl Game {
     pub fn new(seed: u64) -> Self {
         let (sx, sy) = tile_center(EATER_START.0 as i32, EATER_START.1 as i32);
         let level = 1;
-        let hunters = vec![
-            new_hunter(HunterKind::Canine, CANINE_START, Dir::Left, false),
-            new_hunter(HunterKind::Incisor, INCISOR_START, Dir::Down, true),
-            new_hunter(HunterKind::Wisdom, WISDOM_START, Dir::Up, true),
-            new_hunter(HunterKind::Molar, MOLAR_START, Dir::Up, true),
-        ];
         Self {
             maze: Maze::new(),
-            eater: MoverState {
-                x: sx,
-                y: sy,
-                dir: Dir::Left,
-                want: None,
-                turning: None,
-                accum: 0,
-                stall: 0,
-            },
-            hunters,
-            caught: false,
+            eater: starting_eater(sx, sy),
+            hunters: starting_hunters(),
+            lives: STARTING_LIVES,
+            bonus_life_awarded: false,
+            death_freeze: 0,
+            sweet_frames: 0,
+            dots_eaten_level: 0,
             pickups_eaten: 0,
             post_death_pickups: 0,
             global_release: false,
@@ -720,7 +838,6 @@ impl Game {
             frightened_frames: 0,
             catch_streak: 0,
             rng: Rng::new(seed),
-            canine_chases_in_scatter: false,
             score: 0,
             phase: Phase::Playing,
             steps: 0,
@@ -729,12 +846,19 @@ impl Game {
     }
 
     /// Advances the game one fixed timestep, returning what happened for the shell
-    /// to react to. The eater threads the maze; the hunters that later tickets add
-    /// hang off this same seam.
+    /// to react to. A death cuts the step short: the world freezes for a beat and
+    /// nothing else resolves that frame.
     pub fn step(&mut self, input: Input) -> Events {
         self.steps += 1;
         let mut events = Events::default();
         if self.phase == Phase::GameOver {
+            return events;
+        }
+        if self.death_freeze > 0 {
+            self.death_freeze -= 1;
+            if self.death_freeze == 0 && self.lives == 0 {
+                self.phase = Phase::GameOver;
+            }
             return events;
         }
         self.frames_since_pickup = self.frames_since_pickup.saturating_add(1);
@@ -745,14 +869,113 @@ impl Game {
         if events.power_pellet_eaten {
             self.flip_hunt(&mut events);
         }
+        self.advance_sweet(&mut events);
         // The original checks a catch both after the eater moves and after the
-        // hunters move, so a head-on pass counts as a catch either way.
+        // hunters move, so a head-on pass counts as a catch either way. A life
+        // lost ends the frame on the spot.
         self.resolve_contact(&mut events);
-        self.advance_hunters(&mut events);
-        self.resolve_contact(&mut events);
-        self.advance_pen_release(&mut events);
-        self.advance_hunt_schedule(&mut events);
+        if !events.life_lost {
+            self.advance_hunters(&mut events);
+            self.resolve_contact(&mut events);
+        }
+        if !events.life_lost {
+            self.advance_pen_release(&mut events);
+            self.advance_hunt_schedule(&mut events);
+        }
+        // Clearing the last dot and dying on the same frame both stand: the life
+        // is spent, the death beat plays, and the fresh level waits under it. Only
+        // a game already over climbs nowhere and awards nothing.
+        if events.maze_cleared && self.phase == Phase::Playing {
+            self.climb();
+        }
+        if self.phase == Phase::Playing
+            && !self.bonus_life_awarded
+            && self.score >= BONUS_LIFE_SCORE
+        {
+            self.bonus_life_awarded = true;
+            self.lives += 1;
+            events.extra_life = true;
+            if events.life_lost && self.lives == 1 {
+                // The bonus arrived on the very frame the last life was lost:
+                // the run is saved, so the world walks home for the beat after
+                // all instead of ending when it expires.
+                self.reset_after_interruption();
+            }
+        }
         events
+    }
+
+    /// Ticks the sweet: summons one on the level's dot counts, hands it to an eater
+    /// standing on it, and lets an ignored one lapse. Runs before contact resolves,
+    /// so a doomed eater still banks a sweet grabbed on its final frame.
+    fn advance_sweet(&mut self, events: &mut Events) {
+        if events.dot_eaten && SWEET_DOTS.contains(&self.dots_eaten_level) {
+            self.sweet_frames = SWEET_FRAMES;
+            events.sweet_appeared = true;
+            return; // the appear frame spends no linger
+        }
+        if self.sweet_frames == 0 {
+            return;
+        }
+        if tile_at(self.eater.x, self.eater.y) == SWEET_TILE {
+            let value = sweet_value(self.level);
+            self.score += value;
+            self.sweet_frames = 0;
+            events.sweet_eaten = Some(value);
+            return;
+        }
+        self.sweet_frames -= 1;
+        if self.sweet_frames == 0 {
+            events.sweet_expired = true;
+        }
+    }
+
+    /// Advances to the next level after a cleared maze: the board refills and every
+    /// mover goes home, but the level's tables turn meaner — and score and lives
+    /// carry. The counter is bounded sanely; there is no kill screen.
+    fn climb(&mut self) {
+        self.level = (self.level + 1).min(LEVEL_CAP);
+        self.maze = Maze::new();
+        self.dots_eaten_level = 0;
+        self.pickups_eaten = 0;
+        self.post_death_pickups = 0;
+        self.global_release = false;
+        self.frames_since_pickup = 0;
+        self.reset_after_interruption();
+    }
+
+    /// A hunting hunter reached the eater: a life is spent, the world freezes for a
+    /// beat, and everyone walks home — the remaining dots stay eaten. The last
+    /// life gets the same beat, played where the eater fell; the game goes over
+    /// when it ends.
+    fn die(&mut self, events: &mut Events) {
+        events.life_lost = true;
+        self.lives -= 1;
+        // The original hands the pen over to its global counter after a death.
+        self.global_release = true;
+        self.post_death_pickups = 0;
+        self.frames_since_pickup = 0;
+        self.death_freeze = DEATH_FREEZE_FRAMES;
+        if self.lives > 0 {
+            self.reset_after_interruption();
+        }
+        // On the last life nothing resets: the cast stands where the catch
+        // happened for the whole beat, and the freeze's expiry ends the game.
+    }
+
+    /// The shared tail of a death and a level climb: movers to their starts, the
+    /// hunt's clock rewound to the level's opening scatter, any frightened window
+    /// and sweet cleared.
+    fn reset_after_interruption(&mut self) {
+        let (sx, sy) = tile_center(EATER_START.0 as i32, EATER_START.1 as i32);
+        self.eater = starting_eater(sx, sy);
+        self.hunters = starting_hunters();
+        self.frightened_frames = 0;
+        self.catch_streak = 0;
+        self.sweet_frames = 0;
+        self.hunt_phase_index = 0;
+        self.hunt_phase = hunt_schedule(self.level)[0].0;
+        self.hunt_phase_frames = 0;
     }
 
     /// A power pellet flips the hunt: every hunter out on the maze reverses, slows
@@ -795,7 +1018,13 @@ impl Game {
             self.eater.dir = self.eater.dir.opposite();
             self.eater.turning = None;
         }
-        self.eater.accum += EATER_SPEED;
+        let table = level_table(self.level);
+        // The tables' one kindness: the eater quickens while the hunt is blue.
+        self.eater.accum += if self.frightened_frames > 0 {
+            table.eater_fright
+        } else {
+            table.eater
+        };
         while self.eater.accum >= SPEED_DEN {
             self.eater.accum -= SPEED_DEN;
             if self.advance_eater_pixel(events) {
@@ -877,6 +1106,7 @@ impl Game {
             Pickup::Dot => {
                 self.score += DOT_SCORE;
                 self.eater.stall = DOT_STALL;
+                self.dots_eaten_level += 1;
                 events.dot_eaten = true;
             }
             Pickup::PowerPellet => {
@@ -943,7 +1173,7 @@ impl Game {
         } else {
             self.pickups_eaten >= release_threshold(self.hunters[i].kind)
         };
-        let timeout = self.frames_since_pickup >= RELEASE_TIMEOUT_FRAMES;
+        let timeout = self.frames_since_pickup >= level_table(self.level).timeout;
         if threshold_reached || timeout {
             let kind = self.hunters[i].kind;
             self.hunters[i].penned = false;
@@ -1002,8 +1232,9 @@ impl Game {
             return (13, 12);
         }
         let eater = tile_at(self.eater.x, self.eater.y);
+        // A savage Canine no longer honours scatter — it bears down regardless.
         if self.hunt_phase == HuntPhase::Scatter
-            && !(hunter.kind == HunterKind::Canine && self.canine_chases_in_scatter)
+            && !(hunter.kind == HunterKind::Canine && self.savage_stage() > 0)
         {
             return hunter.kind.scatter_corner();
         }
@@ -1043,18 +1274,41 @@ impl Game {
             )
     }
 
+    /// How savage the maze has made the Canine: 0 while dots are plentiful, 1 past
+    /// the level's first threshold (faster, and scatter no longer calls it home),
+    /// 2 past the second (faster still). (The original also suppresses this after
+    /// a death until the Molar leaves the pen — a nuance deliberately coarsened
+    /// away here.)
+    fn savage_stage(&self) -> i32 {
+        let first = savage_dots(self.level);
+        if self.maze.remaining <= first / 2 {
+            2
+        } else if self.maze.remaining <= first {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Advances one hunter a frame: spend its fractional-speed budget — slowed when
-    /// frightened, racing as eyes, a crawl while crossing the tunnel — one pixel at
-    /// a time.
+    /// frightened, racing as eyes, quickened when savage, a crawl while crossing
+    /// the tunnel — one pixel at a time.
     fn advance_hunter(&mut self, i: usize, target: (i32, i32)) {
         let (_, row) = tile_at(self.hunters[i].x, self.hunters[i].y);
+        let table = level_table(self.level);
         let base = match self.hunters[i].mode {
-            HunterMode::Hunting => HUNTER_SPEED,
-            HunterMode::Frightened => FRIGHTENED_SPEED,
+            HunterMode::Hunting => {
+                if self.hunters[i].kind == HunterKind::Canine {
+                    table.hunter + self.savage_stage() * SAVAGE_SPEED_BONUS
+                } else {
+                    table.hunter
+                }
+            }
+            HunterMode::Frightened => table.fright,
             HunterMode::Eyes => EYES_SPEED,
         };
         let speed = if row == TUNNEL_ROW as i32 && self.hunters[i].mode != HunterMode::Eyes {
-            base.min(HUNTER_TUNNEL_SPEED)
+            base.min(table.tunnel)
         } else {
             base
         };
@@ -1167,9 +1421,8 @@ impl Game {
     }
 
     /// Resolves the eater sharing a tile with a loose hunter, by the hunter's mode:
-    /// a hunting one costs a life (latched; T8 turns the latch into lives and a
-    /// reset), a frightened one is caught for the ladder and becomes eyes, and eyes
-    /// pass straight through.
+    /// a hunting one spends a life on the spot, a frightened one is caught for the
+    /// ladder and becomes eyes, and eyes pass straight through.
     fn resolve_contact(&mut self, events: &mut Events) {
         let eater_tile = tile_at(self.eater.x, self.eater.y);
         for i in 0..self.hunters.len() {
@@ -1179,12 +1432,8 @@ impl Game {
             }
             match hunter.mode {
                 HunterMode::Hunting => {
-                    if !self.caught {
-                        self.caught = true;
-                        events.life_lost = true;
-                        self.global_release = true;
-                        self.post_death_pickups = 0;
-                    }
+                    self.die(events);
+                    return;
                 }
                 HunterMode::Frightened => {
                     let score = CATCH_SCORES[self.catch_streak.min(CATCH_SCORES.len() - 1)];
@@ -1242,7 +1491,7 @@ impl Game {
         self.hunt_phase_frames
     }
 
-    /// The level being played, from 1. (Advancing it on a maze clear is T8's.)
+    /// The level being played, from 1, climbing on every cleared maze.
     pub fn level(&self) -> u32 {
         self.level
     }
@@ -1268,16 +1517,29 @@ impl Game {
         self.hunters.iter().filter(|hunter| hunter.penned).count()
     }
 
-    /// Enables the T8 savage-Canine seam: Canine keeps its chase target during
-    /// scatter while the other active hunters still use their corners.
-    pub fn set_canine_chases_in_scatter(&mut self, enabled: bool) {
-        self.canine_chases_in_scatter = enabled;
+    /// Lives in hand.
+    pub fn lives(&self) -> u32 {
+        self.lives
     }
 
-    /// Whether a hunter has caught the eater — latched, until a later ticket adds
-    /// lives and respawn.
-    pub fn caught(&self) -> bool {
-        self.caught
+    /// The sweet out on the maze, if one is; the shell draws it at its rung.
+    pub fn sweet(&self) -> Option<Sweet> {
+        (self.sweet_frames > 0).then(|| {
+            let (x, y) = tile_center(SWEET_TILE.0, SWEET_TILE.1);
+            Sweet {
+                x,
+                y,
+                value: sweet_value(self.level),
+            }
+        })
+    }
+
+    /// Whether the world is frozen on a just-lost life — the beat the shell plays
+    /// the death over. The cast is already home by the time this reads true, so a
+    /// shell wanting the death's location must snapshot it on the `life_lost`
+    /// event frame.
+    pub fn dying(&self) -> bool {
+        self.death_freeze > 0
     }
 
     /// How many pickups (dots and power pellets) are still on the board.
@@ -1354,6 +1616,31 @@ fn tile_dist_sq(a: (i32, i32), b: (i32, i32)) -> i32 {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
     dx * dx + dy * dy
+}
+
+/// The eater's opening state, centred on `(x, y)` heading left, as every level and
+/// every fresh life begins.
+fn starting_eater(x: i32, y: i32) -> MoverState {
+    MoverState {
+        x,
+        y,
+        dir: Dir::Left,
+        want: None,
+        turning: None,
+        accum: 0,
+        stall: 0,
+    }
+}
+
+/// The four hunters at their starts: the Canine loose above the gate, the other
+/// three penned.
+fn starting_hunters() -> Vec<HunterState> {
+    vec![
+        new_hunter(HunterKind::Canine, CANINE_START, Dir::Left, false),
+        new_hunter(HunterKind::Incisor, INCISOR_START, Dir::Down, true),
+        new_hunter(HunterKind::Wisdom, WISDOM_START, Dir::Up, true),
+        new_hunter(HunterKind::Molar, MOLAR_START, Dir::Up, true),
+    ]
 }
 
 /// A fresh hunter of `kind`, centred on its start `tile`, facing `dir`.
@@ -1733,7 +2020,9 @@ mod tests {
         plant_eater(&mut game, 12, 23, Dir::Left);
         let events = game.step(Input::default());
         assert!(events.maze_cleared, "the last pickup clears the maze");
-        assert_eq!(game.pickups_remaining(), 0);
+        // T8's climb refills the board in the same step — the cleared state is
+        // observable only through the event.
+        assert_eq!(game.pickups_remaining(), game.pickups_total());
     }
 
     #[test]
@@ -1792,7 +2081,18 @@ mod tests {
             leaving_pen: false,
             mode: HunterMode::Hunting,
         }];
-        game.caught = false;
+    }
+
+    /// Parks the eater inside a wall tile, where no hunter can ever share its tile —
+    /// the white-box way to keep a scenario free of deaths now that contact resets
+    /// the world. The eater just stalls there.
+    fn park_eater_in_wall(game: &mut Game) {
+        let (x, y) = tile_center(0, 0);
+        game.eater.x = x;
+        game.eater.y = y;
+        game.eater.want = None;
+        game.eater.accum = 0;
+        game.eater.stall = 0;
     }
 
     #[test]
@@ -1808,14 +2108,20 @@ mod tests {
             caught |= game.step(Input::default()).life_lost;
         }
         assert!(caught, "the Canine closes on and catches the eater");
-        assert!(game.caught());
+        assert_eq!(
+            game.lives(),
+            STARTING_LIVES - 1,
+            "and the catch costs a life"
+        );
     }
 
     #[test]
     fn a_hunter_never_reverses() {
         // Over a long chase the hunter only ever turns at right angles or holds on —
-        // it never flips to its opposite heading.
+        // it never flips to its opposite heading. The eater sits in a wall so no
+        // death resets the hunters mid-observation.
         let mut game = Game::new(2);
+        park_eater_in_wall(&mut game);
         game.hunt_phase = HuntPhase::Chase;
         game.hunt_phase_index = 1;
         game.hunt_phase_frames = 0;
@@ -1854,7 +2160,8 @@ mod tests {
         plant_hunter(&mut game, 13, 23, Dir::Left); // planted on the eater's tile
         let events = game.step(Input::default());
         assert!(events.life_lost, "sharing the eater's tile is a catch");
-        assert!(game.caught(), "and the catch is latched");
+        assert_eq!(game.lives(), STARTING_LIVES - 1);
+        assert!(game.dying(), "the world freezes for the death beat");
     }
 
     #[test]
@@ -2058,13 +2365,13 @@ mod tests {
             }
         }
         game.maze.remaining = 0;
-        game.caught = true; // keep this release-only scenario free of contact noise
+        park_eater_in_wall(&mut game); // keep this release-only scenario death-free
         assert_eq!(
             game.step(Input::default()).hunter_released,
             Some(HunterKind::Incisor)
         );
         let mut released = None;
-        for _ in 0..RELEASE_TIMEOUT_FRAMES {
+        for _ in 0..level_table(1).timeout {
             released = game.step(Input::default()).hunter_released;
             if released.is_some() {
                 break;
@@ -2078,16 +2385,14 @@ mod tests {
         let mut game = Game::new(1);
         plant_eater(&mut game, 13, 23, Dir::Left);
         plant_hunter(&mut game, 13, 23, Dir::Left);
-        game.hunters.push(new_hunter(
-            HunterKind::Incisor,
-            INCISOR_START,
-            Dir::Down,
-            true,
-        ));
         assert!(game.step(Input::default()).life_lost);
         assert!(game.global_release);
-        game.caught = true;
-        game.maze.remaining = 0;
+        // Skip the death beat: everyone is home, three hunters penned again.
+        game.death_freeze = 0;
+        assert_eq!(game.penned_hunters(), 3);
+        // Empty the board but for the dot in front of the eater (and one far away,
+        // so eating it does not clear the maze): the seventh post-death pickup
+        // springs the next waiting hunter.
         for row in &mut game.maze.pickups {
             for pickup in row {
                 *pickup = Pickup::None;
@@ -2099,10 +2404,13 @@ mod tests {
         game.eater.dir = Dir::Left;
         game.eater.accum = SPEED_DEN;
         game.maze.pickups[23][1] = Pickup::Dot;
-        game.maze.remaining = 1;
-        assert!(game.step(Input::default()).dot_eaten);
+        game.maze.pickups[1][1] = Pickup::Dot;
+        game.maze.remaining = 2;
+        let events = game.step(Input::default());
+        assert!(events.dot_eaten);
+        assert_eq!(events.hunter_released, Some(HunterKind::Incisor));
         assert_eq!(game.post_death_pickups, 0);
-        assert_eq!(game.hunters.iter().filter(|h| h.penned).count(), 0);
+        assert_eq!(game.penned_hunters(), 2);
     }
 
     #[test]
@@ -2235,6 +2543,8 @@ mod tests {
     #[test]
     fn eyes_race_home_regenerate_and_re_release() {
         let mut game = Game::new(3);
+        // The eater sits in a wall so no death resets the cast mid-journey.
+        park_eater_in_wall(&mut game);
         // Turn the loose Canine to eyes out on the maze.
         game.hunters[0].mode = HunterMode::Eyes;
         let mut regenerated = false;
@@ -2281,6 +2591,7 @@ mod tests {
         // eyes and leavers have gate business. Pins the through_gate rule.
         for frightened in [false, true] {
             let mut game = Game::new(7);
+            park_eater_in_wall(&mut game); // no deaths, no catches — pure steering
             plant_hunter(&mut game, 13, 11, Dir::Right);
             if frightened {
                 game.hunters[0].mode = HunterMode::Frightened;
@@ -2326,6 +2637,7 @@ mod tests {
     fn a_frightened_wander_stays_legal_and_replays() {
         let run = || {
             let mut game = Game::new(11);
+            park_eater_in_wall(&mut game); // no deaths, no catches — pure wander
             game.hunters[0].mode = HunterMode::Frightened;
             game.frightened_frames = u32::MAX; // hold the window open artificially
             let mut path = Vec::new();
@@ -2343,5 +2655,358 @@ mod tests {
             path
         };
         assert_eq!(run(), run(), "the wander is seeded, so it replays");
+    }
+
+    /// Empties the board down to a single dot one tile left of the eater's start,
+    /// so the next few steps of leftward drift clear the maze.
+    fn leave_one_dot_by_the_start(game: &mut Game) {
+        for row in &mut game.maze.pickups {
+            for pickup in row {
+                *pickup = Pickup::None;
+            }
+        }
+        game.maze.pickups[23][12] = Pickup::Dot;
+        game.maze.remaining = 1;
+    }
+
+    #[test]
+    fn sweets_appear_on_the_dot_counts_and_score_the_ladder() {
+        let mut game = Game::new(5);
+        game.dots_eaten_level = 69;
+        plant_eater(&mut game, 2, 23, Dir::Left); // an ordinary dot sits here
+        let events = game.step(Input::default());
+        assert!(events.dot_eaten, "the 70th dot goes down");
+        assert!(events.sweet_appeared, "and summons the sweet");
+        let sweet = game.sweet().expect("a sweet below the pen");
+        assert_eq!(sweet.value, 100, "level 1 sits on the ladder's first rung");
+        assert_eq!(tile_at(sweet.x, sweet.y), SWEET_TILE);
+        // Stand the eater on it.
+        let (sx, sy) = tile_center(SWEET_TILE.0, SWEET_TILE.1);
+        game.eater.x = sx;
+        game.eater.y = sy;
+        let score = game.score();
+        let events = game.step(Input::default());
+        assert_eq!(events.sweet_eaten, Some(100));
+        assert_eq!(game.score(), score + 100);
+        assert!(game.sweet().is_none(), "taken");
+    }
+
+    #[test]
+    fn an_ignored_sweet_lapses() {
+        let mut game = Game::new(5);
+        game.sweet_frames = 1;
+        let events = game.step(Input::default());
+        assert!(events.sweet_expired);
+        assert!(game.sweet().is_none());
+    }
+
+    #[test]
+    fn the_sweet_ladder_follows_the_original() {
+        let values: Vec<u32> = (1..=13).map(sweet_value).collect();
+        assert_eq!(
+            values,
+            vec![
+                100, 300, 500, 500, 700, 700, 1000, 1000, 2000, 2000, 3000, 3000, 5000
+            ]
+        );
+        assert_eq!(sweet_value(200), 5000, "the ladder tops out");
+    }
+
+    #[test]
+    fn the_speed_tables_follow_the_original() {
+        let l1 = level_table(1);
+        assert_eq!(
+            (l1.eater, l1.eater_fright, l1.hunter, l1.fright, l1.tunnel),
+            (80, 90, 75, 50, 40)
+        );
+        assert_eq!(l1.timeout, 4 * 60);
+        let l3 = level_table(3);
+        assert_eq!(
+            (l3.eater, l3.eater_fright, l3.hunter, l3.fright, l3.tunnel),
+            (90, 95, 85, 55, 45)
+        );
+        let l5 = level_table(5);
+        assert_eq!(
+            (l5.eater, l5.eater_fright, l5.hunter, l5.fright, l5.tunnel),
+            (100, 100, 95, 60, 50)
+        );
+        assert_eq!(l5.timeout, 3 * 60);
+        let l21 = level_table(21);
+        assert_eq!(
+            (l21.eater, l21.hunter),
+            (90, 95),
+            "past 20 the eater eases off for good and the hunters do not"
+        );
+    }
+
+    #[test]
+    fn death_walks_everyone_home_but_the_board_keeps_its_gaps() {
+        let mut game = Game::new(1);
+        for _ in 0..30 {
+            game.step(Input::default()); // drift left off the start, eating dots
+        }
+        let remaining = game.pickups_remaining();
+        assert!(remaining < 244, "some dots went down");
+        let (tc, tr) = tile_at(game.eater.x, game.eater.y);
+        plant_hunter(&mut game, tc, tr, Dir::Left);
+        // The eater may slip a tile boundary on the first step; the planted
+        // hunter runs it down within a few frames either way. The killing step
+        // itself can eat at most one pickup, which bounds the drift between the
+        // pre-death sample and the persistence assertion below.
+        let mut lost = false;
+        let mut rem_before = game.pickups_remaining();
+        for _ in 0..30 {
+            rem_before = game.pickups_remaining();
+            if game.step(Input::default()).life_lost {
+                lost = true;
+                break;
+            }
+        }
+        assert!(lost, "the planted hunter caught the eater");
+        assert_eq!(game.lives(), STARTING_LIVES - 1);
+        assert!(game.dying());
+        assert_eq!(
+            tile_at(game.eater().x, game.eater().y),
+            (EATER_START.0 as i32, EATER_START.1 as i32),
+            "the eater is home"
+        );
+        assert_eq!(game.penned_hunters(), 3, "the cast is home");
+        assert!(
+            rem_before - game.pickups_remaining() <= 1,
+            "death refills nothing and eats nothing — the gaps persist exactly"
+        );
+        assert!(game.pickups_remaining() < 244, "and they are real gaps");
+        assert_eq!(game.hunt_phase_frames(), 0, "the clock rewound");
+    }
+
+    #[test]
+    fn the_last_life_ends_the_game_after_its_beat() {
+        let mut game = Game::new(1);
+        game.lives = 1;
+        let (tc, tr) = tile_at(game.eater.x, game.eater.y);
+        plant_hunter(&mut game, tc, tr, Dir::Left);
+        let events = game.step(Input::default());
+        assert!(events.life_lost);
+        assert!(game.dying(), "the last death gets the same frozen beat");
+        assert_eq!(
+            game.phase(),
+            Phase::Playing,
+            "the game ends when the beat does, not before"
+        );
+        let fallen = tile_at(game.eater.x, game.eater.y);
+        assert_eq!(fallen, (tc, tr), "the cast stands where the catch happened");
+        for _ in 0..DEATH_FREEZE_FRAMES {
+            game.step(Input::default());
+        }
+        assert_eq!(game.phase(), Phase::GameOver);
+        let after = game.step(Input::default());
+        assert_eq!(after, Events::default(), "a finished game is inert");
+    }
+
+    #[test]
+    fn clearing_and_dying_on_one_frame_costs_the_life_and_climbs() {
+        // The eater takes the last dot on the same frame a hunter takes the eater:
+        // both stand. The life is spent, the death beat plays, and the fresh level
+        // waits underneath it. The last dot sits on the eater's own tile with the
+        // accumulator primed, so the eat and the catch land on the same step.
+        let mut game = Game::new(1);
+        for row in &mut game.maze.pickups {
+            for pickup in row {
+                *pickup = Pickup::None;
+            }
+        }
+        let (tc, tr) = tile_at(game.eater.x, game.eater.y);
+        game.maze.pickups[tr as usize][tc as usize] = Pickup::Dot;
+        game.maze.remaining = 1;
+        game.eater.accum = SPEED_DEN;
+        plant_hunter(&mut game, tc, tr, Dir::Left);
+        let events = game.step(Input::default());
+        assert!(events.maze_cleared, "the last dot went down");
+        assert!(events.life_lost, "and the hunter took the eater");
+        assert_eq!(game.level(), 2, "the clear still climbed");
+        assert_eq!(game.lives(), STARTING_LIVES - 1, "the life is spent");
+        assert!(game.dying(), "the death beat plays over the fresh level");
+    }
+
+    #[test]
+    fn a_bonus_life_arrives_at_ten_thousand_once() {
+        let mut game = Game::new(1);
+        game.score = BONUS_LIFE_SCORE - DOT_SCORE;
+        plant_eater(&mut game, 2, 23, Dir::Left);
+        let events = game.step(Input::default());
+        assert!(events.dot_eaten);
+        assert!(
+            events.extra_life,
+            "the dot tips the score over ten thousand"
+        );
+        assert_eq!(game.lives(), STARTING_LIVES + 1);
+        game.score += BONUS_LIFE_SCORE;
+        let events = game.step(Input::default());
+        assert!(!events.extra_life, "it comes once");
+        assert_eq!(game.lives(), STARTING_LIVES + 1);
+    }
+
+    #[test]
+    fn clearing_the_maze_climbs_the_level() {
+        let mut game = Game::new(1);
+        game.score = 777;
+        leave_one_dot_by_the_start(&mut game);
+        let mut cleared = false;
+        for _ in 0..60 {
+            if game.step(Input::default()).maze_cleared {
+                cleared = true;
+                break;
+            }
+        }
+        assert!(cleared, "the last dot fell");
+        assert_eq!(game.level(), 2, "and the level climbed");
+        assert_eq!(
+            game.pickups_remaining(),
+            game.pickups_total(),
+            "a full fresh board"
+        );
+        assert_eq!(game.penned_hunters(), 3, "the cast reset");
+        assert_eq!(game.score(), 777 + DOT_SCORE, "score carries");
+        assert_eq!(game.lives(), STARTING_LIVES, "lives carry");
+    }
+
+    #[test]
+    fn the_level_counter_is_bounded_sanely() {
+        let mut game = Game::new(1);
+        game.level = LEVEL_CAP;
+        leave_one_dot_by_the_start(&mut game);
+        for _ in 0..60 {
+            if game.step(Input::default()).maze_cleared {
+                break;
+            }
+        }
+        assert_eq!(game.level(), LEVEL_CAP, "no kill screen, no overflow");
+    }
+
+    #[test]
+    fn the_savage_canine_speeds_up_and_stops_honouring_scatter() {
+        let mut game = Game::new(1);
+        assert_eq!(
+            game.savage_stage(),
+            0,
+            "a full board keeps the Canine civil"
+        );
+        game.maze.remaining = savage_dots(1);
+        assert_eq!(game.savage_stage(), 1);
+        game.maze.remaining = savage_dots(1) / 2;
+        assert_eq!(game.savage_stage(), 2);
+        // In scatter, a savage Canine still bears down while the others go home.
+        game.hunt_phase = HuntPhase::Scatter;
+        let eater = tile_at(game.eater.x, game.eater.y);
+        assert_eq!(game.hunter_target(0), eater, "the Canine refuses scatter");
+        assert_eq!(
+            game.hunter_target(1),
+            HunterKind::Incisor.scatter_corner(),
+            "the others still honour it"
+        );
+        // And it runs faster: 20 frames of chase down an open row cover 17 pixels
+        // at stage 2 (85%) against 15 at stage 0 (75%). (This leans on row 5
+        // being an open straight of 17+ pixels — a maze tweak there moves these
+        // numbers, not the savage rule.)
+        let travel = |remaining: u32| {
+            let mut game = Game::new(1);
+            game.hunt_phase = HuntPhase::Chase;
+            plant_hunter(&mut game, 1, 5, Dir::Right);
+            game.hunters[0].accum = 0;
+            game.maze.remaining = remaining;
+            let x0 = game.hunters[0].x;
+            for _ in 0..20 {
+                game.advance_hunter(0, (26, 5));
+            }
+            game.hunters[0].x - x0
+        };
+        assert_eq!(travel(200), 15);
+        assert_eq!(travel(10), 17);
+    }
+
+    #[test]
+    fn several_levels_replay_identically_end_to_end() {
+        let run = || {
+            let mut game = Game::new(21);
+            let mut fingerprint = Vec::new();
+            for _ in 0..3 {
+                leave_one_dot_by_the_start(&mut game);
+                let level = game.level();
+                for _ in 0..600 {
+                    game.step(Input::default());
+                    if game.level() != level {
+                        break;
+                    }
+                }
+                fingerprint.push((game.level(), game.score(), game.eater().x, game.eater().y));
+            }
+            fingerprint
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(a, b, "three climbed levels replay identically");
+        assert_eq!(
+            a.last().expect("three laps").0,
+            4,
+            "the climb reached level 4"
+        );
+    }
+
+    #[test]
+    fn a_long_scripted_game_replays_identically_through_the_seam() {
+        // The one white-box touch is a deep pool of lives, so the scripted run
+        // survives its own recklessness; everything else is honest play through
+        // `step`. The script holds an LCG-drawn direction for two dozen frames at
+        // a time — deterministic, but mixed enough to thread corridors well
+        // enough to summon a sweet and badly enough to die, and both must
+        // actually happen for the run to count.
+        let run = || {
+            let mut game = Game::new(77);
+            game.lives = 500;
+            let dirs = [
+                Input {
+                    left: true,
+                    ..Input::default()
+                },
+                Input {
+                    down: true,
+                    ..Input::default()
+                },
+                Input {
+                    right: true,
+                    ..Input::default()
+                },
+                Input {
+                    up: true,
+                    ..Input::default()
+                },
+            ];
+            let mut script: u64 = 0x0DDB_1A5E_5BAD_5EED;
+            let mut held = dirs[0];
+            let mut deaths = 0u32;
+            let mut sweets = 0u32;
+            let mut fingerprint = Vec::new();
+            for frame in 0..30_000u32 {
+                if frame % 24 == 0 {
+                    script = script
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    held = dirs[(script >> 33) as usize % dirs.len()];
+                }
+                let events = game.step(held);
+                deaths += u32::from(events.life_lost);
+                sweets += u32::from(events.sweet_appeared);
+                let eater = game.eater();
+                let mut state = vec![(eater.x, eater.y)];
+                state.extend(game.hunters().map(|h| (h.x, h.y)));
+                fingerprint.push((state, game.score(), game.level()));
+            }
+            (deaths, sweets, fingerprint)
+        };
+        let (deaths, sweets, a) = run();
+        let (_, _, b) = run();
+        assert_eq!(a, b, "eight thousand frames replay identically");
+        assert!(deaths > 0, "the script got the eater killed");
+        assert!(sweets > 0, "and fed it seventy dots for a sweet");
     }
 }
