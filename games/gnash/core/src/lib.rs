@@ -30,18 +30,21 @@
 //! maze-cleared event.
 //!
 //! The first **hunter** ([T4](https://github.com/geox123/minigames/issues/162)) —
-//! the **Shadow**, the direct chaser — navigates the maze by the original's
+//! the **Canine**, the direct chaser — navigates the maze by the original's
 //! one-tile-lookahead rule: at each tile centre it takes the exit whose next tile is
 //! nearest its **target** (never reversing, ties broken up-left-down-right, and never
 //! turning up at the marked junctions), targeting the eater's own tile. Contact costs
 //! a life.
 //!
 //! The **four minds** ([T5](https://github.com/geox123/minigames/issues/163)) give
-//! the hunt its character: the **Shadow** targets the eater's tile; the **Ambusher**
-//! four tiles ahead of its facing (with the original's up-facing overflow quirk); the
-//! **Fickle** a point pincering off the Shadow (doubled through two-ahead); the
-//! **Shy** the eater when far but its own corner when within eight tiles. Each also
-//! has a scatter corner it heads for. The Shadow starts loose; the other three leave
+//! the hunt its character. The cast are the mouth's four kinds of tooth, each mind
+//! matched to its tooth's nature: the **Canine** — the fang — targets the eater's
+//! tile; the **Incisor** — the front tooth, first to cut — four tiles ahead of its
+//! facing (with the original's up-facing overflow quirk); the **Wisdom** — the
+//! crooked latecomer that pushes off the others — a point pincering off the Canine
+//! (doubled through two-ahead); the **Molar** — the back tooth — the eater when far
+//! but its own corner when within eight tiles. Each also
+//! has a scatter corner it heads for. The Canine starts loose; the other three leave
 //! the **pen** on their dot thresholds (or the post-death global counter), while the
 //! hunt alternates between scatter and chase.
 
@@ -106,14 +109,14 @@ const POWER_PELLET_STALL: u32 = 3;
 const DOT_SCORE: u32 = 10;
 const POWER_PELLET_SCORE: u32 = 50;
 
-/// The Shadow's start tile — just outside the pen, above the gate, where the direct
+/// The Canine's start tile — just outside the pen, above the gate, where the direct
 /// chaser begins already loose on the maze. It heads left from here.
-pub const HUNTER_START: (usize, usize) = (13, 11);
+pub const CANINE_START: (usize, usize) = (13, 11);
 /// The other three hunters' start tiles, inside the pen, where they wait for their
 /// staggered release thresholds.
-pub const AMBUSHER_START: (usize, usize) = (13, 14);
-pub const FICKLE_START: (usize, usize) = (11, 14);
-pub const SHY_START: (usize, usize) = (16, 14);
+pub const INCISOR_START: (usize, usize) = (13, 14);
+pub const WISDOM_START: (usize, usize) = (11, 14);
+pub const MOLAR_START: (usize, usize) = (16, 14);
 /// A hunter's speed at level 1, as a percentage of the base rate — a touch under the
 /// eater's, so a clean run stays ahead. (Per-level speeds are a later ticket.)
 const HUNTER_SPEED: i32 = 75;
@@ -121,12 +124,12 @@ const HUNTER_SPEED: i32 = 75;
 /// let-off that a cornered player can exploit.
 const HUNTER_TUNNEL_SPEED: i32 = 40;
 
-/// How the minds aim: the Ambusher looks this many tiles ahead of the eater; the
-/// Fickle pivots off a point this many ahead; the Shy breaks for its corner within
+/// How the minds aim: the Incisor looks this many tiles ahead of the eater; the
+/// Wisdom pivots off a point this many ahead; the Molar breaks for its corner within
 /// this many tiles of the eater.
-const AMBUSHER_LOOKAHEAD: i32 = 4;
-const FICKLE_PIVOT: i32 = 2;
-const SHY_FLEE_TILES: i32 = 8;
+const INCISOR_LOOKAHEAD: i32 = 4;
+const WISDOM_PIVOT: i32 = 2;
+const MOLAR_FLEE_TILES: i32 = 8;
 
 /// Level 1's scatter/chase rhythm, in simulation frames. The final chase has no
 /// expiry; later level tables will replace this constant when the level climb lands.
@@ -141,9 +144,9 @@ const HUNT_SCHEDULE: [(HuntPhase, u32); 8] = [
     (HuntPhase::Chase, u32::MAX),
 ];
 /// Personal dot thresholds for the three waiting hunters, in release order.
-const AMBUSHER_RELEASE_DOTS: u32 = 0;
-const FICKLE_RELEASE_DOTS: u32 = 30;
-const SHY_RELEASE_DOTS: u32 = 60;
+const INCISOR_RELEASE_DOTS: u32 = 0;
+const WISDOM_RELEASE_DOTS: u32 = 30;
+const MOLAR_RELEASE_DOTS: u32 = 60;
 /// After a death, the original's global counter releases another hunter every seven
 /// pickups. This counter is deliberately separate from the personal thresholds.
 const GLOBAL_RELEASE_DOTS: u32 = 7;
@@ -298,17 +301,21 @@ struct MoverState {
 }
 
 /// Which of the four minds a hunter has — each steers by its own target rule.
+/// The cast are the mouth's four kinds of tooth, each named for the tooth whose
+/// nature its mind shares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HunterKind {
-    /// Targets the eater's own tile — the relentless direct chaser.
-    Shadow,
-    /// Targets four tiles ahead of the eater — cutting off where it is going.
-    Ambusher,
-    /// Targets a point pincering off the Shadow — swinging wildly as the pair move.
-    Fickle,
-    /// Targets the eater when far, but breaks for its own corner when within eight
-    /// tiles — it lopes in, loses nerve, and comes again.
-    Shy,
+    /// The fang. Targets the eater's own tile — the relentless direct chaser.
+    Canine,
+    /// The front tooth, first to cut. Targets four tiles ahead of the eater —
+    /// cutting off where it is going.
+    Incisor,
+    /// The crooked latecomer, pushing off the others. Targets a point pincering
+    /// off the Canine — swinging wildly as the pair move.
+    Wisdom,
+    /// The back tooth. Targets the eater when far, but breaks for its own corner
+    /// when within eight tiles — it lopes in, loses nerve, and comes again.
+    Molar,
 }
 
 /// The active part of the hunt's repeating rhythm.
@@ -321,14 +328,14 @@ pub enum HuntPhase {
 }
 
 impl HunterKind {
-    /// The off-maze corner this mind heads for in scatter mode (and the Shy breaks for
+    /// The off-maze corner this mind heads for in scatter mode (and the Molar breaks for
     /// when the eater comes close) — one per quadrant, so the four scatter apart.
     fn scatter_corner(self) -> (i32, i32) {
         match self {
-            HunterKind::Shadow => (COLS as i32 - 3, 0), // top-right
-            HunterKind::Ambusher => (2, 0),             // top-left
-            HunterKind::Fickle => (COLS as i32 - 1, ROWS as i32 - 1), // bottom-right
-            HunterKind::Shy => (0, ROWS as i32 - 1),    // bottom-left
+            HunterKind::Canine => (COLS as i32 - 3, 0), // top-right
+            HunterKind::Incisor => (2, 0),              // top-left
+            HunterKind::Wisdom => (COLS as i32 - 1, ROWS as i32 - 1), // bottom-right
+            HunterKind::Molar => (0, ROWS as i32 - 1),  // bottom-left
         }
     }
 }
@@ -495,7 +502,7 @@ pub enum Phase {
 pub struct Game {
     maze: Maze,
     eater: MoverState,
-    /// The four hunters. The Shadow starts loose; the other three wait for their
+    /// The four hunters. The Canine starts loose; the other three wait for their
     /// personal dot thresholds or the post-death global counter.
     hunters: Vec<HunterState>,
     /// Whether a hunter has caught the eater (latched; lives and respawn are a later
@@ -508,8 +515,8 @@ pub struct Game {
     hunt_phase: HuntPhase,
     hunt_phase_index: usize,
     hunt_phase_frames: u32,
-    /// A seam for T8's savage Shadow, which keeps chasing during scatter.
-    shadow_chases_in_scatter: bool,
+    /// A seam for T8's savage Canine, which keeps chasing during scatter.
+    canine_chases_in_scatter: bool,
     score: u32,
     phase: Phase,
     /// Steps taken so far.
@@ -525,10 +532,10 @@ impl Game {
     pub fn new(seed: u64) -> Self {
         let (sx, sy) = tile_center(EATER_START.0 as i32, EATER_START.1 as i32);
         let hunters = vec![
-            new_hunter(HunterKind::Shadow, HUNTER_START, Dir::Left, false),
-            new_hunter(HunterKind::Ambusher, AMBUSHER_START, Dir::Down, true),
-            new_hunter(HunterKind::Fickle, FICKLE_START, Dir::Up, true),
-            new_hunter(HunterKind::Shy, SHY_START, Dir::Up, true),
+            new_hunter(HunterKind::Canine, CANINE_START, Dir::Left, false),
+            new_hunter(HunterKind::Incisor, INCISOR_START, Dir::Down, true),
+            new_hunter(HunterKind::Wisdom, WISDOM_START, Dir::Up, true),
+            new_hunter(HunterKind::Molar, MOLAR_START, Dir::Up, true),
         ];
         Self {
             maze: Maze::new(),
@@ -550,7 +557,7 @@ impl Game {
             hunt_phase: HUNT_SCHEDULE[0].0,
             hunt_phase_index: 0,
             hunt_phase_frames: 0,
-            shadow_chases_in_scatter: false,
+            canine_chases_in_scatter: false,
             score: 0,
             phase: Phase::Playing,
             steps: 0,
@@ -773,40 +780,40 @@ impl Game {
         }
         let eater = tile_at(self.eater.x, self.eater.y);
         if self.hunt_phase == HuntPhase::Scatter
-            && !(hunter.kind == HunterKind::Shadow && self.shadow_chases_in_scatter)
+            && !(hunter.kind == HunterKind::Canine && self.canine_chases_in_scatter)
         {
             return hunter.kind.scatter_corner();
         }
         match hunter.kind {
-            // The Shadow bears straight down on the eater.
-            HunterKind::Shadow => eater,
-            // The Ambusher aims a few tiles ahead of where the eater is heading.
-            HunterKind::Ambusher => ahead_of_eater(eater, self.eater.dir, AMBUSHER_LOOKAHEAD),
-            // The Fickle doubles the vector from the Shadow through a point ahead of the
+            // The Canine bears straight down on the eater.
+            HunterKind::Canine => eater,
+            // The Incisor aims a few tiles ahead of where the eater is heading.
+            HunterKind::Incisor => ahead_of_eater(eater, self.eater.dir, INCISOR_LOOKAHEAD),
+            // The Wisdom doubles the vector from the Canine through a point ahead of the
             // eater — a pincer that swings as the pair move.
-            HunterKind::Fickle => {
-                let pivot = ahead_of_eater(eater, self.eater.dir, FICKLE_PIVOT);
-                let shadow = self.shadow_tile();
-                (2 * pivot.0 - shadow.0, 2 * pivot.1 - shadow.1)
+            HunterKind::Wisdom => {
+                let pivot = ahead_of_eater(eater, self.eater.dir, WISDOM_PIVOT);
+                let canine = self.canine_tile();
+                (2 * pivot.0 - canine.0, 2 * pivot.1 - canine.1)
             }
-            // The Shy chases while far, but breaks for its corner when the eater is near.
-            HunterKind::Shy => {
+            // The Molar chases while far, but breaks for its corner when the eater is near.
+            HunterKind::Molar => {
                 let own = tile_at(hunter.x, hunter.y);
-                if tile_dist_sq(own, eater) > SHY_FLEE_TILES * SHY_FLEE_TILES {
+                if tile_dist_sq(own, eater) > MOLAR_FLEE_TILES * MOLAR_FLEE_TILES {
                     eater
                 } else {
-                    HunterKind::Shy.scatter_corner()
+                    HunterKind::Molar.scatter_corner()
                 }
             }
         }
     }
 
-    /// The Shadow's current tile — the Fickle steers off it. Falls back to the eater's
-    /// tile if somehow no Shadow is present.
-    fn shadow_tile(&self) -> (i32, i32) {
+    /// The Canine's current tile — the Wisdom steers off it. Falls back to the eater's
+    /// tile if somehow no Canine is present.
+    fn canine_tile(&self) -> (i32, i32) {
         self.hunters
             .iter()
-            .find(|h| h.kind == HunterKind::Shadow)
+            .find(|h| h.kind == HunterKind::Canine)
             .map_or_else(
                 || tile_at(self.eater.x, self.eater.y),
                 |h| tile_at(h.x, h.y),
@@ -952,10 +959,10 @@ impl Game {
         self.hunters.iter().filter(|hunter| hunter.penned).count()
     }
 
-    /// Enables the T8 savage-Shadow seam: Shadow keeps its chase target during
+    /// Enables the T8 savage-Canine seam: Canine keeps its chase target during
     /// scatter while the other active hunters still use their corners.
-    pub fn set_shadow_chases_in_scatter(&mut self, enabled: bool) {
-        self.shadow_chases_in_scatter = enabled;
+    pub fn set_canine_chases_in_scatter(&mut self, enabled: bool) {
+        self.canine_chases_in_scatter = enabled;
     }
 
     /// Whether a hunter has caught the eater — latched, until a later ticket adds
@@ -1057,16 +1064,16 @@ fn new_hunter(kind: HunterKind, tile: (usize, usize), dir: Dir, penned: bool) ->
 /// The personal release threshold for a hunter on a fresh run.
 fn release_threshold(kind: HunterKind) -> u32 {
     match kind {
-        HunterKind::Shadow => 0,
-        HunterKind::Ambusher => AMBUSHER_RELEASE_DOTS,
-        HunterKind::Fickle => FICKLE_RELEASE_DOTS,
-        HunterKind::Shy => SHY_RELEASE_DOTS,
+        HunterKind::Canine => 0,
+        HunterKind::Incisor => INCISOR_RELEASE_DOTS,
+        HunterKind::Wisdom => WISDOM_RELEASE_DOTS,
+        HunterKind::Molar => MOLAR_RELEASE_DOTS,
     }
 }
 
 /// The tile `n` ahead of the eater's `tile` along `dir`. Facing up it is also `n` to
-/// the left — the original's overflow quirk, which both the Ambusher (n=4) and the
-/// Fickle's pivot (n=2) inherit.
+/// the left — the original's overflow quirk, which both the Incisor (n=4) and the
+/// Wisdom's pivot (n=2) inherit.
 fn ahead_of_eater(tile: (i32, i32), dir: Dir, n: i32) -> (i32, i32) {
     let (dx, dy) = dir.delta();
     let mut ahead = (tile.0 + n * dx, tile.1 + n * dy);
@@ -1461,7 +1468,7 @@ mod tests {
         );
     }
 
-    /// Replaces the hunters with a single loose Shadow centred on `(col, row)` facing
+    /// Replaces the hunters with a single loose Canine centred on `(col, row)` facing
     /// `dir`, primed to move on the next step.
     fn plant_hunter(game: &mut Game, col: i32, row: i32, dir: Dir) {
         let (x, y) = tile_center(col, row);
@@ -1470,7 +1477,7 @@ mod tests {
             y,
             dir,
             accum: SPEED_DEN,
-            kind: HunterKind::Shadow,
+            kind: HunterKind::Canine,
             penned: false,
             leaving_pen: false,
         }];
@@ -1478,8 +1485,8 @@ mod tests {
     }
 
     #[test]
-    fn the_shadow_runs_the_eater_down() {
-        // The eater, stalled against the wall left of (6, 23), sits still; the Shadow,
+    fn the_canine_runs_the_eater_down() {
+        // The eater, stalled against the wall left of (6, 23), sits still; the Canine,
         // planted three tiles up the same corridor, must chase down and catch it.
         let mut game = Game::new(1);
         game.hunt_phase = HuntPhase::Chase;
@@ -1489,7 +1496,7 @@ mod tests {
         for _ in 0..200 {
             caught |= game.step(Input::default()).life_lost;
         }
-        assert!(caught, "the Shadow closes on and catches the eater");
+        assert!(caught, "the Canine closes on and catches the eater");
         assert!(game.caught());
     }
 
@@ -1540,11 +1547,11 @@ mod tests {
     }
 
     #[test]
-    fn the_ambusher_aims_four_ahead() {
+    fn the_incisor_aims_four_ahead() {
         let mut game = Game::new(1);
         game.hunt_phase = HuntPhase::Chase;
         plant_eater(&mut game, 10, 20, Dir::Right);
-        assert_eq!(game.hunters[1].kind, HunterKind::Ambusher);
+        assert_eq!(game.hunters[1].kind, HunterKind::Incisor);
         assert_eq!(
             game.hunter_target(1),
             (14, 20),
@@ -1553,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ambusher_up_quirk_aims_ahead_and_aside() {
+    fn the_incisor_up_quirk_aims_ahead_and_aside() {
         let mut game = Game::new(1);
         game.hunt_phase = HuntPhase::Chase;
         plant_eater(&mut game, 10, 20, Dir::Up);
@@ -1565,46 +1572,46 @@ mod tests {
     }
 
     #[test]
-    fn the_fickle_pincers_off_the_shadow() {
+    fn the_wisdom_pincers_off_the_canine() {
         let mut game = Game::new(1);
         game.hunt_phase = HuntPhase::Chase;
         plant_eater(&mut game, 10, 20, Dir::Right);
-        // Park the Shadow (hunters[0]) at a known tile the Fickle steers off.
+        // Park the Canine (hunters[0]) at a known tile the Wisdom steers off.
         (game.hunters[0].x, game.hunters[0].y) = tile_center(10, 10);
-        assert_eq!(game.hunters[2].kind, HunterKind::Fickle);
-        // pivot = two ahead of the eater = (12, 20); target = 2*pivot - shadow = (14, 30).
+        assert_eq!(game.hunters[2].kind, HunterKind::Wisdom);
+        // pivot = two ahead of the eater = (12, 20); target = 2*pivot - canine = (14, 30).
         assert_eq!(game.hunter_target(2), (14, 30));
     }
 
     #[test]
-    fn the_shy_chases_when_far_and_flees_when_near() {
+    fn the_molar_chases_when_far_and_flees_when_near() {
         let mut game = Game::new(1);
         game.hunt_phase = HuntPhase::Chase;
         plant_eater(&mut game, 10, 20, Dir::Left);
-        assert_eq!(game.hunters[3].kind, HunterKind::Shy);
+        assert_eq!(game.hunters[3].kind, HunterKind::Molar);
         // Fifteen tiles up — far — so it targets the eater.
         (game.hunters[3].x, game.hunters[3].y) = tile_center(10, 5);
         assert_eq!(
             game.hunter_target(3),
             (10, 20),
-            "far: the Shy targets the eater"
+            "far: the Molar targets the eater"
         );
         // On the eater's tile — near — so it breaks for its own corner.
         (game.hunters[3].x, game.hunters[3].y) = tile_center(10, 20);
         assert_eq!(
             game.hunter_target(3),
-            HunterKind::Shy.scatter_corner(),
-            "near: the Shy breaks for its corner"
+            HunterKind::Molar.scatter_corner(),
+            "near: the Molar breaks for its corner"
         );
     }
 
     #[test]
     fn each_mind_has_a_distinct_scatter_corner() {
         let corners = [
-            HunterKind::Shadow.scatter_corner(),
-            HunterKind::Ambusher.scatter_corner(),
-            HunterKind::Fickle.scatter_corner(),
-            HunterKind::Shy.scatter_corner(),
+            HunterKind::Canine.scatter_corner(),
+            HunterKind::Incisor.scatter_corner(),
+            HunterKind::Wisdom.scatter_corner(),
+            HunterKind::Molar.scatter_corner(),
         ];
         for (i, ci) in corners.iter().enumerate() {
             for cj in &corners[i + 1..] {
@@ -1618,7 +1625,7 @@ mod tests {
         let mut game = Game::new(1);
         let positions = |g: &Game| -> Vec<(i32, i32)> {
             g.hunters()
-                .filter(|h| h.kind != HunterKind::Shadow)
+                .filter(|h| h.kind != HunterKind::Canine)
                 .map(|h| (h.x, h.y))
                 .collect()
         };
@@ -1626,7 +1633,7 @@ mod tests {
         let first = (0..300)
             .map(|_| game.step(Input::default()))
             .find_map(|events| events.hunter_released);
-        assert_eq!(first, Some(HunterKind::Ambusher));
+        assert_eq!(first, Some(HunterKind::Incisor));
         assert_eq!(game.penned_hunters(), 2);
         assert!(
             positions(&game).len() == 3,
@@ -1666,14 +1673,14 @@ mod tests {
     fn a_released_hunter_exits_through_the_gate() {
         let mut game = Game::new(1);
         let event = game.step(Input::default());
-        assert_eq!(event.hunter_released, Some(HunterKind::Ambusher));
+        assert_eq!(event.hunter_released, Some(HunterKind::Incisor));
         for _ in 0..240 {
             game.step(Input::default());
         }
-        let ambusher = game.hunters().nth(1).unwrap();
-        let tile = tile_at(ambusher.x, ambusher.y);
-        assert!(!ambusher.penned);
-        assert!(!in_pen(tile.0, tile.1), "the Ambusher cleared the pen");
+        let incisor = game.hunters().nth(1).unwrap();
+        let tile = tile_at(incisor.x, incisor.y);
+        assert!(!incisor.penned);
+        assert!(!in_pen(tile.0, tile.1), "the Incisor cleared the pen");
     }
 
     #[test]
@@ -1688,7 +1695,7 @@ mod tests {
         game.caught = true; // keep this release-only scenario free of contact noise
         assert_eq!(
             game.step(Input::default()).hunter_released,
-            Some(HunterKind::Ambusher)
+            Some(HunterKind::Incisor)
         );
         let mut released = None;
         for _ in 0..RELEASE_TIMEOUT_FRAMES {
@@ -1697,7 +1704,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(released, Some(HunterKind::Fickle));
+        assert_eq!(released, Some(HunterKind::Wisdom));
     }
 
     #[test]
@@ -1706,8 +1713,8 @@ mod tests {
         plant_eater(&mut game, 13, 23, Dir::Left);
         plant_hunter(&mut game, 13, 23, Dir::Left);
         game.hunters.push(new_hunter(
-            HunterKind::Ambusher,
-            AMBUSHER_START,
+            HunterKind::Incisor,
+            INCISOR_START,
             Dir::Down,
             true,
         ));
@@ -1734,16 +1741,16 @@ mod tests {
 
     #[test]
     fn a_released_mind_moves_and_replays_identically() {
-        // T6 releases the penned minds on a schedule; here we un-pen the Ambusher
+        // T6 releases the penned minds on a schedule; here we un-pen the Incisor
         // directly to exercise its targeting driving movement through the step seam,
         // and confirm it replays identically across two runs on one seed.
         let run = || {
             let mut game = Game::new(9);
-            game.hunters[1].penned = false; // the Ambusher
+            game.hunters[1].penned = false; // the Incisor
             let mut path = Vec::new();
             for _ in 0..1500 {
                 game.step(Input::default());
-                let a = game.hunters().nth(1).expect("the Ambusher");
+                let a = game.hunters().nth(1).expect("the Incisor");
                 path.push((a.x, a.y));
             }
             path
