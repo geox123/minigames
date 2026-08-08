@@ -46,7 +46,11 @@
 //! but its own corner when within eight tiles. Each also
 //! has a scatter corner it heads for. The Canine starts loose; the other three leave
 //! the **pen** on their dot thresholds (or the post-death global counter), while the
-//! hunt alternates between scatter and chase.
+//! hunt alternates between scatter and chase on the original's **per-level schedule
+//! tiers** ([T6](https://github.com/geox123/minigames/issues/164)): level 1
+//! breathes, levels 2–4 and 5+ stretch the third chase past seventeen minutes and
+//! shrink the final scatter to a single frame, so deep in a level the hunters seem
+//! to reverse without ever relaxing.
 
 /// The maze is 28 tiles wide and 31 tall — the original's playfield.
 pub const COLS: usize = 28;
@@ -131,9 +135,12 @@ const INCISOR_LOOKAHEAD: i32 = 4;
 const WISDOM_PIVOT: i32 = 2;
 const MOLAR_FLEE_TILES: i32 = 8;
 
-/// Level 1's scatter/chase rhythm, in simulation frames. The final chase has no
-/// expiry; later level tables will replace this constant when the level climb lands.
-const HUNT_SCHEDULE: [(HuntPhase, u32); 8] = [
+/// The scatter/chase rhythm by level, in simulation frames — the original's three
+/// tiers. Level 1 breathes; levels 2–4 stretch the third chase to over seventeen
+/// minutes and shrink the last scatter to a **single frame** (the original's quirk:
+/// deep in a level the hunters seem to reverse without ever relaxing — kept); level
+/// 5 on starts meaner still. The final chase in every tier has no expiry.
+const HUNT_SCHEDULE_L1: [(HuntPhase, u32); 8] = [
     (HuntPhase::Scatter, 7 * 60),
     (HuntPhase::Chase, 20 * 60),
     (HuntPhase::Scatter, 7 * 60),
@@ -143,6 +150,36 @@ const HUNT_SCHEDULE: [(HuntPhase, u32); 8] = [
     (HuntPhase::Scatter, 5 * 60),
     (HuntPhase::Chase, u32::MAX),
 ];
+const HUNT_SCHEDULE_L2_4: [(HuntPhase, u32); 8] = [
+    (HuntPhase::Scatter, 7 * 60),
+    (HuntPhase::Chase, 20 * 60),
+    (HuntPhase::Scatter, 7 * 60),
+    (HuntPhase::Chase, 20 * 60),
+    (HuntPhase::Scatter, 5 * 60),
+    (HuntPhase::Chase, 1033 * 60),
+    (HuntPhase::Scatter, 1),
+    (HuntPhase::Chase, u32::MAX),
+];
+const HUNT_SCHEDULE_L5: [(HuntPhase, u32); 8] = [
+    (HuntPhase::Scatter, 5 * 60),
+    (HuntPhase::Chase, 20 * 60),
+    (HuntPhase::Scatter, 5 * 60),
+    (HuntPhase::Chase, 20 * 60),
+    (HuntPhase::Scatter, 5 * 60),
+    (HuntPhase::Chase, 1037 * 60),
+    (HuntPhase::Scatter, 1),
+    (HuntPhase::Chase, u32::MAX),
+];
+
+/// The scatter/chase schedule a level runs on: 1 / 2–4 / 5+, the original's tiers.
+fn hunt_schedule(level: u32) -> &'static [(HuntPhase, u32)] {
+    match level {
+        0 | 1 => &HUNT_SCHEDULE_L1, // 0 unreachable; clamp to the opening tier
+        2..=4 => &HUNT_SCHEDULE_L2_4,
+        _ => &HUNT_SCHEDULE_L5,
+    }
+}
+
 /// Personal dot thresholds for the three waiting hunters, in release order.
 const INCISOR_RELEASE_DOTS: u32 = 0;
 const WISDOM_RELEASE_DOTS: u32 = 30;
@@ -150,7 +187,9 @@ const MOLAR_RELEASE_DOTS: u32 = 60;
 /// After a death, the original's global counter releases another hunter every seven
 /// pickups. This counter is deliberately separate from the personal thresholds.
 const GLOBAL_RELEASE_DOTS: u32 = 7;
-/// A waiting hunter is forced out after four seconds without a pickup.
+/// A waiting hunter is forced out after four seconds without a pickup. (The
+/// original tightens this to three seconds at level 5+; that lands with T8's
+/// per-level tables.)
 const RELEASE_TIMEOUT_FRAMES: u32 = 4 * 60;
 
 /// GNASH's original maze — our own layout (ADR 0005), left-right symmetric like the
@@ -515,6 +554,9 @@ pub struct Game {
     hunt_phase: HuntPhase,
     hunt_phase_index: usize,
     hunt_phase_frames: u32,
+    /// The level being played, driving which schedule tier the hunt runs on. Fixed
+    /// at 1 until T8 advances it on a maze clear.
+    level: u32,
     /// A seam for T8's savage Canine, which keeps chasing during scatter.
     canine_chases_in_scatter: bool,
     score: u32,
@@ -531,6 +573,7 @@ impl Game {
     /// laid out full, and the eater waits centred on its start tile facing left.
     pub fn new(seed: u64) -> Self {
         let (sx, sy) = tile_center(EATER_START.0 as i32, EATER_START.1 as i32);
+        let level = 1;
         let hunters = vec![
             new_hunter(HunterKind::Canine, CANINE_START, Dir::Left, false),
             new_hunter(HunterKind::Incisor, INCISOR_START, Dir::Down, true),
@@ -554,9 +597,10 @@ impl Game {
             post_death_pickups: 0,
             global_release: false,
             frames_since_pickup: 0,
-            hunt_phase: HUNT_SCHEDULE[0].0,
+            hunt_phase: hunt_schedule(level)[0].0,
             hunt_phase_index: 0,
             hunt_phase_frames: 0,
+            level,
             canine_chases_in_scatter: false,
             score: 0,
             phase: Phase::Playing,
@@ -753,16 +797,17 @@ impl Game {
         }
     }
 
-    /// Advances the level-1 scatter/chase clock. The clock intentionally lives in
+    /// Advances the level's scatter/chase clock. The clock intentionally lives in
     /// its own method so T7 can pause it during frightened time.
     fn advance_hunt_schedule(&mut self, events: &mut Events) {
+        let schedule = hunt_schedule(self.level);
         self.hunt_phase_frames = self.hunt_phase_frames.saturating_add(1);
-        let duration = HUNT_SCHEDULE[self.hunt_phase_index].1;
-        if self.hunt_phase_frames < duration || self.hunt_phase_index + 1 >= HUNT_SCHEDULE.len() {
+        let duration = schedule[self.hunt_phase_index].1;
+        if self.hunt_phase_frames < duration || self.hunt_phase_index + 1 >= schedule.len() {
             return;
         }
         self.hunt_phase_index += 1;
-        self.hunt_phase = HUNT_SCHEDULE[self.hunt_phase_index].0;
+        self.hunt_phase = schedule[self.hunt_phase_index].0;
         self.hunt_phase_frames = 0;
         for hunter in &mut self.hunters {
             if !hunter.penned {
@@ -947,6 +992,11 @@ impl Game {
     /// Frames elapsed in the current scatter/chase phase.
     pub fn hunt_phase_frames(&self) -> u32 {
         self.hunt_phase_frames
+    }
+
+    /// The level being played, from 1. (Advancing it on a maze clear is T8's.)
+    pub fn level(&self) -> u32 {
+        self.level
     }
 
     /// The number of pickups eaten so far, useful for the HUD and release tests.
@@ -1665,6 +1715,61 @@ mod tests {
         let mut events = Events::default();
         game.advance_hunt_schedule(&mut events);
         assert!(events.hunt_phase_changed);
+        assert_eq!(game.hunt_phase(), HuntPhase::Chase);
+        assert_eq!(game.hunters[0].dir, before.opposite());
+    }
+
+    #[test]
+    fn the_schedule_tiers_follow_the_original() {
+        // Tier selection: 1 / 2–4 / 5+.
+        assert_eq!(hunt_schedule(1), &HUNT_SCHEDULE_L1);
+        assert_eq!(hunt_schedule(2), &HUNT_SCHEDULE_L2_4);
+        assert_eq!(hunt_schedule(4), &HUNT_SCHEDULE_L2_4);
+        assert_eq!(hunt_schedule(5), &HUNT_SCHEDULE_L5);
+        assert_eq!(hunt_schedule(99), &HUNT_SCHEDULE_L5);
+        // The signature values, pinned against the original's tables rather than
+        // the consts themselves: the openers, the marathon third chases, the
+        // one-frame deep scatters, and the chase that never expires.
+        assert_eq!(hunt_schedule(1)[0], (HuntPhase::Scatter, 7 * 60));
+        assert_eq!(hunt_schedule(1)[5], (HuntPhase::Chase, 20 * 60));
+        assert_eq!(hunt_schedule(2)[5], (HuntPhase::Chase, 1033 * 60));
+        assert_eq!(hunt_schedule(2)[6], (HuntPhase::Scatter, 1));
+        assert_eq!(hunt_schedule(5)[0], (HuntPhase::Scatter, 5 * 60));
+        assert_eq!(hunt_schedule(5)[5], (HuntPhase::Chase, 1037 * 60));
+        assert_eq!(hunt_schedule(5)[6], (HuntPhase::Scatter, 1));
+        for level in [1, 2, 5] {
+            assert_eq!(hunt_schedule(level)[7], (HuntPhase::Chase, u32::MAX));
+        }
+    }
+
+    #[test]
+    fn deep_levels_open_with_the_shorter_scatter() {
+        let mut game = Game::new(1);
+        game.level = 5;
+        // At level 5 the first scatter runs five seconds, not seven: the switch
+        // lands on frame 300, and frame 299 is still scatter.
+        game.hunt_phase_frames = 5 * 60 - 2;
+        let mut events = Events::default();
+        game.advance_hunt_schedule(&mut events);
+        assert!(!events.hunt_phase_changed);
+        game.advance_hunt_schedule(&mut events);
+        assert!(events.hunt_phase_changed);
+        assert_eq!(game.hunt_phase(), HuntPhase::Chase);
+    }
+
+    #[test]
+    fn the_one_frame_scatter_is_a_bare_reversal() {
+        // Deep tiers shrink the last scatter to a single frame — the original's
+        // quirk where the hunters reverse without ever visibly relaxing.
+        let mut game = Game::new(1);
+        game.level = 2;
+        game.hunt_phase_index = 6;
+        game.hunt_phase = HuntPhase::Scatter;
+        game.hunt_phase_frames = 0;
+        let before = game.hunters[0].dir;
+        let mut events = Events::default();
+        game.advance_hunt_schedule(&mut events);
+        assert!(events.hunt_phase_changed, "one frame in, scatter is over");
         assert_eq!(game.hunt_phase(), HuntPhase::Chase);
         assert_eq!(game.hunters[0].dir, before.opposite());
     }
