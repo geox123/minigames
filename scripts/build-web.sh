@@ -25,5 +25,6 @@ build_game pong pong
 build_game breakout breakout
 build_game stepfall stepfall
 build_game asteroids asteroids
+build_game gnash gnash
 
 echo "done: $dist/"

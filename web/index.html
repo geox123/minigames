@@ -250,6 +250,31 @@
         border-radius: 50%;
         background: #f4f4f5;
       }
+      .field .maze-wall {
+        left: 10px;
+        top: 10px;
+        width: 30px;
+        height: 20px;
+        border: 2px solid #2630d9;
+        border-radius: 3px;
+      }
+      .field .fang {
+        right: 16px;
+        top: 12px;
+        width: 0;
+        height: 0;
+        border-left: 7px solid transparent;
+        border-right: 7px solid transparent;
+        border-top: 16px solid #f2262a;
+      }
+      .field .jaw {
+        left: 20px;
+        bottom: 14px;
+        width: 22px;
+        height: 4px;
+        background: #ffe94a;
+        box-shadow: 0 8px 0 #ffe94a;
+      }
       .game-body {
         flex: 1 1 auto;
         min-width: 0;
@@ -443,6 +468,35 @@
           <div class="takes">
             <a class="play" href="./asteroids/">▶ Play the Faithful</a>
             <a class="play" href="./asteroids/">▶ Play ACCRETE</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="game">
+        <div class="field" aria-hidden="true">
+          <i class="maze-wall"></i>
+          <i class="fang"></i>
+          <i class="jaw"></i>
+        </div>
+        <div class="game-body">
+          <p class="game-title">
+            GNASH <span style="color: var(--muted)">· 1980 · Faithful shipped</span>
+          </p>
+          <p class="game-note">
+            After the 1980 arcade maze-chase original — the Collection's fifth Game,
+            its first on a tile maze, and its first with pursuit AI. Shipped under a
+            name, maze and cast of its own (no affiliation with, or endorsement by,
+            the rights holder is implied). The <b>Faithful</b> keeps the original's
+            rules exact to the frame: you steer a bare pair of <b>jaws</b> through a
+            corridor grid of dots, hunted by the mouth's four <b>teeth</b> — the
+            Canine on your tile, the Incisor cutting ahead, the Wisdom pincering,
+            the Molar losing its nerve up close — through scatter and chase, power
+            pellet flips with the doubling catch ladder, sweets below the pen, and
+            levels that only grow meaner. The Remix comes next, with a name of its
+            own.
+          </p>
+          <div class="takes">
+            <a class="play" href="./gnash/">▶ Play the Faithful</a>
           </div>
         </div>
       </article>

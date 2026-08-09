@@ -33,6 +33,7 @@ in [`docs/adr/`](docs/adr).
 | [Breakout](games/breakout) | 1976 | ✅ playable | ✅ [RIFT](games/breakout/RIFT.md) | **Done** |
 | [STEPFALL](games/stepfall) | 1978 | ✅ playable | ✅ [HAILFALL](games/stepfall/HAILFALL.md) | **Done** |
 | [Asteroids](games/asteroids) | 1979 | ✅ playable | ✅ [ACCRETE](games/asteroids/ACCRETE.md) | **Done** |
+| [GNASH](games/gnash) | 1980 | ✅ playable | ⏳ next | Faithful shipped |
 
 **Pong, Breakout, STEPFALL and Asteroids are Done** — each has shipped both takes.
 Pong pairs its Faithful with [PULSE](games/pong/PULSE.md); Breakout pairs its
@@ -52,6 +53,15 @@ the heart of the field pulls on everything, and you fly against it, slingshottin
 on close passes, feeding rocks into the star for accretion score, skimming its edge
 to charge a screen-clearing collapse, dodging orbital enemies and a rival-well boss
 across three modes.
+
+The fifth Game, **[GNASH](games/gnash)** (after the 1980 arcade maze-chase
+original), opens the next batch: the Collection's first tile-maze Game and its
+first with pursuit AI. Namco is a flagship franchise, so it ships under an
+invented name with an original maze and cast
+([ADR 0005](docs/adr/0005-pac-man-ip-recheck.md)) — a bare pair of **jaws**
+hunted through the corridors by the mouth's four **teeth**, each with its own
+mind, faithful to the original's rules exact to the frame. Its Faithful is
+shipped; its Remix comes next.
 
 ## How it's built
 
