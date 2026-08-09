@@ -6,9 +6,11 @@
 //! original's screen, with a score bar above the maze and a footer below it.
 
 pub mod app;
+pub mod audio;
 pub mod render;
 
 pub use app::App;
+pub use audio::Audio;
 
 use gnash_core::{Input, LOGICAL_WIDTH};
 use macroquad::prelude::*;
