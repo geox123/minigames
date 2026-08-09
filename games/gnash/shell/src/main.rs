@@ -4,7 +4,7 @@
 //! This binary is the shell: it owns the window, the real clock, real input and
 //! rendering. Every rule of the game lives in `gnash_core`.
 
-use gnash::{App, blit_canvas, logical_camera, logical_canvas};
+use gnash::{App, Audio, blit_canvas, logical_camera, logical_canvas};
 use macroquad::prelude::*;
 
 fn window_conf() -> Conf {
@@ -26,7 +26,7 @@ fn window_conf() -> Conf {
 async fn main() {
     let canvas = logical_canvas();
     let camera = logical_camera(&canvas);
-    let mut app = App::new();
+    let mut app = App::new(Audio::load().await);
 
     loop {
         // Everything the game draws goes onto the logical canvas...
